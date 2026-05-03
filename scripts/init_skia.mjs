@@ -464,6 +464,10 @@ function main() {
 
   console.log(`Render backend: ${options.backend.toUpperCase()}`);
 
+  // Write the header immediately so CMake can configure even if the Skia build
+  // fails or is interrupted later in this script.
+  writeRenderBackendHeader(options.backend);
+
   if (process.platform !== 'win32' && process.platform !== 'darwin') {
     fail(`init_skia.mjs supports Windows and macOS. Current platform: ${os.platform()}.`);
   }
@@ -575,8 +579,6 @@ function main() {
       copyLibraries(outDir, configName);
     }
   }
-
-  writeRenderBackendHeader(options.backend);
 
   console.log('');
   console.log('Done! Built Skia is at:');
