@@ -229,16 +229,17 @@ if(APPLE)
   add_library(glint::host_mac ALIAS glint_host_mac)
   set_target_properties(glint_host_mac PROPERTIES EXPORT_NAME host_mac)
   target_link_libraries(glint_host_mac INTERFACE glint::core glint_host_mac_support)
-  # The prebuilt libskia.a was compiled WITH SK_TRIVIAL_ABI=[[clang::trivial_abi]].
-  # That annotation makes sk_sp<T> use register return on ARM64 (result in x0)
-  # instead of SRET (hidden output pointer in x8).  Every TU that calls a Skia
-  # function returning sk_sp<T> must see the same definition; without it the call
-  # site allocates an uninitialised stack slot via x8, Skia writes to x0 instead,
-  # and the sk_sp holds garbage → crash inside SkData::data() / loadStylesheet.
+  # The prebuilt libskia.a was compiled WITH SK_TRIVIAL_ABI=[[clang::trivial_abi]]
+  # in the Debug config but WITHOUT it in the Release config.  That annotation
+  # makes sk_sp<T> use register return on ARM64 (result in x0) instead of SRET
+  # (hidden output pointer in x8).  Every TU that calls a Skia function returning
+  # sk_sp<T> must see the same definition as the library it was linked against;
+  # a mismatch means the caller reads x0 while Skia wrote to x8 (or vice-versa),
+  # leaving the sk_sp holding a garbage pointer → crash at the first dereference.
   target_compile_definitions(glint_host_mac INTERFACE
-    "SK_TRIVIAL_ABI=[[clang::trivial_abi]]")
+    "$<$<CONFIG:Debug>:SK_TRIVIAL_ABI=[[clang::trivial_abi]]>")
   target_compile_definitions(glint_host_mac_support PRIVATE
-    "SK_TRIVIAL_ABI=[[clang::trivial_abi]]")
+    "$<$<CONFIG:Debug>:SK_TRIVIAL_ABI=[[clang::trivial_abi]]>")
 
   foreach(_skia_lib skia svg skshaper skparagraph skunicode_core skunicode_icu)
     target_link_libraries(glint_host_mac INTERFACE
