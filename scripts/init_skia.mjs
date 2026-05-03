@@ -364,6 +364,7 @@ skia_enable_svg = true
 skia_enable_skottie = true
 skia_enable_pdf = false
 skia_enable_skparagraph = true
+skia_enable_tools = false
 target_cpu = "${arch}"`;
 
   if (process.platform === 'win32') {
