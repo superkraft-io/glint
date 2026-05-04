@@ -317,6 +317,9 @@ function resolveGnExecutable(sourceDir) {
   ];
 
   for (const candidate of candidates) {
+    if (process.platform !== 'win32' && /\.(exe|bat)$/i.test(candidate)) {
+      continue;
+    }
     if (fs.existsSync(candidate)) {
       return candidate;
     }
