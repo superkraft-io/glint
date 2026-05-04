@@ -674,6 +674,9 @@ function main() {
     }
   }
 
+  console.log('Cleaning up tmp build directory...');
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+
   console.log('');
   console.log('Done! Built Skia is at:');
   console.log(`  ${depsDir}`);
