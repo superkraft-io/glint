@@ -55,7 +55,18 @@ By default, Glint expects:
 my_glint_app/third_party/skia
 ```
 
-From your new project root, run with your chosen render backend:
+### Option A — Prebuilt libraries (recommended, fast)
+
+For the quickest setup, download prebuilt Skia libraries. No Python, no lengthy compile.
+
+```powershell
+# Direct3D 12 (GPU, Graphite backend, Windows only)
+node .\third_party\glint\scripts\init_skia.mjs --prebuilt --backend d3d12
+```
+
+### Option B — Build from source
+
+If you need a custom configuration or a backend not covered by the prebuilt packages, build Skia from source. This takes significantly longer but gives you full control.
 
 ```powershell
 # CPU (default — software rasterizer)
@@ -68,7 +79,7 @@ node .\third_party\glint\scripts\init_skia.mjs --source --config Both --backend 
 node .\third_party\glint\scripts\init_skia.mjs --source --config Both --backend d3d12
 ```
 
-The script will print the selected backend and generate `third_party/glint/glint_render_backend.h`, which is included automatically by `glint.hpp` and activates the correct compile-time paths. No CMake flags are needed.
+In both cases, the script generates `third_party/glint/glint_render_backend.h`, which is included automatically by `glint.hpp` and activates the correct compile-time paths. No CMake flags are needed.
 
 That should produce:
 

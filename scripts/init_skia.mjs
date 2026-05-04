@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createGunzip } from 'node:zlib';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,7 +37,11 @@ const VALID_BACKENDS = ['cpu', 'opengl', 'd3d12', 'dawn', 'metal'];
 function printUsage() {
   console.log(`
 Usage:
-  node third_party/glint/scripts/init_skia.mjs --source [--config Release|Debug|Both] [--backend cpu|opengl|d3d12|dawn|metal]
+  node third_party/glint/scripts/init_skia.mjs --prebuilt [--backend <backend>]
+  node third_party/glint/scripts/init_skia.mjs --source  [--config Release|Debug|Both] [--backend <backend>]
+
+--prebuilt   Download prebuilt Skia libraries (fast, recommended for getting started)
+--source     Build Skia from source (slower, required for custom configurations)
 
 Backends (default: cpu):
   cpu     Software rasterizer, no GPU
@@ -450,11 +456,96 @@ function writeRenderBackendHeader(backend) {
   console.log(`Wrote render backend header: ${headerPath}`);
 }
 
+const PREBUILT_URLS = {
+  win32: 'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-win.zip',
+  darwin: 'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-mac.zip'
+};
+
+function httpsGetFollowRedirects(url) {
+  return new Promise((resolve, reject) => {
+    function request(currentUrl) {
+      https.get(currentUrl, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          request(res.headers.location);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode} for ${currentUrl}`));
+          return;
+        }
+        resolve(res);
+      }).on('error', reject);
+    }
+    request(url);
+  });
+}
+
+async function downloadFile(url, destPath) {
+  const res = await httpsGetFollowRedirects(url);
+  await new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(destPath);
+    res.pipe(out);
+    out.on('finish', resolve);
+    out.on('error', reject);
+    res.on('error', reject);
+  });
+}
+
+async function extractZip(zipPath, destDir) {
+  // Use platform-native tools: PowerShell on Windows, unzip on macOS
+  if (process.platform === 'win32') {
+    const result = spawnSync('powershell', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      `$ErrorActionPreference = 'Stop'; Expand-Archive -Force -Path "${zipPath}" -DestinationPath "${destDir}"`
+    ], { stdio: 'inherit' });
+    if (result.status !== 0) fail('Failed to extract zip with PowerShell Expand-Archive.');
+  } else {
+    const result = spawnSync('unzip', ['-o', zipPath, '-d', destDir], { stdio: 'inherit' });
+    if (result.status !== 0) fail('Failed to extract zip with unzip.');
+  }
+}
+
+async function downloadPrebuilt(backend) {
+  const platform = process.platform;
+  const url = PREBUILT_URLS[platform];
+
+  if (!url) {
+    fail(`No prebuilt package available for platform: ${platform}. Use --source instead.`);
+  }
+
+  console.log(`Downloading prebuilt Skia for ${platform} (${backend.toUpperCase()})...`);
+  console.log(`  URL: ${url}`);
+
+  ensureDirectory(depsDir);
+  ensureDirectory(tmpDir);
+
+  const zipPath = path.join(tmpDir, 'glint-skia-prebuilt.zip');
+  await downloadFile(url, zipPath);
+  console.log('  Download complete.');
+
+  console.log(`Extracting to ${depsDir}...`);
+  await extractZip(zipPath, depsDir);
+  console.log('  Extraction complete.');
+
+  fs.rmSync(zipPath, { force: true });
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2));
 
   if (options.prebuilt) {
-    fail('-prebuilt was removed. Use --source to build the standalone Skia bundle locally.');
+    if (options.help) {
+      printUsage();
+      process.exit(0);
+    }
+
+    writeRenderBackendHeader(options.backend);
+    downloadPrebuilt(options.backend).then(() => {
+      console.log('Prebuilt Skia ready.');
+    }).catch((err) => {
+      fail(`Prebuilt download failed: ${err.message}`);
+    });
+    return;
   }
 
   if (options.help || !options.source) {
