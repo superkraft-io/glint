@@ -271,6 +271,31 @@ if(GLINT_RENDER_GPU)
   endif()
 endif()
 
+# ── glint_configure_win32_app ─────────────────────────────────────────────────
+# Embeds the glint Per-Monitor V2 DPI manifest into a Win32 executable target.
+# Call this on every WIN32 executable that uses glint::host_win32:
+#
+#   glint_configure_win32_app(my_app)
+#
+# Without the manifest, Windows virtualises the process at 96 DPI so
+# GetDpiForWindow always returns 96, mDpr stays 1.0, and the rendered UI
+# is blurry at any display scale other than 100%.
+if(WIN32)
+  set(GLINT_WIN32_DPI_MANIFEST
+    "${CMAKE_CURRENT_LIST_DIR}/platform/win32/glint_dpi.manifest"
+    CACHE INTERNAL "Path to the glint Per-Monitor V2 DPI awareness manifest")
+
+  function(glint_configure_win32_app target)
+    target_sources(${target} PRIVATE "${GLINT_WIN32_DPI_MANIFEST}")
+    set_source_files_properties("${GLINT_WIN32_DPI_MANIFEST}"
+      TARGET_DIRECTORY ${target}
+      PROPERTIES VS_TOOL_OVERRIDE "Manifest")
+  endfunction()
+else()
+  function(glint_configure_win32_app target)
+  endfunction()
+endif()
+
 if(NOT GLINT_ENABLE_INSPECTOR)
   target_compile_definitions(glint_host_win32 INTERFACE GLINT_INSPECTOR_DISABLED)
   target_compile_definitions(glint_host_win32_support PRIVATE GLINT_INSPECTOR_DISABLED)
