@@ -18,11 +18,13 @@
 #include "include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "include/gpu/ganesh/GrBackendSurface.h"
 #include "include/gpu/ganesh/GrTypes.h"
+#  if !defined(GLINT_ENABLE_D3D12) || !GLINT_ENABLE_D3D12
 #include "include/gpu/ganesh/gl/GrGLDirectContext.h"
 #include "include/gpu/ganesh/gl/GrGLBackendSurface.h"
 #include "include/gpu/ganesh/gl/GrGLInterface.h"
 #include "include/gpu/ganesh/gl/GrGLTypes.h"
 #include "include/gpu/ganesh/gl/win/GrGLMakeWinInterface.h"
+#  endif
 #  if defined(SK_DIRECT3D)
 #    include "include/gpu/ganesh/d3d/GrD3DBackendContext.h"
 #  endif
@@ -104,6 +106,7 @@ inline bool paintDocumentCpuOpaque(
 }
 
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU
+#if !defined(GLINT_ENABLE_D3D12) || !GLINT_ENABLE_D3D12
 enum class open_gl_init_result
 {
   success,
@@ -302,6 +305,7 @@ inline bool paintDocumentGpu(
   return true;
 }
 
+#endif // !GLINT_ENABLE_D3D12
 #if defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
 enum class direct3d_init_result
 {
