@@ -711,6 +711,7 @@ void glint_view_mac::_paint(void* cgContextRef, void* nsViewRef)
 
   mRedrawRequested = false;
   canvas.clear(mOptions.clearColor);
+  mDocument->devicePixelRatio = static_cast<float>(scale);
   mDocument->DrawToCanvas(canvas);
 
   CGContextSaveGState(ctx);
@@ -950,6 +951,7 @@ void glint_view_mac::_paintMetal()
     canvas->clear(mOptions.clearColor);
     canvas->save();
     canvas->scale(static_cast<SkScalar>(scale), static_cast<SkScalar>(scale));
+    mDocument->devicePixelRatio = static_cast<float>(scale);
     mDocument->DrawToCanvas(*canvas);
     canvas->restore();
 

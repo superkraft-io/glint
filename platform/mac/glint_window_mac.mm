@@ -695,6 +695,7 @@ void glint_window_mac::routeDraw(void* cgCtxRef, int pixelW, int pixelH, float s
   SkCanvas canvas(bitmap);
   canvas.scale(scale, scale);
   canvas.clear(clearColor());
+  mOwnRoot->devicePixelRatio = scale;
   mOwnRoot->DrawToCanvas(canvas);
 
   CGContextSaveGState(ctx);
