@@ -938,6 +938,7 @@ private:
     // Stamp the HWND on the root so components (labels, inputs) can open
     // Win32 context menus via TrackPopupMenu even when mpG is nullptr.
     mOwnRoot->hwnd = mHWND;
+    mOwnRoot->devicePixelRatio = mDpr;
 
     // Vertical flex column so children stack top-to-bottom.
     mOwnRoot->mCanvas.style.display       = "flex";
@@ -1191,6 +1192,7 @@ private:
         self->mW = static_cast<int>(std::lround(static_cast<float>(self->mWpx) / dpr));
         self->mH = static_cast<int>(std::lround(static_cast<float>(self->mHpx) / dpr));
       }
+      if (self->mOwnRoot) self->mOwnRoot->devicePixelRatio = self->mDpr;
       self->updateRootBounds();
       self->recreateSurface();
       self->mRedrawRequested.store(true, std::memory_order_relaxed);
@@ -1217,6 +1219,7 @@ private:
       const float newDpr = static_cast<float>(HIWORD(wp)) / 96.f;
       if (newDpr > 0.f && std::fabs(newDpr - self->mDpr) > 1e-4f)
         self->mDpr = newDpr;
+      if (self->mOwnRoot) self->mOwnRoot->devicePixelRatio = self->mDpr;
 
       if (auto* suggested = reinterpret_cast<RECT*>(lp))
       {

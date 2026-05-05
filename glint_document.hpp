@@ -805,6 +805,12 @@ public:
   glint_window_mac* macWindow = nullptr;
 #endif
 
+  /** Device pixel ratio (physical pixels / logical CSS pixels).
+   *  Stamped by the platform host (glint_window_win32, glint_view_win32, etc.)
+   *  whenever mDpr changes.  Used by backdrop shaders to convert logical element
+   *  rects to the physical pixel space that SkImageFilters::RuntimeShader operates in. */
+  float devicePixelRatio = 1.f;
+
   // ── Performance counters (read-only public accessors) ─────────────────────
 
   /** Smoothed frames-per-second.  Returns 0 if fewer than 2 frames recorded. */
@@ -3200,6 +3206,11 @@ inline bool glint_element::_isFocusViaKeyboard() const
 inline void glint_element::_markRootLayoutDirty()
 {
   if (mRoot) mRoot->mLayoutDirty = true;
+}
+
+inline float glint_element::_getRootDpr() const
+{
+  return mRoot ? mRoot->devicePixelRatio : 1.f;
 }
 
 // ── glint_document ─────────────────────────────────────────────────────────────────

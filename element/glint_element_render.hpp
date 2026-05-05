@@ -1485,8 +1485,10 @@ public:
 
     for (auto& _shId : _bdParsedDTC.shaderIds) {
       auto _shIt = shaders.find(_shId);
-      if (_shIt != shaders.end() && _shIt->second->isBackdrop)
+      if (_shIt != shaders.end() && _shIt->second->isBackdrop) {
+        _shIt->second->mDpr = _getRootDpr();
         _shIt->second->beginBackdropLayer(canvas, mPaintRECT, computedStyle);
+      }
     }
     if (_hasBackdropFilterDTC)
     {

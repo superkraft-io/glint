@@ -369,6 +369,7 @@ private:
       });
 
     mDocument->hwnd = mHWND;
+    mDocument->devicePixelRatio = mDpr;
     mDocument->mCanvas.style.display = "flex";
     mDocument->mCanvas.style.flexDirection = "column";
     updateDocumentBounds();
@@ -686,6 +687,7 @@ private:
           self->mW = static_cast<int>(std::lround(static_cast<float>(self->mWpx) / dpr));
           self->mH = static_cast<int>(std::lround(static_cast<float>(self->mHpx) / dpr));
         }
+        if (self->mDocument) self->mDocument->devicePixelRatio = self->mDpr;
         self->updateDocumentBounds();
         self->recreateRendererSurface();
         self->mRedrawRequested = true;
@@ -711,6 +713,7 @@ private:
           const float dpr = newDpr;
           self->mW = static_cast<int>(std::lround(static_cast<float>(self->mWpx) / dpr));
           self->mH = static_cast<int>(std::lround(static_cast<float>(self->mHpx) / dpr));
+          if (self->mDocument) self->mDocument->devicePixelRatio = self->mDpr;
           self->updateDocumentBounds();
           self->recreateRendererSurface();
           self->mRedrawRequested = true;
@@ -730,6 +733,7 @@ private:
           self->mDpr = newDpr;
           const int physW = static_cast<int>(std::lround(static_cast<float>(self->mW) * newDpr));
           const int physH = static_cast<int>(std::lround(static_cast<float>(self->mH) * newDpr));
+          if (self->mDocument) self->mDocument->devicePixelRatio = self->mDpr;
           ::SetWindowPos(
             hwnd,
             nullptr,

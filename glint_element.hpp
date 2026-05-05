@@ -1678,8 +1678,10 @@ public:
     SkCanvas* _shCanvas = static_cast<SkCanvas*>(g.GetDrawContext());
     for (auto& _shId : _bdParsed.shaderIds) {
       auto _shIt = shaders.find(_shId);
-      if (_shIt != shaders.end() && _shIt->second->isBackdrop && _shCanvas)
+      if (_shIt != shaders.end() && _shIt->second->isBackdrop && _shCanvas) {
+        _shIt->second->mDpr = _getRootDpr();
         _shIt->second->beginBackdropLayer(_shCanvas, GetPaintRECT(), computedStyle);
+      }
     }
     const bool _hasBackdropFilter = !_bdParsed.css.empty();
     if (_hasBackdropFilter) glint_filter::BeginBackdropLayer(g, GetPaintRECT(), computedStyle, _bdParsed.css);
@@ -2373,6 +2375,10 @@ protected:
   // Sets `mRoot->mLayoutDirty = true`. Defined at the bottom of glint_document.hpp
   // after the full document definition (we only have a forward-decl here).
   void _markRootLayoutDirty();
+
+  // Returns mRoot->devicePixelRatio (or 1.f when mRoot is null).
+  // Defined at the bottom of glint_document.hpp after the full document definition.
+  float _getRootDpr() const;
 
   // ── Internal: createElement registry ─────────────────────────────────────
   static std::map<std::string, std::function<glint_element*()>>& _elementFactories()

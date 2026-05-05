@@ -123,6 +123,13 @@ public:
    *  coord (0,0) maps to rect.L, rect.T after the internal translate. */
   void drawDirect(SkCanvas* canvas, const glint_rect& rect);
 
+  /** Device pixel ratio stamped from glint_document::devicePixelRatio by
+   *  glint_element just before each beginBackdropLayer call.  Backdrop shaders
+   *  use this to scale pixel-magnitude params (e.g. strength, amplitude) to
+   *  physical pixels, since SkImageFilters::RuntimeShader operates in device
+   *  pixel space and bypasses the canvas CTM. */
+  float                                 mDpr       = 1.f;
+
 protected:
   sk_sp<SkRuntimeEffect>                mEffect;
   float                                 mTime      = 0.f;
@@ -131,7 +138,7 @@ protected:
   /** Set by beginBackdropLayer / drawDirect before each setUniforms call.
    *  Use this in setUniforms() to convert element-local coords to the
    *  screen-space coord system used by SkSL backdrop shaders. */
-  glint_rect                                 mCurrentRect;
+  glint_rect                            mCurrentRect;
 
   float _currentTime();
 };
@@ -182,35 +189,64 @@ inline float glint_shader_base::_currentTime()
 inline void glint_shader_base::beginBackdropLayer(SkCanvas* canvas, const glint_rect& rect, const glint_style& style)
 {
   if (!canvas || !mEffect) return;
-  mCurrentRect = rect;
-  const float w = rect.W(), h = rect.H();
+  // All uniforms and mCurrentRect in PHYSICAL pixel space.
+  // SkImageFilters::RuntimeShader bypasses the canvas CTM and evaluates in the
+  // canvas's LOCAL (pre-CTM) coordinate space.  When the draw loop has applied
+  // canvas->scale(mDpr), the filter runs at LOGICAL (1×) resolution and the
+  // output is upscaled → visible pixelation on non-100% DPI displays.  The fix:
+  // clip first (while the logical CTM is active), then reset the canvas matrix
+  // to identity so the saveLayer is opened in DEVICE (physical) pixel space.
+  // The filter then evaluates at full physical resolution.  The CTM is restored
+  // after saveLayer so content drawn into the layer still uses logical coords.
+  const float dpr = mDpr > 0.f ? mDpr : 1.f;
+  // Use the full CTM (DPI scale + any scroll/translate transforms) to map the
+  // logical rect to physical device pixels.  Simple rect*dpr only works at
+  // the top of the scroll tree; once a scroll container has translated the
+  // canvas, rect*dpr gives the wrong physical origin.
+  const SkMatrix ctm = canvas->getTotalMatrix();
+  SkRect physBounds;
+  ctm.mapRect(&physBounds, SkRect::MakeLTRB(rect.L, rect.T, rect.R, rect.B));
+  mCurrentRect = glint_rect{ physBounds.left(), physBounds.top(),
+                              physBounds.right(), physBounds.bottom() };
+  const float w = physBounds.width();   // physical width
+  const float h = physBounds.height();  // physical height
   SkRuntimeShaderBuilder builder(mEffect);
   setUniforms(builder, w, h, _currentTime());
-  const float sr = sampleRadius();
+  const float sr = sampleRadius() * dpr;  // physical sample radius
   sk_sp<SkImageFilter> filter =
     (sr > 0.f)
     ? SkImageFilters::RuntimeShader(builder, sr, "src", nullptr)
     : SkImageFilters::RuntimeShader(builder, "src", nullptr);
   if (!filter) return;
-  // Clip guard: prevents blur-kernel samples from bleeding outside the
-  // element's resolved rounded shape on layer restore.
-  canvas->save();
-  const SkRect skBounds = SkRect::MakeLTRB(rect.L, rect.T, rect.R, rect.B);
+
+  // ── Step 1: apply the element-shape clip while the logical CTM is still active.
+  // ClipBackdropShape uses logical rect / style values; the active scale(mDpr)
+  // maps them to physical device pixels correctly.
+  canvas->save();                                  // save A: clip guard
   glint_filter::ClipBackdropShape(canvas, rect, style);
-  // Pass the element bounds (not nullptr) so Skia only captures the element's
-  // backdrop region — not the entire canvas.  At large window sizes, nullptr
-  // here forces a full-framebuffer capture per shader element which is the
-  // primary GPU bottleneck.  Skia expands the bounds internally by sampleRadius
-  // (provided via SkImageFilters::RuntimeShader) when reading from src.
-  SkCanvas::SaveLayerRec rec(&skBounds, nullptr, filter.get(), 0);
-  canvas->saveLayer(rec);
+
+  // ── Step 2: reset to identity (device/physical pixel space).
+  // The saveLayer must be opened in physical space so that the fBackdrop
+  // RuntimeShader filter evaluates once per PHYSICAL pixel, not per LOGICAL pixel.
+  const SkMatrix savedCTM = ctm;  // captured before any canvas manipulation
+  canvas->save();                                  // save B: CTM guard
+  canvas->setMatrix(SkMatrix::I());
+
+  SkCanvas::SaveLayerRec rec(&physBounds, nullptr, filter.get(), 0);
+  canvas->saveLayer(rec);                          // save C: the layer (physical res)
+
+  // ── Step 3: restore the logical CTM inside the layer.
+  // DrawBackgroundToCanvas, children, etc. still use logical CSS coordinates;
+  // the restored scale(mDpr) maps them to the physical layer surface correctly.
+  canvas->setMatrix(savedCTM);
 }
 
 inline void glint_shader_base::endBackdropLayer(SkCanvas* canvas)
 {
   if (!canvas) return;
-  canvas->restore();  // close saveLayer
-  canvas->restore();  // close clip guard
+  canvas->restore();  // close save C: the saveLayer (filter applied at physical res)
+  canvas->restore();  // close save B: restore CTM to scale(mDpr)
+  canvas->restore();  // close save A: remove clip guard
 }
 
 inline void glint_shader_base::drawDirect(SkCanvas* canvas, const glint_rect& rect)

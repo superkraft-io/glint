@@ -106,33 +106,44 @@ public:
       mTime = duration<float>(steady_clock::now() - mStartTime).count();
     }
 
-    const float w = mPaintRECT.W();
-    const float h = mPaintRECT.H();
+    const float dpr = (mRoot && mRoot->devicePixelRatio > 0.f) ? mRoot->devicePixelRatio : 1.f;
+    // Use the full CTM (DPI scale + scroll/translate) to map the logical rect to
+    // physical device pixels.  rect*dpr only works at the top of the scroll tree.
+    const SkMatrix ctm = canvas->getTotalMatrix();
+    const SkRect logRect = SkRect::MakeLTRB(mPaintRECT.L, mPaintRECT.T,
+                                            mPaintRECT.R, mPaintRECT.B);  // logical
+    SkRect physRect;
+    ctm.mapRect(&physRect, logRect);  // physical, accounts for scroll + DPI
+    const float w = physRect.width();   // physical width
+    const float h = physRect.height();  // physical height
     if (w <= 0.f || h <= 0.f) return;
-
-    SkRect rect = SkRect::MakeLTRB(mPaintRECT.L, mPaintRECT.T,
-                                   mPaintRECT.R, mPaintRECT.B);
 
     // Build the image filter from the runtime shader.
     SkRuntimeShaderBuilder builder(mEffect);
     setUniforms(builder, w, h, mTime);
 
-    const float sr = sampleRadius();
+    const float sr = sampleRadius() * dpr;  // physical sample radius
     auto filter = (sr > 0.f)
       ? SkImageFilters::RuntimeShader(builder, sr, "src", nullptr)
       : SkImageFilters::RuntimeShader(builder, "src", nullptr);
 
     if (!filter) { glint_element::DrawToCanvas(canvas); return; }
 
-    // Clip guard — prevents the blur kernel from compositing beyond the element
-    // bounds (same logic as glint_filter::BeginBackdropLayer).
-    canvas->save();
-    canvas->clipRect(rect);
+    // Step 1: clip in logical space (CTM = scale(mDpr) is active here).
+    canvas->save();                     // save A: clip guard
+    canvas->clipRect(logRect);
 
-    // Open the backdrop layer.  Skia initialises the layer from the existing
-    // canvas pixels, filtered through 'filter' (the runtime shader).
-    SkCanvas::SaveLayerRec rec(&rect, nullptr, filter.get(), 0);
-    canvas->saveLayer(rec);
+    // Step 2: reset to identity so the saveLayer is in physical pixel space.
+    const SkMatrix savedCTM = ctm;  // captured before any canvas manipulation
+    canvas->save();                     // save B: CTM guard
+    canvas->setMatrix(SkMatrix::I());
+
+    // Open the backdrop layer in physical pixel space.
+    SkCanvas::SaveLayerRec rec(&physRect, nullptr, filter.get(), 0);
+    canvas->saveLayer(rec);             // save C: the layer
+
+    // Step 3: restore the logical CTM inside the layer.
+    canvas->setMatrix(savedCTM);
 
     // Draw element background (glass tint, border-radius etc.) on top.
     DrawBackgroundToCanvas(canvas);
@@ -144,8 +155,9 @@ public:
     for (auto& child : mChildren)
       child->DrawToCanvas(canvas);
 
-    canvas->restore(); // close saveLayer (composites within clip)
-    canvas->restore(); // close clip guard
+    canvas->restore(); // close save C: saveLayer (filter applied at physical res)
+    canvas->restore(); // close save B: restore CTM
+    canvas->restore(); // close save A: remove clip guard
 
     if (mAnimated) setDirty(false);
   }
