@@ -1312,6 +1312,7 @@ void glint_window_mac::paintMetal()
     canvas->clear(clearColor());
     canvas->save();
     canvas->scale(static_cast<SkScalar>(scale), static_cast<SkScalar>(scale));
+    mOwnRoot->devicePixelRatio = static_cast<float>(scale);
     mOwnRoot->DrawToCanvas(*canvas);
     canvas->restore();
 
