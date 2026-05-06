@@ -21,6 +21,13 @@ input {
   font-size: 13px;
 }
 
+input[type="range"] {
+  border: none;
+  background-color: transparent;
+  border-radius: 0;
+  padding: 0;
+}
+
 dial {
   border-radius: 9999px;
   background-color: #1a1a1a;

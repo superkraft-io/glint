@@ -2346,6 +2346,7 @@ private:
   uint64_t                              mStylesheetRevision = 1;
   uint64_t                              mTreeRevision = 1;
   std::vector<GlintFlatQualifiedRuleRef> mQualifiedRuleCache;
+  std::vector<std::string>              mSelectorAttributeNames; // attribute names used in [attr] selectors
   std::unordered_map<GlintMatchedCssCacheKey,
                      std::vector<GlintMatchedCssRule>,
                      GlintMatchedCssCacheKeyHash> mMatchedCssRulesCache;
@@ -2398,6 +2399,14 @@ private:
       hash = _hashSelectorToken(hash, node->className);
       hash = _hashSelectorToken(hash, node->innerText.empty() ? "0" : "1");
       hash = _hashSelectorToken(hash, std::to_string(node->mChildren.size()));
+      // Include attribute values for any attributes referenced by loaded stylesheets
+      // so that rules like input[type="range"] cache-invalidate correctly.
+      for (const auto& attrName : mSelectorAttributeNames)
+      {
+        bool found = false;
+        const std::string val = node->getAttribute(attrName, found);
+        hash = _hashSelectorToken(hash, found ? val : "\x01");
+      }
       if (forcePseudoClasses)
       {
         hash = _hashSelectorToken(hash, "1111");
@@ -2459,6 +2468,21 @@ private:
     appendRules(glint_default_user_agent_stylesheet());
     for (const auto& sheet : mStylesheets)
       appendRules(sheet);
+
+    // Collect the set of attribute names referenced in [attr] selectors across
+    // all loaded rules so _selectorMatchSignature can include them in the hash.
+    std::unordered_set<std::string> attrNames;
+    for (const auto& flat : mQualifiedRuleCache)
+    {
+      if (!flat.rule) continue;
+      for (const auto& complexSel : flat.rule->selectorList.selectors)
+        for (const auto& step : complexSel.steps)
+          for (const auto& ss : step.compound.simples)
+            if (ss.kind == GlintSimpleKind::ATTRIBUTE && !ss.attrName.empty())
+              attrNames.insert(ss.attrName);
+    }
+    mSelectorAttributeNames.assign(attrNames.begin(), attrNames.end());
+    std::sort(mSelectorAttributeNames.begin(), mSelectorAttributeNames.end());
   }
 
   void _invalidateMatchedCssRuleCache(bool bumpStylesheetRevision)

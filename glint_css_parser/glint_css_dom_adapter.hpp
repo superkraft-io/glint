@@ -71,8 +71,7 @@ struct GlintCssDomAdapter : GlintCssDomElement
     if (!el) { found = false; return ""; }
     if (name == "id")    { found = !el->element.id.empty(); return el->element.id; }
     if (name == "class") { found = !el->className.empty();  return el->className;  }
-    found = false;
-    return "";
+    return el->getAttribute(name, found);
   }
 
   // Pseudo-state queries: read flags set by glint_document event handlers.

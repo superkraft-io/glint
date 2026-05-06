@@ -2231,6 +2231,7 @@ function exportAbsoluteJSON() {
       {
         tag = "input";
         std::string inputType = "text";
+        std::string inputValue;
         if (auto* inputNode = dynamic_cast<glint_input*>(node))
         {
           if (!inputNode->type.empty()) inputType = inputNode->type;
@@ -2240,7 +2241,7 @@ function exportAbsoluteJSON() {
             extraAttribs += " readonly";
           if (inputNode->disabled)
             extraAttribs += " disabled";
-          if (inputType == "number")
+          if (inputType == "number" || inputType == "range")
           {
             if (inputNode->min != std::numeric_limits<float>::lowest())
             {
@@ -2255,10 +2256,12 @@ function exportAbsoluteJSON() {
               extraAttribs += " max=\"" + std::string(tmp) + "\"";
             }
           }
+          inputValue = inputNode->getValue();
         }
         extraAttribs += " type=\"" + escapeAttr(inputType) + "\"";
-        if (!textContent.empty())
-          extraAttribs += " value=\"" + escapeAttr(textContent) + "\"";
+        const std::string valToExport = !inputValue.empty() ? inputValue : textContent;
+        if (!valToExport.empty())
+          extraAttribs += " value=\"" + escapeAttr(valToExport) + "\"";
       }
 
       if (tag == "ul") styleStr += "list-style:none;margin:0;padding:0;";

@@ -706,6 +706,16 @@ public:
   /** DOM tagName — identifies this element type. Same as typeName(). */
   virtual const char* tagName() const { return typeName(); }
 
+  /** DOM getAttribute — returns a named attribute value.  Override in
+   *  components that expose typed properties as HTML-style attributes
+   *  (e.g. glint_input exposes `type`).  Returns "" and sets found=false
+   *  when the attribute is not present. */
+  virtual std::string getAttribute(const std::string& /*name*/, bool& found) const
+  {
+    found = false;
+    return "";
+  }
+
   /** DOM appendChild — adds a child node. Alias for addChild(). */
   void appendChild(glint_element* node) { addChild(node); }
 

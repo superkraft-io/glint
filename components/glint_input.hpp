@@ -30,6 +30,7 @@
 
 #include "glint_text_editor_base.hpp"
 #include "../default_style.hpp"
+#include "glint_slider.hpp"
 
 #include <cmath>
 #include <limits>
@@ -40,12 +41,17 @@
 #include "include/core/SkPaint.h"
 #include "include/core/SkFont.h"
 
-// ─── glint_input ──────────────────────────────────────────────────────────────
+// ─── glint_text_input ─────────────────────────────────────────────────────────
+// Internal text-editing delegate — use glint_input for the public-facing shell.
 
-class glint_input : public glint_text_editor_base
+class glint_text_input : public glint_text_editor_base
 {
 public:
   // ── Configuration (set in builder callback) ────────────────────────────────
+
+  // Set to true by glint_input when used as a delegate child:
+  // makes _activeStyle() return the parent's computedStyle (for color, font, etc.).
+  bool mUseParentStyle = false;
 
   /** Input type: "text" | "number" | "password" | "email" */
   std::string type = "text";
@@ -77,13 +83,13 @@ public:
 
   // ── Construction ────────────────────────────────────────────────────────────
 
-  glint_input()
+  glint_text_input()
   {
     setCssStyleLayer(glint_default_user_agent_style_for(*this));
     computedStyle = mergedStyleForLayout();
   }
 
-  const char* typeName() const override { return "input"; }
+  const char* typeName() const override { return "text-input"; }
 
   bool wantsPeriodicRedraw() const override { return mFocused; }
 
@@ -102,7 +108,7 @@ public:
   {
     const std::string disp = _display();
     if (disp.empty()) return 0;
-    const glint_rect content = getContent();
+    const glint_rect content = _contentRect();
     const float fs      = _fontSize();
     const float baseX   = _textBaseX(disp, content, fs);
     return charIndexAtX(disp, clientX - baseX, fs);
@@ -174,7 +180,7 @@ public:
     // -- Cursor position under click ------------------------------------------
     const float fontSize_pre = _fontSize();
     const std::string disp_pre = _display();
-    const glint_rect content_pre  = getContent();
+    const glint_rect content_pre  = _contentRect();
     const float relX_pre     = x - _textBaseX(disp_pre, content_pre, fontSize_pre);
     int pos_pre = charIndexAtX(disp_pre, relX_pre, fontSize_pre);
     if (type == "password") pos_pre = _displayToTextIdx(pos_pre);
@@ -221,7 +227,7 @@ public:
     // ── Cursor position under click ────────────────────────────────────────
     const float fontSize     = _fontSize();
     const std::string disp   = _display();
-    const glint_rect content      = getContent();
+    const glint_rect content      = _contentRect();
     const float relX         = x - _textBaseX(disp, content, fontSize);
     int pos = charIndexAtX(disp, relX, fontSize);
     if (type == "password") pos = _displayToTextIdx(pos);
@@ -273,7 +279,7 @@ public:
 
     const float fontSize   = _fontSize();
     const std::string disp = _display();
-    const glint_rect content    = getContent();
+    const glint_rect content    = _contentRect();
     const float relX       = x - _textBaseX(disp, content, fontSize);
     int pos = charIndexAtX(disp, relX, fontSize);
     if (type == "password") pos = _displayToTextIdx(pos);
@@ -388,8 +394,17 @@ protected:
 private:
   // ── Helpers ────────────────────────────────────────────────────────────────
 
+  // When acting as a delegate, text should render inside the *parent's* content
+  // area (respecting the parent's padding) rather than the delegate's own rect.
+  glint_rect _contentRect() const
+  {
+    if (mUseParentStyle && mParent) return mParent->getContent();
+    return getContent();
+  }
+
   const glint_style& _activeStyle() const
   {
+    if (mUseParentStyle && mParent) return mParent->computedStyle;
     return computedStyle;
   }
 
@@ -542,7 +557,7 @@ private:
   {
     const float fs     = _fontSize();
     const std::string disp = _display();
-    const glint_rect content = getContent();
+    const glint_rect content = _contentRect();
     const float viewW  = content.W();
     if (viewW <= 0.f) return;
 
@@ -592,7 +607,7 @@ private:
   void _drawToSkia(SkCanvas* canvas)
   {
     const float fs      = _fontSize();
-    const glint_rect content = getContent();
+    const glint_rect content = _contentRect();
     const std::string disp = _display();
     const glint_style& active = _activeStyle();
 
@@ -712,5 +727,243 @@ private:
   }
 };
 
-// New API name — both refer to the same class.
+// ─── glint_input ──────────────────────────────────────────────────────────────
+// Thin shell that owns a glint_text_input (for "text"|"number"|"password"|"email")
+// or a glint_slider (for "range") as a child delegate.
+// All visual styling (border, background, padding) stays on glint_input.
+// All interaction logic lives inside the delegate child.
+
+class glint_input : public glint_element
+{
+public:
+  // ── Configuration ─────────────────────────────────────────────────────────
+
+  /** Input type: "text" | "number" | "password" | "email" | "range" */
+  std::string type        = "text";
+
+  /** Placeholder text shown when the field is empty and unfocused. */
+  std::string placeholder;
+
+  /** Minimum value.  For "range": lower bound of the slider. */
+  float min  = std::numeric_limits<float>::lowest();
+
+  /** Maximum value.  For "range": upper bound of the slider. */
+  float max  = std::numeric_limits<float>::max();
+
+  /** Range step (0 = continuous).  Only used when type is "range". */
+  float step = 0.f;
+
+  /** When true, keyboard input is ignored but selection/copy still work. */
+  bool readonly = false;
+
+  /** When true, the field is entirely non-interactive. */
+  bool disabled = false;
+
+  /** Tag for glint_document::GetNodeWithTag. */
+  int tag = glint_no_tag;
+
+  // ── Callbacks ─────────────────────────────────────────────────────────────
+
+  /** Content change: text types → current text; "range" → numeric string. */
+  std::function<void(const std::string&)> onChange;
+
+  /** Called when the user presses Enter (text types only). */
+  std::function<void(const std::string&)> onSubmit;
+
+  /** Optional key interceptor (text types only). Return true to consume the key. */
+  std::function<bool(const glint_key_press&)> onKeyDown;
+
+  /** Called when the field gains focus (text types only). */
+  std::function<void()> onFocus;
+
+  /** Called when the field loses focus (text types only). */
+  std::function<void()> onBlur;
+
+  // ── Construction ──────────────────────────────────────────────────────────
+
+  glint_input()
+  {
+    style.position = "relative";   // establish containing block for absolute delegate children
+    setCssStyleLayer(glint_default_user_agent_style_for(*this));
+    computedStyle = mergedStyleForLayout();
+  }
+
+  // ── Value API ─────────────────────────────────────────────────────────────
+
+  /** Returns the current value as a string. */
+  std::string getValue() const
+  {
+    if (mTextInput) return mTextInput->getValue();
+    if (mSlider)
+    {
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "%g", mSlider->value);
+      return std::string(buf);
+    }
+    return mPendingValue;   // pre-Layout: return whatever was last setValue'd
+  }
+
+  /** Sets the current value from a string. */
+  void setValue(const std::string& v)
+  {
+    mPendingValue = v;   // buffer for pre-Layout calls
+    if (mTextInput) { mTextInput->setValue(v); return; }
+    if (mSlider)    { try { mSlider->SetValue(std::stof(v)); } catch (...) {} }
+  }
+
+  /** Returns the current value as a float (convenience for type "range"). */
+  float getFloatValue() const
+  {
+    if (mSlider) return mSlider->value;
+    try { return std::stof(getValue()); } catch (...) { return 0.f; }
+  }
+
+  /** Sets the current value from a float (convenience for type "range"). */
+  void setFloatValue(float v)
+  {
+    mInitialFloatValue = v;
+    if (mSlider) { mSlider->SetValue(v); return; }
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%g", v);
+    setValue(std::string(buf));
+  }
+
+  /** Maps a screen-space X coordinate to a byte index in the current text
+   *  (text types only — delegates to the inner glint_text_input). */
+  int charIndexAtMouseX(float clientX) const
+  {
+    if (mTextInput) return mTextInput->charIndexAtMouseX(clientX);
+    return 0;
+  }
+
+  // ── Metadata ──────────────────────────────────────────────────────────────
+
+  const char* typeName() const override { return "input"; }
+
+  std::string getAttribute(const std::string& name, bool& found) const override
+  {
+    if (name == "type") { found = true; return type.empty() ? "text" : type; }
+    return glint_element::getAttribute(name, found);
+  }
+
+  // ── Hit testing ───────────────────────────────────────────────────────────
+  // Forward hits in the padding/border area to the delegate so clicking
+  // anywhere within glint_input always interacts with it.
+
+  glint_element* HitTest(float x, float y) override
+  {
+    if (!GetPaintRECT().Contains(x, y)) return nullptr;
+    auto* hit = glint_element::HitTest(x, y);
+    if (hit && hit != this) return hit;
+    if (mTextInput) return mTextInput;
+    if (mSlider)    return mSlider;
+    return this;
+  }
+
+  // ── Layout ────────────────────────────────────────────────────────────────
+
+  // ── Focus redirect ────────────────────────────────────────────────────────
+  // When SetFocus() is called on the shell (e.g. programmatic auto-focus after
+  // a panel rebuild), redirect it to the inner delegate so keyboard events
+  // reach the actual text editor.  If the delegate hasn't been built yet
+  // (Layout hasn't run), remember to redirect once _buildDelegate() creates it.
+
+  void onFocusGained() override
+  {
+    if (mTextInput && mRoot)
+    {
+      mRoot->SetFocus(mTextInput);   // delegate already exists — forward immediately
+      return;
+    }
+    mFocusPending = true;   // delegate not yet built; forward on first _buildDelegate()
+  }
+
+  void Layout(glint_canvas* g) override
+  {
+    if (mActiveType != type)
+      _buildDelegate();
+    _syncDelegateProps();
+    glint_element::Layout(g);
+  }
+
+private:
+  std::string        mActiveType;
+  glint_text_input*  mTextInput  = nullptr;
+  glint_slider*      mSlider     = nullptr;
+  float              mInitialFloatValue = 0.f;
+  std::string        mPendingValue;
+  bool               mFocusPending = false;   // true when shell was focused before delegate existed
+
+  void _buildDelegate()
+  {
+    if (mTextInput) { removeChild(mTextInput); mTextInput = nullptr; }
+    if (mSlider)    { removeChild(mSlider);    mSlider    = nullptr; }
+
+    if (type == "range")
+    {
+      auto* sl           = new glint_slider();
+      sl->style.position = "absolute";
+      sl->style.left     = 0.f;
+      sl->style.top      = 0.f;
+      sl->style.width    = "100%";
+      sl->style.height   = "100%";
+      sl->onChange = [this](float v)
+      {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%g", v);
+        if (onChange) onChange(std::string(buf));
+      };
+      addChild(sl);
+      mSlider = sl;
+      mSlider->SetValue(mInitialFloatValue);
+    }
+    else
+    {
+      auto* ti            = new glint_text_input();
+      ti->mUseParentStyle = true;   // visual style (color, font…) from parent
+      ti->setCssStyleLayer({});     // clear box model — parent draws it
+      ti->style.position  = "absolute";
+      ti->style.left      = 0.f;
+      ti->style.top       = 0.f;
+      ti->style.width     = "100%";
+      ti->style.height    = "100%";
+      ti->onChange  = [this](const std::string& v) { if (onChange)  onChange(v);  };
+      ti->onSubmit  = [this](const std::string& v) { if (onSubmit)  onSubmit(v);  };
+      ti->onKeyDown = [this](const glint_key_press& k) -> bool
+                      { return onKeyDown ? onKeyDown(k) : false; };
+      ti->onFocus   = [this]() { if (onFocus) onFocus(); };
+      ti->onBlur    = [this]() { if (onBlur)  onBlur();  };
+      addChild(ti);
+      mTextInput = ti;
+      if (!mPendingValue.empty()) mTextInput->setValue(mPendingValue);
+      // If SetFocus(shell) was called before the delegate existed, forward now.
+      if (mFocusPending && mRoot)
+      {
+        mFocusPending = false;
+        mRoot->SetFocus(mTextInput);
+      }
+    }
+    mActiveType = type;
+  }
+
+  void _syncDelegateProps()
+  {
+    if (mTextInput)
+    {
+      mTextInput->type        = type;
+      mTextInput->min         = min;
+      mTextInput->max         = max;
+      mTextInput->placeholder = placeholder;
+      mTextInput->readonly    = readonly;
+      mTextInput->disabled    = disabled;
+    }
+    if (mSlider)
+    {
+      mSlider->min  = min;
+      mSlider->max  = max;
+      mSlider->step = step;
+    }
+  }
+};
+
 namespace { struct _glint_input_reg { _glint_input_reg() { glint_element::registerElement("input", []{ return new glint_input(); }); } } _glint_input_reg_; }
