@@ -477,7 +477,7 @@
     // Flex / layout
     _IW_S(display);  _IW_S(flexDirection);  _IW_S(justifyContent);
     _IW_S(alignItems);  _IW_L(gap);  _IW_F(flexGrow);
-    _IW_S(pointerEvents);  _IW_S(userSelect);  _IW_S(whiteSpace);
+    _IW_S(pointerEvents);  _IW_S(cursor);  _IW_S(userSelect);  _IW_S(whiteSpace);
     // Overflow / scrollbar
     _IW_S(overflowX);  _IW_S(overflowY);
     _IW_F(scrollbarWidth);

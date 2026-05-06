@@ -54,6 +54,13 @@ gradient-editor {
   position: relative;
 }
 
+textarea-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  cursor: se-resize;
+}
+
 )css";
 
 inline const GlintCssStylesheet& glint_default_user_agent_stylesheet()

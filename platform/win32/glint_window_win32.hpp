@@ -1291,6 +1291,11 @@ private:
       return 0;
     }
 
+    case WM_SETCURSOR:
+      if (LOWORD(lp) == HTCLIENT)
+        return glint_win32_host::routeSetCursor(self->mOwnRoot.get(), self->mPrevX, self->mPrevY);
+      return ::DefWindowProcW(hwnd, msg, wp, lp);
+
     case WM_MOUSELEAVE:
       glint_win32_host::routeMouseLeave(self->mOwnRoot.get());
       glint_win32_host::invalidateWindow(hwnd);
