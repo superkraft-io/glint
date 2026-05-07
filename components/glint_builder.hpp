@@ -696,6 +696,13 @@ inline glint_element* glint_element::ComponentAdd::component(S&& setup, glint_el
 #include "glint_dial.hpp"
 #include "glint_gradient_editor.hpp"
 #include "glint_list/glint_list.hpp"
+#include "glint_tooltip.hpp"
+#include "glint_textarea.hpp"
+#include "glint_radio.hpp"
+#include "glint_progress.hpp"
+#include "glint_datepicker.hpp"
+#include "glint_datepicker_window.hpp"
+#include "glint_date_input.hpp"
 
 inline glint_style glint_builder_initial_style(glint_element* ctrl)
 {

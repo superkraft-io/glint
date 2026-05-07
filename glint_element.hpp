@@ -181,7 +181,41 @@ public:
   // Used by the CSS selector engine (class selectors, e.g. `.text-dim`) and shown
   // in the inspector element tree as ".class-name" suffixes.
   // Example:  el->className = "text-dim active";
-  std::string className;
+  //
+  // Reactive: assigning className immediately re-applies the CSS cascade and
+  // marks the document layout-dirty, mirroring Chrome's style-recalc-before-layout
+  // guarantee. The element's _el pointer is wired up in glint_element's constructor.
+  struct glint_reactive_class
+  {
+    glint_element* _el    = nullptr;  // set in glint_element constructor
+    std::string    _value;            // the actual class string
+
+    // Raw (non-notifying) access — used by classList internals which call
+    // _notifyChange() themselves after finishing their multi-step mutation.
+    std::string& _raw() { return _value; }
+
+    // Assignment operators — fire CSS recascade + layout-dirty immediately.
+    glint_reactive_class& operator=(const std::string& v)  { _value = v;            _notify(); return *this; }
+    glint_reactive_class& operator=(std::string&&      v)  { _value = std::move(v); _notify(); return *this; }
+    glint_reactive_class& operator=(const char*        v)  { _value = v ? v : "";   _notify(); return *this; }
+
+    // Implicit read conversion — makes className usable anywhere a const std::string& is expected.
+    operator const std::string&() const { return _value; }
+
+    // Forward the most-used std::string predicates so existing code needs no changes.
+    bool        empty()  const { return _value.empty();  }
+    const char* c_str()  const { return _value.c_str();  }
+    size_t      size()   const { return _value.size();   }
+    size_t      length() const { return _value.length(); }
+
+  private:
+    void _notify()
+    {
+      if (!_el) return;
+      if (_el->mApplyCss) _el->mApplyCss(_el);
+      _el->setDirty(false);
+    }
+  } className;
 
   // ── classList — DOM-compatible class manipulation ─────────────────────────
   // Mirrors JS element.classList — same add/remove/toggle/contains API.
@@ -200,7 +234,7 @@ public:
     bool contains(const std::string& cls) const
     {
       if (!_el || cls.empty()) return false;
-      std::istringstream ss(_el->className);
+      std::istringstream ss(_el->className._value);
       std::string tok;
       while (ss >> tok) if (tok == cls) return true;
       return false;
@@ -210,8 +244,8 @@ public:
     void add(const std::string& cls)
     {
       if (!_el || cls.empty() || contains(cls)) return;
-      if (!_el->className.empty()) _el->className += ' ';
-      _el->className += cls;
+      if (!_el->className._raw().empty()) _el->className._raw() += ' ';
+      _el->className._raw() += cls;
       _notifyChange();
     }
 
@@ -220,7 +254,7 @@ public:
     {
       if (!_el || cls.empty()) return;
       std::string result;
-      std::istringstream ss(_el->className);
+      std::istringstream ss(_el->className._value);
       std::string tok;
       bool changed = false;
       while (ss >> tok)
@@ -229,7 +263,7 @@ public:
         if (!result.empty()) result += ' ';
         result += tok;
       }
-      if (changed) { _el->className = std::move(result); _notifyChange(); }
+      if (changed) { _el->className._raw() = std::move(result); _notifyChange(); }
     }
 
     // Toggles cls: adds it if absent, removes it if present.
@@ -389,6 +423,7 @@ public:
 
   glint_element() : style(element.style), id(element.id), scrollTop(element.scrollTop), scrollLeft(element.scrollLeft)
   {
+    className._el = this;
     classList._el = this;
     // Option B eager shader auto-creation: the moment style.filter or
     // style.backdropFilter is written, pre-populate the shaders map so the

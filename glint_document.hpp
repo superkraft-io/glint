@@ -149,6 +149,9 @@ public:
     mCanvas.mParentH       = bounds.H();
     mCanvas.typeNameOverride = "body";
     mCanvas.attachSubtree();
+    // Take a mutable in-memory copy of the UA stylesheet so the inspector can
+    // patch its declarations at runtime without touching the static singleton.
+    mUaSheet = glint_default_user_agent_stylesheet();
     _rebuildQualifiedRuleCache();
   }
 
@@ -440,6 +443,32 @@ public:
         }
       }
     }
+
+    // Also search the mutable UA sheet copy — allows the inspector to edit
+    // UA-layer declarations at runtime without adding an inline override.
+    if (mUaSheet.sourceUrl == sourceUrl)
+    {
+      for (auto& topRule : mUaSheet.rules)
+      {
+        if (topRule.kind == GlintCssStylesheet::Rule::Kind::QUALIFIED)
+        {
+          if (topRule.qualified) mutateQRule(*topRule.qualified);
+        }
+        else if (topRule.kind == GlintCssStylesheet::Rule::Kind::AT && topRule.atRule)
+        {
+          const std::string& n = topRule.atRule->name;
+          if (n == "media" || n == "supports" || n == "layer" || n == "document")
+          {
+            for (auto& child : topRule.atRule->children)
+            {
+              if (child.kind == GlintCssAtRule::ChildRule::Kind::QUALIFIED && child.qualified)
+                mutateQRule(*child.qualified);
+            }
+          }
+        }
+      }
+    }
+
     // Re-cascade the entire tree: the edited rule may match elements other than
     // the currently-inspected one (e.g. a class selector applied to siblings).
     _invalidateMatchedCssRuleCache(/*bumpStylesheetRevision=*/true);
@@ -463,6 +492,20 @@ public:
     {
       if (sheet.sourceUrl != sourceUrl) continue;
       for (auto& topRule : sheet.rules)
+      {
+        if (topRule.kind != GlintCssStylesheet::Rule::Kind::QUALIFIED) continue;
+        if (!topRule.qualified) continue;
+        if (topRule.qualified->sourceLine != sourceLine) continue;
+        auto& decls = topRule.qualified->declarations;
+        decls.erase(
+          std::remove_if(decls.begin(), decls.end(),
+            [&prop](const GlintCssDeclaration& d){ return d.property == prop; }),
+          decls.end());
+      }
+    }
+    if (mUaSheet.sourceUrl == sourceUrl)
+    {
+      for (auto& topRule : mUaSheet.rules)
       {
         if (topRule.kind != GlintCssStylesheet::Rule::Kind::QUALIFIED) continue;
         if (!topRule.qualified) continue;
@@ -1945,7 +1988,7 @@ public:
       bool consumed = false;
 
       if (deltaY != 0.f &&
-          (node->style.overflowY == "scroll" || node->style.overflowY == "auto"))
+          (node->computedStyle.overflowY == "scroll" || node->computedStyle.overflowY == "auto"))
       {
         const float sbW   = node->style.scrollbarWidth;
         const bool  hasSH = node->mScrollbarH && node->mScrollbarH->style.display != "none";
@@ -1959,7 +2002,7 @@ public:
       }
 
       if (deltaX != 0.f &&
-          (node->style.overflowX == "scroll" || node->style.overflowX == "auto"))
+          (node->computedStyle.overflowX == "scroll" || node->computedStyle.overflowX == "auto"))
       {
         const float sbW   = node->style.scrollbarWidth;
         const bool  hasSV = node->mScrollbarV && node->mScrollbarV->style.display != "none";
@@ -2025,7 +2068,7 @@ private:
     std::vector<const GlintCssStylesheet*> sheets;
     sheets.reserve(mStylesheets.size());
     for (const auto& s : mStylesheets) sheets.push_back(&s);
-    const std::vector<const GlintCssStylesheet*> uaSheets{ &glint_default_user_agent_stylesheet() };
+    const std::vector<const GlintCssStylesheet*> uaSheets{ &mUaSheet };
 
     // When the inspector is active (mInspDisabledDecls != nullptr), always use
     // resolveSkipping — even if the set is currently empty.  An empty set means
@@ -2320,6 +2363,7 @@ private:
   const std::unordered_set<std::string>* mInspDisabledDecls = nullptr;
 
   // ── CSS stylesheets loaded via loadStylesheet() ──────────────────────────────
+  GlintCssStylesheet              mUaSheet;      // mutable in-memory copy of the UA sheet
   std::vector<GlintCssStylesheet> mStylesheets;
   std::string                    mLastCSSError;
 
@@ -2465,7 +2509,7 @@ private:
       }
     };
 
-    appendRules(glint_default_user_agent_stylesheet());
+    appendRules(mUaSheet);
     for (const auto& sheet : mStylesheets)
       appendRules(sheet);
 
