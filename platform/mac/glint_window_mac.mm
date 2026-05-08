@@ -210,6 +210,7 @@ static CVReturn GlintWindowMacDisplayLinkCB(CVDisplayLinkRef,
 - (BOOL)isFlipped           { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent*)e { (void)e; return YES; }
+- (BOOL)isOpaque { return _cpp ? (_cpp->clearColorAlpha() == 255) : YES; }
 
 - (BOOL)wantsLayer { return _cpp && _cpp->metalEnabled() ? YES : [super wantsLayer]; }
 - (CALayer*)makeBackingLayer
@@ -850,6 +851,14 @@ void glint_window_mac::_createPanelAndView()
     [view setWantsLayer:YES];
   }
 
+  // If the Skia clear-colour has any transparency (e.g. popup windows with
+  // rounded corners), the NSPanel must be non-opaque so transparent pixels
+  // composite correctly against whatever is behind the window.
+  if (SkColorGetA(clearColor()) < 255) {
+    [panel setOpaque:NO];
+    [panel setBackgroundColor:[NSColor clearColor]];
+  }
+
   [panel setContentView:view];
   mViewHandle  = (void*)CFBridgingRetain(view);
   [view release];    // balance alloc; mViewHandle owns the retain
@@ -1207,7 +1216,7 @@ void glint_window_mac::setupMetal()
     layer.device          = device;
     layer.pixelFormat     = MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly = NO;   // Skia needs full texture access
-    layer.opaque          = YES;
+    layer.opaque          = (clearColorAlpha() == 255) ? YES : NO;
     layer.contentsScale   = 1.0;  // corrected after makeKeyAndOrderFront:
     layer.drawableSize    = CGSizeMake(mW, mH);
 

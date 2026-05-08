@@ -1277,6 +1277,17 @@ private:
       }
       if (path.empty()) return;
     }
+#elif defined(__APPLE__) && defined(__OBJC__)
+    {
+      NSSavePanel* panel = [NSSavePanel savePanel];
+      [panel setAllowedFileTypes:@[@"html", @"htm"]];
+      [panel setNameFieldStringValue:@"glint_export.html"];
+      [panel setTitle:@"Export DOM as HTML"];
+      if ([panel runModal] != NSModalResponseOK) return;  // user cancelled
+      NSString* nsPath = [[panel URL] path];
+      if (!nsPath) return;
+      path = [nsPath UTF8String];
+    }
 #else
     path = _exportFilePath("html");
 #endif

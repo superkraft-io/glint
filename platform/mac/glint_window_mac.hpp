@@ -223,6 +223,10 @@ public:
   /** True when the Metal backend is active (set by setupMetal()). */
   bool metalEnabled() const { return mMetalEnabled; }
 
+  /** Alpha channel of the Skia clear-colour (0 = fully transparent, 255 = opaque).
+   *  Used by the ObjC NSView/CAMetalLayer setup to decide whether to be non-opaque. */
+  uint8_t clearColorAlpha() const { return SkColorGetA(clearColor()); }
+
   /** Render the glint scene graph into the CAMetalLayer.  Called on the main
    *  thread from GlintWindowMacNSView animTimerFired: when Metal is active. */
   void paintMetal();

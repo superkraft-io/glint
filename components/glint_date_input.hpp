@@ -282,21 +282,25 @@ private:
 
   RECT _anchorScreenRect() const
   {
-#if defined(_WIN32) || defined(OS_WIN)
-    float cl = mRect.L, cb = mRect.B;
+    float cl = mRect.L, ct = mRect.T;
     for (glint_element* p = mParent; p; p = p->mParent) {
       cl -= p->mScrollLeft;
-      cb -= p->mScrollTop;
+      ct -= p->mScrollTop;
     }
-    POINT topLeft{ (LONG)cl, (LONG)cb };
+    const float bW = mRect.W(), bH = mRect.H();
+
+#if defined(_WIN32) || defined(OS_WIN)
+    POINT bottomLeft{ (LONG)cl, (LONG)(ct + bH) };
     if (HWND hwnd = mRoot ? mRoot->hwnd : nullptr)
-      ::ClientToScreen(hwnd, &topLeft);
-    return { topLeft.x,
-             topLeft.y - (LONG)mRect.H(),
-             topLeft.x + (LONG)mRect.W(),
-             topLeft.y };
+      ::ClientToScreen(hwnd, &bottomLeft);
+    return { bottomLeft.x,
+             bottomLeft.y - (LONG)bH,
+             bottomLeft.x + (LONG)bW,
+             bottomLeft.y };
 #else
-    return { (int)mRect.L, (int)mRect.T, (int)mRect.R, (int)mRect.B };
+    return (mRoot && mRoot->macWindow)
+      ? mRoot->macWindow->contentRectToScreen(cl, ct, bW, bH)
+      : RECT{};
 #endif
   }
 
