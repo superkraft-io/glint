@@ -217,9 +217,11 @@ target_link_libraries(glint_host_win32 INTERFACE
 if(APPLE)
   add_library(glint_host_mac_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_cursor_mac.mm"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_window_mac.mm"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_view_mac.mm")
   set_source_files_properties(
+    "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_cursor_mac.mm"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_window_mac.mm"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_view_mac.mm"
     PROPERTIES COMPILE_FLAGS "-x objective-c++")

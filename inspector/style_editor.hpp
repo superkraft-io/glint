@@ -465,6 +465,7 @@ static inline void glint_style_set_by_name(glint_style& s,
   else if (key == "display")          s.display       = val;
   else if (key == "pointer-events")   s.pointerEvents  = val;
   else if (key == "user-select")      s.userSelect     = val;
+  else if (key == "cursor")           s.cursor         = val;
   else if (key == "white-space")       s.whiteSpace     = val;
   else if (key == "selection-color")  s.selectionColor = val.c_str();
   else if (key == "flex-direction")   s.flexDirection  = val;
@@ -699,7 +700,7 @@ static const std::vector<const char*>& glint_all_style_keys()
 {
   static const std::vector<const char*> keys = {
     // layout
-    "display","pointer-events","user-select","white-space","position","flex-direction","flex-grow",
+    "display","pointer-events","user-select","cursor","white-space","position","flex-direction","flex-grow",
     "justify-content","align-items","gap","z-index",
     "transform",
     "overflow","overflow-x","overflow-y",
@@ -783,6 +784,7 @@ static std::string glint_add_default(const std::string& key)
   if (key=="display")           return "flex";
   if (key=="pointer-events")    return "none";
   if (key=="user-select")       return "text";
+  if (key=="cursor")            return "pointer";
   if (key=="selection-color")   return "#5db1ffb4";
   if (key=="position")          return "static";
   if (key=="flex-direction")    return "column";
@@ -1097,8 +1099,10 @@ public:
   InspStaticText()
     : text(innerText)
   {
-    style.display   = "block";
-    style.textAlign = EAlign::Near;
+    style.display     = "block";
+    style.textAlign   = EAlign::Near;
+    style.userSelect  = "none";
+    style.cursor      = "default";
   }
 
   const char* typeName() const override { return "insp_static_text"; }
@@ -1193,6 +1197,8 @@ public:
   InspAddAttrButton()
   {
     innerText               = "+ Add attribute";
+    style.userSelect        = "none";
+    style.cursor            = "default";
     style.width             = 150.f;
     style.height            = 26.f;
     style.margin            = 4.f;

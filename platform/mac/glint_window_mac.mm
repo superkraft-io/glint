@@ -46,38 +46,12 @@ using sk_mouse_mod = glint_mouse_mod;
 @class GlintWindowMacNSView;
 @class GlintWindowMacDelegate;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Cursor helpers ───────────────────────────────────────────────────────────
+#import "glint_cursor_mac.h"
 
-// Maps a CSS cursor keyword to the closest available NSCursor and sets it.
 static void glint_window_mac_set_cursor(const std::string& css)
 {
-  NSCursor* cursor = nil;
-  if      (css == "pointer")                                         cursor = [NSCursor pointingHandCursor];
-  else if (css == "text")                                            cursor = [NSCursor IBeamCursor];
-  else if (css == "vertical-text")                                   cursor = [NSCursor IBeamCursorForVerticalLayout];
-  else if (css == "crosshair" || css == "cell")                      cursor = [NSCursor crosshairCursor];
-  else if (css == "grab" || css == "move" || css == "all-scroll")    cursor = [NSCursor openHandCursor];
-  else if (css == "grabbing")                                        cursor = [NSCursor closedHandCursor];
-  else if (css == "not-allowed" || css == "no-drop")                 cursor = [NSCursor operationNotAllowedCursor];
-  else if (css == "n-resize"  || css == "s-resize"  ||
-           css == "ns-resize" || css == "row-resize")                cursor = [NSCursor resizeUpDownCursor];
-  else if (css == "e-resize"  || css == "w-resize"  ||
-           css == "ew-resize" || css == "col-resize")                cursor = [NSCursor resizeLeftRightCursor];
-  else if (css == "ne-resize" || css == "sw-resize" || css == "nesw-resize")
-    cursor = [NSCursor resizeUpRightDownLeftCursor];
-  else if (css == "nw-resize" || css == "se-resize" || css == "nwse-resize")
-    cursor = [NSCursor resizeUpLeftDownRightCursor];
-  else if (css == "none") {
-    static NSCursor* blank = []() -> NSCursor* {
-      NSImage* img = [[NSImage alloc] initWithSize:NSMakeSize(1, 1)];
-      NSCursor* c = [[NSCursor alloc] initWithImage:img hotSpot:NSMakePoint(0, 0)];
-      [img release];
-      return c;
-    }();
-    cursor = blank;
-  }
-  if (cursor) [cursor set];
-  else [[NSCursor arrowCursor] set];
+    [glint_css_to_nscursor(css) set];
 }
 
 static sk_mouse_mod modifiersFromFlags(NSEventModifierFlags flags,
