@@ -294,38 +294,45 @@ public:
     // ── Layout override — keep controls anchored to top-right edge ─────────────
     void Layout(glint_canvas* pG) override
     {
+        // mRect is set by the parent before calling our Layout(), so getContent()
+        // already reflects the real measured width here. Compute the positions
+        // and write them into BOTH style (inline layer) and computedStyle before
+        // calling the base layout pass — the absolute-child positioning code reads
+        // computedStyle.left directly (before child->Layout merges style into it).
         const glint_rect content = getContent();
         const float contentW = std::max(0.f, content.W());
         const float reservedW = _reservedSideColumnWidth(contentW);
 
-        // Type button: right-most in handle zone bottom, left of dial column
-        // Position: right edge of ramp, vertically centred in ramp row.
         const float typeBtnLeft = contentW - reservedW;
+        const float dialLeft    = typeBtnLeft + kGE_TypeBtnW + kGE_TypeBtnGap + kGE_DialGapLeft;
+
+        auto _setLeft = [](glint_element* el, float v) {
+            if (!el) return;
+            el->style.left         = v;
+            el->computedStyle.left = v;
+        };
+
         if (mTypeBtn)
         {
-            mTypeBtn->style.left = typeBtnLeft;
-            mTypeBtn->style.top  = (kGE_RampH - kGE_RampH) * 0.5f;  // = 0, occupies full ramp height
+            _setLeft(mTypeBtn, typeBtnLeft);
+            mTypeBtn->style.top         = 0.f;
+            mTypeBtn->computedStyle.top = 0.f;
         }
-
-        // Dial: to the right of the type button.
-        const float dialLeft = typeBtnLeft + kGE_TypeBtnW + kGE_TypeBtnGap + kGE_DialGapLeft;
         if (mDialComp)
         {
-            mDialComp->style.left = dialLeft;
-            mDialComp->angle      = direction;
+            _setLeft(mDialComp, dialLeft);
+            mDialComp->angle = direction;
         }
         if (mAngleInput)
         {
-            mAngleInput->style.left = dialLeft;
-            // Sync displayed angle text to match direction whenever it drifts
-            // (e.g. after ge->direction is set externally after construction).
+            _setLeft(mAngleInput, dialLeft);
             char _angBuf[8];
             snprintf(_angBuf, sizeof(_angBuf), "%d", (int)std::round(direction));
             if (mAngleInput->getValue() != _angBuf)
                 mAngleInput->setValue(_angBuf);
         }
         if (mRadiusInput)
-            mRadiusInput->style.left = dialLeft;
+            _setLeft(mRadiusInput, dialLeft);
 
         glint_element::Layout(pG);
     }

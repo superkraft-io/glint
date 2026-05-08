@@ -1362,7 +1362,42 @@ public:
 
     if (computedStyle.display == "none") return nullptr;
     if (computedStyle.pointerEvents == "none") return nullptr;
-    if (!GetPaintRECT().Contains(lx, ly)) return nullptr;
+    if (!GetPaintRECT().Contains(lx, ly))
+    {
+      // When content can overflow (overflow: visible — the CSS default), children
+      // may have painted outside our layout rect, e.g. white-space:nowrap text.
+      // Recurse into children so overflow content stays interactive, matching
+      // Chrome hit-test behaviour. Also handles the leaf-element case where this
+      // element itself has overflow text (no children).
+      const bool ovVisible = (computedStyle.overflowX == "visible" ||
+                              computedStyle.overflowY == "visible");
+      if (!ovVisible) return nullptr;
+      // Leaf: own text overflows past our layout rect.
+      if (!innerText.empty() && isPointOverText(lx, ly)) return this;
+      // Container: a descendant may own the overflow content.
+      bool _anyNonZeroZ = false;
+      for (auto& child : mChildren)
+        if (child->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+      if (!_anyNonZeroZ)
+      {
+        for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
+          if (auto* h = it->get()->HitTest(lx, ly)) return h;
+      }
+      else
+      {
+        std::vector<glint_element*> _hitOrder;
+        _hitOrder.reserve(mChildren.size());
+        for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
+          _hitOrder.push_back(it->get());
+        std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
+          [](const glint_element* a, const glint_element* b) {
+            return a->computedStyle.zIndex > b->computedStyle.zIndex;
+          });
+        for (auto* c : _hitOrder)
+          if (auto* h = c->HitTest(lx, ly)) return h;
+      }
+      return nullptr;
+    }
 
     // Scrollable containers: check scrollbars first (they live in screen space),
     // then transform the hit coordinate into content (scroll) space for children.
@@ -2541,6 +2576,28 @@ protected:
   mutable std::string mDashCacheStr;
   mutable float       mDashCacheOffset    = 0.f;
   mutable sk_sp<SkPathEffect> mDashCacheEffect;
+
+  // Returns true when document-space point (lx, ly) falls over a rendered text
+  // glyph bounding box. Used by getCursorAtPoint to implement cursor:auto →
+  // I-beam over text, arrow over padding (matching Chrome behaviour).
+  bool isPointOverText(float lx, float ly) const
+  {
+    if (innerText.empty()) return false;
+    const float sz = computedStyle.fontSize.toFloat() > 0.f ? computedStyle.fontSize.toFloat() : 12.f;
+    SkFont font = skFont(sz,
+                         computedStyle.fontFamily.c_str(),
+                         computedStyle.fontWeight,
+                         computedStyle.fontStyle.c_str());
+    const auto& lines = _buildRenderLines(font);
+    for (const auto& line : lines)
+    {
+      if (line.text.empty()) continue;
+      if (lx >= line.x && lx <= line.x + line.width &&
+          ly >= line.inkTop && ly <= line.inkBottom)
+        return true;
+    }
+    return false;
+  }
 
   // Returns the byte index into innerText nearest to canvas-space (lx, ly).
   int _txtHitTestPos(float lx, float ly) const

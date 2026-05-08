@@ -9,6 +9,13 @@ inline constexpr const char* glint_default_style_css = R"css(
 button {
   text-align: center;
   display: inline-block;
+  user-select: none;
+  cursor: default;
+}
+
+select {
+  user-select: none;
+  cursor: default;
 }
 
 input {
@@ -32,6 +39,8 @@ dial {
   border-radius: 9999px;
   background-color: #1a1a1a;
   border: 1px solid #505050;
+  user-select: none;
+  cursor: default;
 }
 
 tree {
@@ -45,6 +54,7 @@ colorpicker {
   background-color: #1c1c1c;
   border: 1px solid #404040;
   border-radius: 6px;
+  user-select: none;
 }
 
 gradient-editor {
@@ -52,6 +62,7 @@ gradient-editor {
   height: 48px;
   background-color: #1c1c1c;
   position: relative;
+  user-select: none;
 }
 
 textarea-resize-handle {
@@ -72,6 +83,7 @@ progress {
   display: block;
   width: 160px;
   height: 16px;
+  user-select: none;
 }
 
 .glint_progress_track {
@@ -133,6 +145,7 @@ datepicker {
   border-radius: 8px;
   padding: 8px;
   overflow: hidden;
+  user-select: none;
 }
 
 .dp-header {
@@ -259,6 +272,7 @@ date-input {
   border-radius: 6px;
   padding-left: 8px;
   padding-right: 4px;
+  user-select: none;
 }
 
 .di-field {

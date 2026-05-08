@@ -85,6 +85,7 @@ public:
 
   glint_text_input()
   {
+    style.cursor = "text";   // inline layer — always live, read by getCursorAtPoint
     setCssStyleLayer(glint_default_user_agent_style_for(*this));
     computedStyle = mergedStyleForLayout();
   }
@@ -784,6 +785,7 @@ public:
   glint_input()
   {
     style.position = "relative";   // establish containing block for absolute delegate children
+    style.cursor   = "text";       // inline layer — always live, read by getCursorAtPoint
     setCssStyleLayer(glint_default_user_agent_style_for(*this));
     computedStyle = mergedStyleForLayout();
   }

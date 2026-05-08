@@ -2045,11 +2045,44 @@ public:
   std::string getCursorAtPoint(float x, float y) const
   {
     const glint_element* hit = hitTest(x, y);
+    // Read the two always-live layers (inline `style` and CSS `cssStyle_`) instead
+    // of `computedStyle`, which is only refreshed inside Draw() — asynchronously
+    // after requestRedraw() — and is therefore stale at the point this function
+    // is called from _handleMouseMove (right after OnMouseOver / _applyCssToElement).
     for (const glint_element* e = hit; e; e = e->mParent)
     {
-      const std::string& c = e->computedStyle.cursor;
-      if (!c.empty() && c != "auto")
-        return c;
+      // Inline style wins (highest specificity, always current).
+      if (!e->style.cursor.empty() && e->style.cursor != "auto")
+        return e->style.cursor;
+      // CSS cascade layer — written synchronously by _applyCssToElement.
+      if (!e->cssStyle_.cursor.empty() && e->cssStyle_.cursor != "auto")
+        return e->cssStyle_.cursor;
+    }
+    // Type-based fallback: dedicated text-editor elements get a whole-element
+    // I-beam. Plain elements with innerText use per-glyph-bounding-box hit
+    // testing to match Chrome's cursor:auto behaviour — I-beam only over the
+    // rendered text, arrow cursor over padding and empty space.
+    for (const glint_element* e = hit; e; e = e->mParent)
+    {
+      const char* tn = e->typeName();
+      if (tn && (std::strcmp(tn, "text-input") == 0 || std::strcmp(tn, "textarea") == 0))
+        return "text";
+      // Skip elements that have opted out of text selection.
+      const std::string& us = e->style.userSelect.empty()
+                              ? e->cssStyle_.userSelect : e->style.userSelect;
+      if (us == "none") continue;
+      // For any other element with innerText: I-beam only when the point is
+      // inside a rendered line's ink bounding box.
+      if (!e->innerText.empty())
+      {
+        // x, y are raw screen-space coords; render lines live in layout/document
+        // space. Apply the same scroll adjustment that OnMouseDown uses so the
+        // comparison is in the same coordinate system.
+        float ex = x, ey = y;
+        scrollAdjusted(e, ex, ey);
+        if (e->isPointOverText(ex, ey))
+          return "text";
+      }
     }
     return "default";
   }
