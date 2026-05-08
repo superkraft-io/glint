@@ -527,8 +527,12 @@ void glint_window_mac::killTimer(int timerId)
 /*static*/
 void glint_window_mac::openFileInDefaultApp(const std::string& path)
 {
+  // Copy the path string before dispatching: the block captures it by value
+  // (copy-constructed into the block's closure), so it remains valid even
+  // after the caller's local std::string is destroyed.
+  std::string pathCopy = path;
   dispatch_async(dispatch_get_main_queue(), ^{
-    NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
+    NSString* nsPath = [NSString stringWithUTF8String:pathCopy.c_str()];
     NSURL* url = [NSURL fileURLWithPath:nsPath];
     [[NSWorkspace sharedWorkspace] openURL:url];
   });
