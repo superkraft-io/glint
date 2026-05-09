@@ -16,7 +16,7 @@
  *     background-color            ↔ backgroundColor
  *     opacity                     ↔ opacity
  *     background                  ↔ background  (shorthand proxy)
- *     background-image            ↔ backgroundImageProp
+ *     background-img            ↔ backgroundImageProp
  *     background-size             ↔ backgroundSize
  *     background-position         ↔ backgroundPosition
  *     background-repeat           ↔ backgroundRepeat
@@ -140,7 +140,7 @@ public:
     if (prop == "background-color")    { style.backgroundColor = val.c_str(); return; }
     if (prop == "opacity")             { style.opacity = toFloat(val); return; }
     if (prop == "background")          { style.background = val.c_str(); return; }
-    if (prop == "background-image")    { style.backgroundImageProp = val.c_str(); return; }
+    if (prop == "background-img")    { style.backgroundImageProp = val.c_str(); return; }
     if (prop == "background-size")     { style.backgroundSize     = val; return; }
     if (prop == "background-position") { style.backgroundPosition = val; return; }
     if (prop == "background-repeat")   { style.backgroundRepeat   = val; return; }

@@ -1322,7 +1322,7 @@ struct glint_style
   float       backgroundGradientCY     = 0.5f;       // radial/conic center Y [0..1]
   float       backgroundGradientRadius = 1.0f;       // radial radius [0..1] rel to min(W,H)*0.5
 
-  // Background image — set via background-image: url(...) or the `background` shorthand.
+  // Background img — set via background-img: url(...) or the `background` shorthand.
   // Accepts the same disk paths as style.mask url(...): PNG/JPEG/WebP and SVG files.
   //   el.style.backgroundImage = "url(\"assets/bg.png\")";   // with quotes inside url()
   //   el.style.backgroundImage = "url(assets/bg.png)";       // without quotes
@@ -1543,7 +1543,7 @@ struct glint_style
       const std::string src = _bgTrim(std::string(css));
       const std::string low = _bgLower(src);
 
-      // Reset all gradient/color/image state
+      // Reset all gradient/color/img state
       _pStops->clear();
       *_pBgColor = glint_color(0, 0, 0, 0);
       *_pType    = "linear";
@@ -1556,7 +1556,7 @@ struct glint_style
 
       if (low == "none" || low == "transparent") return *this;
 
-      // Detect url(...) → background-image from disk
+      // Detect url(...) → background-img from disk
       if (low.size() > 4 && low.substr(0, 4) == "url(")
       {
         const size_t open  = src.find('(');
@@ -1657,7 +1657,7 @@ struct glint_style
     &backgroundImage
   };
 
-  // background-image: url("path") — distinct from the `background` shorthand so
+  // background-img: url("path") — distinct from the `background` shorthand so
   // backgroundSize / backgroundPosition / backgroundRepeat can be set independently.
   // Storing the parsed path directly avoids re-parsing the url() wrapper each frame.
   struct sk_bg_image_shorthand
@@ -2514,7 +2514,7 @@ struct glint_style
   sk_color scrollbarTrackColor  = glint_color(255,  40,  40,  40);
   sk_color scrollbarButtonColor = glint_color(255,  65,  65,  65);
 
-  // Object fit — image/media components (mirrors CSS object-fit / object-position).
+  // Object fit — img/media components (mirrors CSS object-fit / object-position).
   // Consumed by glint_image; ignored by other components.
   std::string objectFit      = "contain";        // "contain"|"cover"|"fill"|"none"
   std::string objectPosition = "center center";  // "left|center|right  top|center|middle|bottom"
@@ -2556,7 +2556,7 @@ struct glint_style
   // All 16 CSS Compositing Level 1 keywords are supported.
   std::string mixBlendMode;          // "" / "normal" = kSrcOver
 
-  // background-blend-mode: how background-image layers blend against
+  // background-blend-mode: how background-img layers blend against
   // background-color (or each other when multiple images are stacked).
   //   style.backgroundBlendMode = "multiply";
   // Only affects background rendering — does NOT create a stacking context.
@@ -2570,12 +2570,12 @@ struct glint_style
 
   // ── CSS mask ────────────────────────────────────────────────────────────────
   // Clips the element's painted output using one or more mask layers.
-  // mask-image syntax — comma-separated list of:
+  // mask-img syntax — comma-separated list of:
   //   linear-gradient(…)  radial-gradient(…)  conic-gradient(…)
   //   url("#elementId")          — DOM element alpha as mask
   //   url("file.svg")            — whole SVG file rasterised as mask
   //   url("file.svg#maskId")     — specific node inside an SVG file
-  //   url("image.png")           — bitmap alpha channel as mask
+  //   url("img.png")           — bitmap alpha channel as mask
   // Examples:
   //   style.mask = "linear-gradient(to bottom, black, transparent)";
   //   style.mask = "url(\"#myMaskEl\")";
@@ -2583,8 +2583,8 @@ struct glint_style
   std::string mask;                    // "" / "none" = no mask
 
   // mask-mode per layer (comma-separated for multi-layer):
-  //   "alpha"        — alpha channel of mask image drives the mask (default)
-  //   "luminance"    — BT.709 luminance of mask image drives the mask
+  //   "alpha"        — alpha channel of mask img drives the mask (default)
+  //   "luminance"    — BT.709 luminance of mask img drives the mask
   //   "match-source" — SVG sources use luminance; others use alpha
   std::string maskMode      = "alpha";
 
@@ -2593,7 +2593,7 @@ struct glint_style
   std::string maskPosition  = "0% 0%";
 
   // mask-size: per layer.
-  //   "auto"     — intrinsic image size (1:1 pixel mapping)
+  //   "auto"     — intrinsic img size (1:1 pixel mapping)
   //   "cover"    — scale to fill the mask box (no letterboxing)
   //   "contain"  — scale to fit within the mask box
   //   "W H"      — explicit width height (px or %)

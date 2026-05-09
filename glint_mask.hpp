@@ -2,21 +2,21 @@
 
 /**
  * glint_mask.hpp
- * CSS `mask` property — layer parsing and Skia shader/image building.
+ * CSS `mask` property — layer parsing and Skia shader/img building.
  *
  * This header is pure Skia + glint_style.  It does NOT include glint_element or
  * glint_document.  The rendering glue that requires glint_element* (url(#id),
- * url(file.svg), url(image)) is handled in glint_element_render.hpp which has
+ * url(file.svg), url(img)) is handled in glint_element_render.hpp which has
  * full access to the element and document types.
  *
- * Supported mask-image sources (detected by glint_parse_mask_layers):
+ * Supported mask-img sources (detected by glint_parse_mask_layers):
  *   linear-gradient(...)          → GRADIENT
  *   radial-gradient(...)          → GRADIENT
  *   conic-gradient(...)           → GRADIENT
  *   url("#elementId")             → URL_ELEMENT_ID
  *   url("file.svg")               → URL_SVG_FILE
  *   url("file.svg#maskId")        → URL_SVG_FILE_ID
- *   url("image.png/.jpg/.webp")   → URL_IMAGE
+ *   url("img.png/.jpg/.webp")   → URL_IMAGE
  *   none                          → NONE (skipped)
  *
  * Per-layer CSS sub-properties resolved from the glint_style comma-lists:
@@ -60,7 +60,7 @@
 
 // ── glint_mask_layer ─────────────────────────────────────────────────────────
 
-/** One parsed mask-image layer plus its resolved per-layer sub-properties. */
+/** One parsed mask-img layer plus its resolved per-layer sub-properties. */
 struct glint_mask_layer
 {
   enum Type {
@@ -69,7 +69,7 @@ struct glint_mask_layer
     URL_ELEMENT_ID,    // url("#domId")
     URL_SVG_FILE,      // url("file.svg")          — whole SVG
     URL_SVG_FILE_ID,   // url("file.svg#maskId")   — specific node in an SVG file
-    URL_IMAGE,         // url("image.png") / .jpg / .webp etc.
+    URL_IMAGE,         // url("img.png") / .jpg / .webp etc.
   };
 
   Type        type         = NONE;
@@ -78,7 +78,7 @@ struct glint_mask_layer
   std::string gradientStr;
 
   // For URL_* types: the path or element id
-  std::string urlTarget;   // element id, svg path, or image path
+  std::string urlTarget;   // element id, svg path, or img path
   std::string urlFragId;   // fragment id for URL_SVG_FILE_ID ("maskId" part)
 
   // Per-layer sub-properties (resolved from comma-lists in the glint_style fields)
@@ -167,11 +167,11 @@ inline std::string nthOrLast(const std::vector<std::string>& list, size_t idx)
 
 /**
  * Parse style.mask (and all mask-* sub-property strings) into a vector of
- * resolved glint_mask_layer structs, one per mask-image layer.
+ * resolved glint_mask_layer structs, one per mask-img layer.
  *
- * The `mask` field holds the comma-separated mask-image list.
+ * The `mask` field holds the comma-separated mask-img list.
  * All other mask-* fields may also be comma-lists (one entry per layer),
- * otherwise the single value applies to all layers (CSS spec §mask-image).
+ * otherwise the single value applies to all layers (CSS spec §mask-img).
  */
 inline std::vector<glint_mask_layer> glint_parse_mask_layers(const glint_style& s)
 {
@@ -198,7 +198,7 @@ inline std::vector<glint_mask_layer> glint_parse_mask_layers(const glint_style& 
 
     glint_mask_layer layer;
 
-    // ── Detect image type ────────────────────────────────────────────────────
+    // ── Detect img type ────────────────────────────────────────────────────
     if (startsWith(tok, "linear-gradient(") ||
         startsWith(tok, "radial-gradient(")  ||
         startsWith(tok, "conic-gradient("))
@@ -399,12 +399,12 @@ inline void glint_mask_resolve_position(const std::string& pos,
 }
 
 /**
- * Precise CSS mask image shader builder.
+ * Precise CSS mask img shader builder.
  *
  * Unlike the generic helper below, this variant returns coverage information for
  * non-repeating axes and uses clamp sampling there, so callers can clip exactly
- * to the placed image rect and avoid the faint transparent fringe produced by
- * linear filtering against `kDecal` outside the image.
+ * to the placed img rect and avoid the faint transparent fringe produced by
+ * linear filtering against `kDecal` outside the img.
  */
 inline sk_sp<SkShader> glint_mask_image_shader_precise(sk_sp<SkImage> img,
                                                        const glint_rect& bounds,
@@ -508,9 +508,9 @@ inline sk_sp<SkShader> glint_mask_image_shader_precise(sk_sp<SkImage> img,
 
 /**
  * Build an SkShader from a decoded SkImage, applying mask-size, mask-position,
- * and mask-repeat to fit the image onto the given bounds rect.
+ * and mask-repeat to fit the img onto the given bounds rect.
  *
- * imgW / imgH : intrinsic image dimensions in pixels.
+ * imgW / imgH : intrinsic img dimensions in pixels.
  */
 inline sk_sp<SkShader> glint_mask_image_shader(sk_sp<SkImage> img,
                                                const glint_rect& bounds,
@@ -581,15 +581,15 @@ inline sk_sp<SkShader> glint_mask_image_shader(sk_sp<SkImage> img,
   if (rep == "repeat-x") { tmX = SkTileMode::kRepeat; tmY = SkTileMode::kDecal;  }
   if (rep == "repeat-y") { tmX = SkTileMode::kDecal;  tmY = SkTileMode::kRepeat; }
 
-  // ── Build local matrix: image → canvas coords ──────────────────────────────
+  // ── Build local matrix: img → canvas coords ──────────────────────────────
   SkMatrix lm = SkMatrix::Scale(scaleX, scaleY);
   lm.postTranslate(tx, ty);
 
-  // SkImage::makeShader() expects the forward local matrix that maps image space
-  // into canvas space. Passing the inverse here makes the sampled image appear
+  // SkImage::makeShader() expects the forward local matrix that maps img space
+  // into canvas space. Passing the inverse here makes the sampled img appear
   // massively zoomed/cropped because the shader interprets canvas coordinates as
-  // already being in image space. CSS background-size / position / repeat need
-  // the forward image→canvas transform.
+  // already being in img space. CSS background-size / position / repeat need
+  // the forward img→canvas transform.
   if (!lm.isFinite()) {
     // Fallback: stretch to fill.
     SkMatrix fill;
@@ -653,10 +653,10 @@ inline SkBlendMode glint_mask_blend_mode(const std::string& composite, bool isFi
   return glint_mask_accum_blend_mode(composite, isFirst);
 }
 
-// ── Destination rect for a mask image layer ───────────────────────────────────
+// ── Destination rect for a mask img layer ───────────────────────────────────
 
 /**
- * Compute the canvas-space destination SkRect where a mask image layer is placed,
+ * Compute the canvas-space destination SkRect where a mask img layer is placed,
  * applying mask-size and mask-position.  Used by drawImageRect (avoids the
  * kDecal half-pixel fringe produced by shader sampling at texel-row boundaries).
  */
@@ -805,7 +805,7 @@ inline sk_sp<SkImage> glint_rasterize_svg(const sk_sp<SkSVGDOM>& dom,
 }
 
 
-// ── Raster image cache ────────────────────────────────────────────────────────
+// ── Raster img cache ────────────────────────────────────────────────────────
 
 /** Global thread-safe cache: file path → SkImage */
 inline std::unordered_map<std::string, sk_sp<SkImage>>& glint_img_cache()

@@ -2,7 +2,7 @@
 
 /**
  * inspector/image_preview_popup.hpp
- * InspImagePreviewPopup — hover-triggered image thumbnail overlay for the
+ * InspImagePreviewPopup — hover-triggered img thumbnail overlay for the
  * glint inspector's Computed panel.
  *
  * Rendered as a position:absolute element on the inspector's root canvas
@@ -10,8 +10,8 @@
  * Uses cached runtime resource bytes only; the inspector never fetches or
  * reads files on its own.
  *
- * Covered image-bearing properties:
- *   • background-image  — url(path.png / path.svg)
+ * Covered img-bearing properties:
+ *   • background-img  — url(path.png / path.svg)
  *   • mask              — url(path.png / path.svg) [first url() token only]
  *
  * State machine (all transitions happen on the inspector Win32 thread):
@@ -43,10 +43,10 @@
 #  include "include/core/SkData.h"
 #  include "include/core/SkImage.h"
 
-// ── Helper: extract the first image/SVG path from a CSS url() token ──────────
+// ── Helper: extract the first img/SVG path from a CSS url() token ──────────
 //
 // Accepts:
-//   background-image  → url("/abs/path.png") or url(rel.png)
+//   background-img  → url("/abs/path.png") or url(rel.png)
 //   mask              → url("path.svg") no-repeat ...  (stop at first token)
 //
 // Returns the bare filesystem path (no quotes), or "" if not extractable.

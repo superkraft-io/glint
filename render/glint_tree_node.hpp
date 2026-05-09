@@ -79,8 +79,8 @@ inline glint_style_info glint_style_serialize(const glint_style& s)
         m["background"] = "";
     }
 
-    // ── Background image ─────────────────────────────────────────────────────
-    m["background-image"]    = s.backgroundImage.empty() ? "" : ("url(\"" + s.backgroundImage + "\")");
+    // ── Background img ─────────────────────────────────────────────────────
+    m["background-img"]    = s.backgroundImage.empty() ? "" : ("url(\"" + s.backgroundImage + "\")");
     m["background-size"]     = s.backgroundSize;
     m["background-position"] = s.backgroundPosition;
     m["background-repeat"]   = s.backgroundRepeat;

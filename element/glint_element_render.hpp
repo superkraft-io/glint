@@ -447,8 +447,8 @@ public:
       canvas->saveLayer(skRect(rect), nullptr);
 
     // background-color — always the bottommost background layer (always SrcOver).
-    // This must be drawn regardless of whether a gradient or image is also present,
-    // so that transparent gradient/image stops correctly reveal the color.
+    // This must be drawn regardless of whether a gradient or img is also present,
+    // so that transparent gradient/img stops correctly reveal the color.
     {
       const glint_color _bgColorLayer = ApplyOpacity(s.backgroundColor, s.opacity);
       if (_bgColorLayer.A > 0)
@@ -570,7 +570,7 @@ public:
     }
     // (else: no gradient — background-color was already drawn above as the only layer.)
 
-    // ── Background image (background-image: url("path") or `background` shorthand) ──────
+    // ── Background img (background-img: url("path") or `background` shorthand) ──────
     if (!s.backgroundImage.empty())
     {
       sk_sp<SkImage> bgImg;
@@ -657,9 +657,9 @@ public:
         // Reuse the previously built SkShader when nothing relevant changed.
         // Stable shader instances let Skia's GPU program cache hit on
         // subsequent frames; this is the same fix that resolved the masks
-        // page first-switch stall and is critical for image-heavy pages
+        // page first-switch stall and is critical for img-heavy pages
         // (the demo's Images and BlendModes pages each have 16+ cards
-        // sharing one source image).
+        // sharing one source img).
         const bool _bgShCacheHit =
               mBgImgCacheValid
           && mBgImgCacheImg.get()  == bgImg.get()

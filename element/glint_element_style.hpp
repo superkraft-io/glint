@@ -400,7 +400,7 @@
 
     // Colors & opacity
     _IW_C(color);  _IW_C(backgroundColor);  _IW_OF(opacity);
-    // Background gradient / image
+    // Background gradient / img
     if (!style.backgroundGradient.empty())  r.backgroundGradient = style.backgroundGradient;
     _IW_S(backgroundGradientType);
     // When inline gradient stops are present the angle is meaningful even at 0°

@@ -4,7 +4,7 @@
  * glint_network_log.hpp
  * Per-document network request log — mirrors the Chrome DevTools Network tab.
  *
- * Every onRequest-intercepted or disk-fallback asset load (background-image,
+ * Every onRequest-intercepted or disk-fallback asset load (background-img,
  * mask url(), <img> src, SVG) pushes one glint_network_log_entry here.
  * The inspector reads a thread-safe snapshot to display the Network tab.
  *
@@ -53,7 +53,7 @@ struct glint_network_log_entry
   // only forward-declared; those fields are filled in from glint_image::_loadSrc).
   uint64_t    sourceId    = 0;   // glint_element::mId
   int         sourceTag   = -1;  // glint_element::mTag  (-1 = kNoTag / unknown)
-  std::string sourceType;        // glint_element::typeName()  e.g. "image", "div"
+  std::string sourceType;        // glint_element::typeName()  e.g. "img", "div"
   std::string sourceElemId;      // glint_element::id  (the DOM string id)
 };
 

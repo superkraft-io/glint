@@ -50,7 +50,7 @@
 
 #include "../glint_element.hpp"
 #include "../glint_document.hpp"
-// glint_element/button/checkbox/svg/image are included AFTER ComponentAdd::component
+// glint_element/button/checkbox/svg/img are included AFTER ComponentAdd::component
 // is defined � see below.
 
 #include <functional>
@@ -126,7 +126,9 @@ private:
 //
 // Method bodies for glint_component_adder are defined after glint_ctx is complete.
 
-class glint_select;  // forward-declared early so glint_component_adder can reference it
+class glint_select;    // forward-declared early so glint_component_adder can reference it
+class glint_slider;    // forward-declared early so glint_component_adder can reference it
+class glint_tree;      // forward-declared early so glint_component_adder can reference it
 
 struct glint_component_style
 {
@@ -248,7 +250,7 @@ struct glint_component_style
     std::vector<OpEntry> _ops;
 
     void button      (std::function<void(glint_button&)>            s, glint_button**      out = nullptr);
-    void image       (std::function<void(glint_image&)>             s, glint_image**       out = nullptr);
+    void img       (std::function<void(glint_image&)>             s, glint_image**       out = nullptr);
     void input       (std::function<void(glint_input&)>             s, glint_input**       out = nullptr);
     template<typename T, typename Setup>
     void custom(Setup&& setup, T** out = nullptr);
@@ -261,6 +263,9 @@ struct glint_component_style
     void dial        (std::function<void(glint_dial&)>              s, glint_dial**        out = nullptr);
     void gradientEditor(std::function<void(glint_gradient_editor&)> s, glint_gradient_editor** out = nullptr);
     void list        (std::function<void(glint_list&)>              s, glint_list**        out = nullptr);
+    void select      (std::function<void(glint_select&)>            s, glint_select**      out = nullptr);
+    void slider      (std::function<void(glint_slider&)>            s, glint_slider**      out = nullptr);
+    void tree        (std::function<void(glint_tree&)>              s, glint_tree**        out = nullptr);
     void div             (std::function<void(glint_component_style&)>      s);
     void div             (std::function<void(glint_component_style&)>      s, glint_element** out);
     void component      (std::function<void(glint_component_style&)>      s);  // backward-compat ? div()
@@ -363,10 +368,10 @@ struct glint_adder
     return ctrl;
   }
 
-  // -- button / image ----------------------------------------
+  // -- button / img ----------------------------------------
   // Declared here; bodies defined after the component includes below.
   glint_button*        button      (std::function<void(glint_button&     )> setup) const;
-  glint_image*         image       (std::function<void(glint_image&)> setup) const;
+  glint_image*         img       (std::function<void(glint_image&)> setup) const;
   glint_input*         input       (std::function<void(glint_input&      )> setup) const;
   template<typename T, typename Setup>
   T*                  custom      (Setup&& setup) const;
@@ -379,6 +384,9 @@ struct glint_adder
   glint_dial*          dial        (std::function<void(glint_dial&)> setup) const;
   glint_gradient_editor* gradientEditor(std::function<void(glint_gradient_editor&)> setup) const;
   glint_list*          list        (std::function<void(glint_list&)> setup) const;
+  glint_select*        select      (std::function<void(glint_select&)> setup) const;
+  glint_slider*        slider      (std::function<void(glint_slider&)> setup) const;
+  glint_tree*          tree        (std::function<void(glint_tree&)> setup) const;
   glint_element*       spacer() const;   // flex-grow:1 invisible node � shows in inspector
 
   // -- div -- generic container (HTML <div>); children relative to div's origin ----------------------------------
@@ -698,11 +706,13 @@ inline glint_element* glint_element::ComponentAdd::component(S&& setup, glint_el
 #include "glint_list/glint_list.hpp"
 #include "glint_tooltip.hpp"
 #include "glint_textarea.hpp"
-#include "glint_radio.hpp"
 #include "glint_progress.hpp"
 #include "glint_datepicker.hpp"
 #include "glint_datepicker_window.hpp"
 #include "glint_date_input.hpp"
+#include "glint_checkbox.hpp"
+#include "glint_select.hpp"
+#include "glint_tree.hpp"
 
 inline glint_style glint_builder_initial_style(glint_element* ctrl)
 {
@@ -796,6 +806,36 @@ inline glint_list* glint_adder::list(std::function<void(glint_list&)> setup) con
   return ctrl;
 }
 
+inline glint_select* glint_adder::select(std::function<void(glint_select&)> setup) const
+{
+  auto* ctrl = new glint_select();
+  if (setup) setup(*ctrl);
+  ctrl->computedStyle = glint_builder_initial_style(ctrl);
+  ctrl->mRect = ctrl->mPaintRECT = resolve(ctrl->computedStyle);
+  dispatchChild(ctrl, glint_no_tag);
+  return ctrl;
+}
+
+inline glint_slider* glint_adder::slider(std::function<void(glint_slider&)> setup) const
+{
+  auto* ctrl = new glint_slider();
+  if (setup) setup(*ctrl);
+  ctrl->computedStyle = glint_builder_initial_style(ctrl);
+  ctrl->mRect = ctrl->mPaintRECT = resolve(ctrl->computedStyle);
+  dispatchChild(ctrl, glint_no_tag);
+  return ctrl;
+}
+
+inline glint_tree* glint_adder::tree(std::function<void(glint_tree&)> setup) const
+{
+  auto* ctrl = new glint_tree();
+  if (setup) setup(*ctrl);
+  ctrl->computedStyle = glint_builder_initial_style(ctrl);
+  ctrl->mRect = ctrl->mPaintRECT = resolve(ctrl->computedStyle);
+  dispatchChild(ctrl, glint_no_tag);
+  return ctrl;
+}
+
 inline glint_element* glint_adder::spacer() const
 {
   auto* ctrl = new glint_element();
@@ -808,7 +848,7 @@ inline glint_element* glint_adder::spacer() const
   return ctrl;
 }
 
-inline glint_image* glint_adder::image(std::function<void(glint_image&)> setup) const
+inline glint_image* glint_adder::img(std::function<void(glint_image&)> setup) const
 {
   auto* ctrl = new glint_image();
   if (setup) setup(*ctrl);
@@ -835,9 +875,9 @@ inline void glint_component_style::glint_component_adder::button(std::function<v
   });
 }
 
-inline void glint_component_style::glint_component_adder::image(std::function<void(glint_image&)> s, glint_image** out) {
+inline void glint_component_style::glint_component_adder::img(std::function<void(glint_image&)> s, glint_image** out) {
   _ops.push_back({
-    [s, out](glint_ctx& c){ auto* t = c.add.image(s); if (out) *out = t; },
+    [s, out](glint_ctx& c){ auto* t = c.add.img(s); if (out) *out = t; },
     [s](glint_canvas*, glint_element*) -> glint_style { glint_image t; if (s) s(t); return t.style; }
   });
 }
@@ -909,6 +949,27 @@ inline void glint_component_style::glint_component_adder::list(std::function<voi
   _ops.push_back({
     [s, out](glint_ctx& c){ auto* t = c.add.list(s); if (out) *out = t; },
     [s](glint_canvas*, glint_element*) -> glint_style { glint_list t; if (s) s(t); return t.style; }
+  });
+}
+
+inline void glint_component_style::glint_component_adder::select(std::function<void(glint_select&)> s, glint_select** out) {
+  _ops.push_back({
+    [s, out](glint_ctx& c){ auto* t = c.add.select(s); if (out) *out = t; },
+    [s](glint_canvas*, glint_element*) -> glint_style { glint_select t; if (s) s(t); return t.style; }
+  });
+}
+
+inline void glint_component_style::glint_component_adder::slider(std::function<void(glint_slider&)> s, glint_slider** out) {
+  _ops.push_back({
+    [s, out](glint_ctx& c){ auto* t = c.add.slider(s); if (out) *out = t; },
+    [s](glint_canvas*, glint_element*) -> glint_style { glint_slider t; if (s) s(t); return t.style; }
+  });
+}
+
+inline void glint_component_style::glint_component_adder::tree(std::function<void(glint_tree&)> s, glint_tree** out) {
+  _ops.push_back({
+    [s, out](glint_ctx& c){ auto* t = c.add.tree(s); if (out) *out = t; },
+    [s](glint_canvas*, glint_element*) -> glint_style { glint_tree t; if (s) s(t); return t.style; }
   });
 }
 
@@ -1155,7 +1216,7 @@ inline auto glint_element::ComponentAdd::button(S&& setup)
   return ctrl;
 }
 template<typename S>
-inline auto glint_element::ComponentAdd::image(S&& setup)
+inline auto glint_element::ComponentAdd::img(S&& setup)
 {
   const float cursorY = mCursorY;
   const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
@@ -1164,7 +1225,7 @@ inline auto glint_element::ComponentAdd::image(S&& setup)
                            _owner->style.display    == "grid");
   bool wasAbs = false;
   glint_adder a{_owner};
-  auto* ctrl = a.image([s = std::forward<S>(setup), cursorY, skipCursor, &wasAbs](glint_image& c) mutable {
+  auto* ctrl = a.img([s = std::forward<S>(setup), cursorY, skipCursor, &wasAbs](glint_image& c) mutable {
     s(c);
     wasAbs = (c.style.position == "absolute");
     if (!skipCursor && !wasAbs && c.style.top.raw.empty()) { c.style.top = cursorY; c.style.top.builderInjected = true; }

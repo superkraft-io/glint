@@ -599,7 +599,7 @@ public:
     if (node->mParentW == 0.f) node->mParentW = std::max(0.f, getContent().W());
     if (node->mParentH == 0.f) node->mParentH = std::max(0.f, getContent().H());
     // Propagate tree pointers to any grandchildren that were pre-built inside a
-    // setup lambda before this node joined the tree (e.g. b.add.image(...) called
+    // setup lambda before this node joined the tree (e.g. b.add.img(...) called
     // while 'b' was still rootless).  Those children went through addChild on a
     // null-rooted parent so mpG/mRoot/mApplyCss/etc. are all null — fix them up
     // now, and re-apply CSS that was skipped because mApplyCss was null at their
@@ -1874,7 +1874,7 @@ public:
     if (_canvas) _canvas->restore();
 
   // Border paints on top of content and children but is part of the same
-  // rounded source image that filter operates on.
+  // rounded source img that filter operates on.
   if (_rootCanvas) _drawBorderSkia(_rootCanvas, computedStyle, mRect);
 
     if (_hasBackdropFilter) glint_filter::EndBackdropLayer(g);
@@ -1961,7 +1961,7 @@ public:
         if (_mImg)
         {
           // kStrict_SrcRectConstraint prevents bilinear sampling from reading outside
-          // the source rect boundary — eliminates the half-pixel alpha fringe at image edges.
+          // the source rect boundary — eliminates the half-pixel alpha fringe at img edges.
           const SkRect _srcR = SkRect::MakeWH(static_cast<float>(_mImg->width()),
                                               static_cast<float>(_mImg->height()));
           const SkRect _dstR = glint_mask_image_dst_rect(_mImg, _maskOriginBox, _ml);
@@ -2261,7 +2261,7 @@ public:
     float mCursorY = 0.f;
 
     template<typename S> auto button     (S&& setup);
-    template<typename S> auto image      (S&& setup);
+    template<typename S> auto img      (S&& setup);
     template<typename S> auto input      (S&& setup);
     template<typename S> auto list       (S&& setup);
     template<typename T, typename S> T* custom(S&& setup, T** out = nullptr);
@@ -2550,7 +2550,7 @@ protected:
   mutable std::vector<glint_mask_layer> mMaskCacheLayers;
   mutable std::vector<sk_sp<SkShader>>  mMaskCacheShaders;  // parallel; nullptr for non-GRADIENT layers
 
-  // ── Background-image shader cache ─────────────────────────────────────────
+  // ── Background-img shader cache ─────────────────────────────────────────
   // _drawBackgroundSkia rebuilds an SkShader from the loaded SkImage on every
   // paint via glint_mask_image_shader(). Caching the resulting shader lets the
   // GPU program cache hit on subsequent paints (same root cause as the mask

@@ -1,16 +1,16 @@
-  // Keeps req.responseData alive alongside bitmap: the Skia image wrapper wraps
+  // Keeps req.responseData alive alongside bitmap: the Skia img wrapper wraps
 #pragma once
 
 /**
  * glint_image.hpp
- * A component that renders a bitmap image (glint_bitmap) with CSS-inspired fit modes.
+ * A component that renders a bitmap img (glint_bitmap) with CSS-inspired fit modes.
  *
- * Inspired by the JS glint_image class: loads an image from a URL, renders it
+ * Inspired by the JS glint_image class: loads an img from a URL, renders it
  * inside a styled panel with configurable fit, alignment, and aspect control.
  *
  * Usage (via builder):
  *
- *   _c.add.image([](glint_image_style& _c) {
+ *   _c.add.img([](glint_image_style& _c) {
  *     _c.style.left   = 8.f;  _c.style.top    = 8.f;
  *     _c.style.width  = 64.f; _c.style.height = 64.f;
  *     _c.src                       = "img/my_logo.png";  // auto-loaded by builder
@@ -29,9 +29,9 @@
  *
  * Fit modes (mirrors CSS object-fit):
  *
- *   Contain  - Uniform scale so the full image fits inside the bounds, centred.
+ *   Contain  - Uniform scale so the full img fits inside the bounds, centred.
  *              Empty space is shown (letterboxing / pillarboxing).
- *   Cover    - Uniform scale so the image fills the entire bounds.
+ *   Cover    - Uniform scale so the img fills the entire bounds.
  *              Excess is cropped symmetrically.
  *   Fill     - Stretch to exactly fill the bounds (no aspect preservation).
  *   None     - Draw at the bitmap's natural pixel size, aligned by alignH/alignV.
@@ -81,14 +81,14 @@ class glint_image : public glint_element
   }
 
 public:
-  // ── Asset fields — set in the add.image() callback ───────────────────────
+  // ── Asset fields — set in the add.img() callback ───────────────────────
   int         tag       = kNoTag;
   std::string src;                // resource path — auto-loaded by the builder
   glint_bitmap     bitmap;             // populated from src by the builder, or set directly
   int         numFrames = 1;      // sprite-sheet frame count (passed to LoadBitmap)
 
 private:
-  // Keeps req.responseData alive alongside bitmap: the Skia image wrapper wraps
+  // Keeps req.responseData alive alongside bitmap: the Skia img wrapper wraps
   // the raw byte pointer with SkData::MakeWithoutCopy, so the SkImage_Lazy
   // inside glint_bitmap holds a non-owning pointer to these bytes.  If the SkData
   // were freed before the GPU-side lazy decode, we'd get a use-after-free
@@ -230,7 +230,7 @@ public:
     setDirty(false);
   }
 
-  const char* typeName() const override { return "image"; }
+  const char* typeName() const override { return "img"; }
   const char* tagName()  const override { return "img"; }
 
 protected:
@@ -300,7 +300,7 @@ protected:
 
     switch (fit)
     {
-      // ── Contain: uniform scale, full image visible, centred ───────────────
+      // ── Contain: uniform scale, full img visible, centred ───────────────
       case Fit::Contain:
       {
         const float scale = std::min(content.W() / bmpW, content.H() / bmpH);
@@ -411,7 +411,7 @@ protected:
     auto* apiBitmap = bitmap.GetAPIBitmap();
     if (!apiBitmap) return;
 
-    sk_sp<SkImage> img = apiBitmap->image();
+    sk_sp<SkImage> img = apiBitmap->img();
     if (!img) return;
 
     const glint_rect content = getContent();

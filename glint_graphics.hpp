@@ -5,7 +5,7 @@
  * Standalone-owned graphics primitives used by glint.
  *
  * This header provides the small geometry, color, text, popup, and
- * Skia-backed image/SVG wrappers that the scene graph still expects.
+ * Skia-backed img/SVG wrappers that the scene graph still expects.
  */
 
 #include <algorithm>
@@ -236,11 +236,11 @@ class glint_api_bitmap
 {
 public:
 	glint_api_bitmap() = default;
-	explicit glint_api_bitmap(sk_sp<SkImage> image) : mImage(std::move(image)) {}
+	explicit glint_api_bitmap(sk_sp<SkImage> img) : mImage(std::move(img)) {}
 
 	bool IsValid() const { return static_cast<bool>(mImage); }
 	SkImage* GetBitmap() const { return mImage.get(); }
-	sk_sp<SkImage> image() const { return mImage; }
+	sk_sp<SkImage> img() const { return mImage; }
 
 private:
 	sk_sp<SkImage> mImage;
@@ -250,8 +250,8 @@ class glint_bitmap
 {
 public:
 	glint_bitmap() = default;
-	explicit glint_bitmap(sk_sp<SkImage> image, int numFrames = 1)
-		: mBitmap(std::make_shared<glint_api_bitmap>(std::move(image))), mNumFrames(numFrames)
+	explicit glint_bitmap(sk_sp<SkImage> img, int numFrames = 1)
+		: mBitmap(std::make_shared<glint_api_bitmap>(std::move(img))), mNumFrames(numFrames)
 	{
 		if (mBitmap && mBitmap->GetBitmap())
 		{
@@ -687,9 +687,9 @@ public:
 		{
 			if (auto* api = bitmap.GetAPIBitmap())
 			{
-				auto image = api->image();
-				if (!image) return;
-				canvas->drawImageRect(image, ToSkRect(dest), SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kLinear), nullptr);
+				auto img = api->img();
+				if (!img) return;
+				canvas->drawImageRect(img, ToSkRect(dest), SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kLinear), nullptr);
 			}
 		}
 	}

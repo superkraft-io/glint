@@ -4,7 +4,7 @@
  * glint_filter.hpp
  * CSS-compatible filter API for glint components. (Skia backend only.)
  *
- * Maps the CSS `filter` property syntax to Skia image / colour-matrix filters
+ * Maps the CSS `filter` property syntax to Skia img / colour-matrix filters
  * and wraps draw calls in a saveLayer / restore pair.
  *
  * Supported functions (chainable, space-separated):
@@ -355,9 +355,9 @@ inline void CMHueRotate(SkColorMatrix& m, float degrees)
  *
  * Color-matrix operations (brightness, contrast, saturate, grayscale,
  * sepia, invert, opacity, hue-rotate) are all composed into a single
- * SkColorMatrix pass for efficiency, then wrapped as an image filter.
+ * SkColorMatrix pass for efficiency, then wrapped as an img filter.
  *
- * Blur and drop-shadow are chained as separate image filters.
+ * Blur and drop-shadow are chained as separate img filters.
  */
 inline sk_sp<SkImageFilter> Build(const std::string& filterStr)
 {
@@ -406,8 +406,8 @@ inline sk_sp<SkImageFilter> Build(const std::string& filterStr)
     }
   }
 
-  // Wrap accumulated color-matrix operations as an image filter, chained
-  // with any image filters (blur / drop-shadow) collected above.
+  // Wrap accumulated color-matrix operations as an img filter, chained
+  // with any img filters (blur / drop-shadow) collected above.
   if (hasCM)
   {
     auto cf = SkColorFilters::Matrix(cm);

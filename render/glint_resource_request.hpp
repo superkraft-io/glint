@@ -5,7 +5,7 @@
  * Resource interception object — mirrors the browser Fetch / service-worker API.
  *
  * Fired by glint_document::onRequest before every url-based asset load:
- *   <img src="...">, CSS background-image: url("..."), CSS mask: url("...")
+ *   <img src="...">, CSS background-img: url("..."), CSS mask: url("...")
  *
  * The handler is the SOLE authority when registered — if it does not call
  * one of the respond helpers the load silently fails (HTTP 404 equivalent).
@@ -142,7 +142,7 @@ struct glint_resource_request
   }
 
   /** Signal an explicit failure without providing data.
-   *  The engine treats this as a silent load failure (blank image). */
+   *  The engine treats this as a silent load failure (blank img). */
   void error(int code, const std::string& message)
   {
     statusCode    = code;

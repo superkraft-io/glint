@@ -118,7 +118,7 @@ public:
     const float h = physRect.height();  // physical height
     if (w <= 0.f || h <= 0.f) return;
 
-    // Build the image filter from the runtime shader.
+    // Build the img filter from the runtime shader.
     SkRuntimeShaderBuilder builder(mEffect);
     setUniforms(builder, w, h, mTime);
 

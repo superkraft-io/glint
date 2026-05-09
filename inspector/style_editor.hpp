@@ -384,7 +384,7 @@ static inline void glint_style_set_by_name(glint_style& s,
   {
     try { s.backgroundGradientRadius = std::stof(val); } catch (...) {}
   }
-  else if (key == "background-image")    s.backgroundImageProp = val.c_str();
+  else if (key == "background-img")    s.backgroundImageProp = val.c_str();
   else if (key == "background-size")     s.backgroundSize     = val;
   else if (key == "background-position") s.backgroundPosition = val;
   else if (key == "background-repeat")   s.backgroundRepeat   = val;
@@ -712,7 +712,7 @@ static const std::vector<const char*>& glint_all_style_keys()
     // typography
     "font-size","font-family","font-weight","font-style","line-height","color","text-align","vertical-align","text-decoration","selection-color",
     // appearance
-    "background-color","background","background-image","background-size","background-position","background-repeat","opacity",
+    "background-color","background","background-img","background-size","background-position","background-repeat","opacity",
     "border-color","border-width","border-radius","border-style","stroke-dashoffset",
     "fill",
     "stroke","stroke-dasharray","stroke-linecap","stroke-linejoin",
@@ -777,7 +777,7 @@ static std::string glint_add_default(const std::string& key)
   // Enums / keywords
   if (key=="z-index"             ) return "1";
   if (key=="white-space"         ) return "nowrap";
-  if (key=="background-image"    ) return "url(\"path/to/image.png\")";
+  if (key=="background-img"    ) return "url(\"path/to/img.png\")";
   if (key=="background-size"     ) return "cover";
   if (key=="background-position" ) return "center";
   if (key=="background-repeat"   ) return "no-repeat";
@@ -3048,9 +3048,9 @@ private:
       row->style.filter = "opacity(0.65)";
 
     // Hover highlight — listeners are safe because they never rebuild
-    // Detect image-bearing keys so the preview popup can be triggered.
+    // Detect img-bearing keys so the preview popup can be triggered.
     static const char* const kImgKeys[] = {
-      "background-image", "background", "mask", nullptr
+      "background-img", "background", "mask", nullptr
     };
     bool _hasUrl = false;
     for (const char* const* k = kImgKeys; *k; ++k)
@@ -4417,11 +4417,11 @@ private:
   // ── Single key : value row ─────────────────────────────────────────────────
   void buildRow(const std::string& key, const std::string& val, bool alt)
   {
-    // Detect image-bearing properties whose url() token can be previewed.
+    // Detect img-bearing properties whose url() token can be previewed.
     // URL extraction is intentionally left to the onEnter callback receiver;
     // this file stays free of image_preview_popup.hpp dependencies.
     static const char* const kImgKeys[] = {
-      "background-image", "background", "mask", nullptr
+      "background-img", "background", "mask", nullptr
     };
     bool isImageBearing = false;
     for (const char* const* k = kImgKeys; *k; ++k)
@@ -4448,7 +4448,7 @@ private:
     row->style.backgroundColor = rowBgNormal;
     addChild(row);
 
-    // Hover highlight + image preview trigger (only for image-bearing keys).
+    // Hover highlight + img preview trigger (only for img-bearing keys).
     if (hasUrl && mOnRowEnter && mOnRowLeave)
     {
       const glint_color bgN = rowBgNormal;

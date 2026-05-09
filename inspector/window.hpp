@@ -66,8 +66,8 @@ static constexpr UINT WM_INSP_HOVER_CHANGED   = WM_USER + 102;
 static constexpr UINT WM_INSP_SELECT_CHANGED  = WM_USER + 103;
 static constexpr UINT WM_INSP_ENABLE_INSPECT  = WM_USER + 104;  // activate crosshair mode
 static constexpr UINT WM_INSP_TIMER_ID        = 2;              // ::SetTimer id for stats refresh (must not collide with glint_window_win32::SKUI_ANIM_TIMER=1)
-static constexpr UINT WM_INSP_PREVIEW_SHOW_TIMER = 3;           // 150 ms show-delay for image preview popup
-static constexpr UINT WM_INSP_PREVIEW_HIDE_TIMER = 4;           // 100 ms hide-delay for image preview popup
+static constexpr UINT WM_INSP_PREVIEW_SHOW_TIMER = 3;           // 150 ms show-delay for img preview popup
+static constexpr UINT WM_INSP_PREVIEW_HIDE_TIMER = 4;           // 100 ms hide-delay for img preview popup
 static constexpr UINT WM_INSP_TIMER_MS_NORMAL   = 500;          // default inspector refresh cadence
 static constexpr UINT WM_INSP_TIMER_MS_REALTIME = 150;          // faster polling when Realtime is enabled
 
@@ -1951,7 +1951,7 @@ function exportAbsoluteJSON() {
         {
           if (!authored.backgroundGradient.empty())
           {
-            styleStr += "background-image:" + bgFill + "," + bgImage + ";";
+            styleStr += "background-img:" + bgFill + "," + bgImage + ";";
             styleStr += "background-repeat:no-repeat," + authored.backgroundRepeat + ";";
             styleStr += "background-position:0% 0%," + authored.backgroundPosition + ";";
             styleStr += "background-size:auto," + authored.backgroundSize + ";";
@@ -1962,7 +1962,7 @@ function exportAbsoluteJSON() {
           {
             if (authored.backgroundColor.value.A > 0)
               styleStr += "background-color:" + icolorToCss(authored.backgroundColor.value) + ";";
-            styleStr += "background-image:" + bgImage + ";";
+            styleStr += "background-img:" + bgImage + ";";
             if (!authored.backgroundSize.empty())
               styleStr += "background-size:" + authored.backgroundSize + ";";
             if (!authored.backgroundPosition.empty())
@@ -1974,12 +1974,12 @@ function exportAbsoluteJSON() {
         else if (!authored.backgroundGradient.empty() || authored.backgroundColor.value.A > 0)
         {
           // When both a gradient and a solid backgroundColor are present, emit them as
-          // separate background-image + background-color properties.  The `background`
+          // separate background-img + background-color properties.  The `background`
           // shorthand resets background-color to transparent, which destroys the base
           // layer that background-blend-mode blends the gradient against in the browser.
           if (!authored.backgroundGradient.empty() && authored.backgroundColor.value.A > 0)
           {
-            styleStr += "background-image:" + bgFill + ";";
+            styleStr += "background-img:" + bgFill + ";";
             styleStr += "background-color:" + icolorToCss(authored.backgroundColor.value) + ";";
           }
           else
@@ -2125,8 +2125,8 @@ function exportAbsoluteJSON() {
       if (!authored.mask.empty() && authored.mask != "none")
       {
         const std::string maskImage = absolutizeCssUrls(authored.mask);
-        styleStr += "mask-image:" + maskImage + ";";
-        styleStr += "-webkit-mask-image:" + maskImage + ";";
+        styleStr += "mask-img:" + maskImage + ";";
+        styleStr += "-webkit-mask-img:" + maskImage + ";";
         if (!authored.maskMode.empty())      styleStr += "mask-mode:" + authored.maskMode + ";";
         if (!authored.maskPosition.empty())
         {
@@ -2227,7 +2227,7 @@ function exportAbsoluteJSON() {
 
       if (tag.empty()) tag = "div";
 
-      if (tag != "img" && std::strcmp(tn, "image") == 0)
+      if (tag != "img" && std::strcmp(tn, "img") == 0)
       {
         tag = "img";
         auto* imgNode = dynamic_cast<glint_image*>(node);
@@ -3164,7 +3164,7 @@ function exportAbsoluteJSON() {
           mOwnRoot->mCanvas.addChild(popup);
 
           // Shared callbacks — both the Style panel and Computed panel fire these
-          // on mouseenter/mouseleave for image-bearing property rows.
+          // on mouseenter/mouseleave for img-bearing property rows.
           // Defined once here; _inspExtractUrlPath is in scope via image_preview_popup.hpp.
           auto onRowEnter = [this](const std::string& key, const std::string& val,
                                    float rowLeft, float rowTop, float rowBot)

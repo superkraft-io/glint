@@ -108,7 +108,7 @@ inline std::filesystem::path glint_self_dir()
 #endif
 
 // ── glint_assets_dir / glint_assets_path ──────────────────────────────────────
-// INTERNAL — used by the glint inspector for image previews.
+// INTERNAL — used by the glint inspector for img previews.
 // These functions walk up from the compile-time __FILE__ path to find a
 // sibling "glint_assets" directory and only work when the source tree is
 // present on disk.  They are NOT part of the public glint API.

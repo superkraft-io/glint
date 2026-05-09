@@ -31,6 +31,8 @@
 #include "glint_text_editor_base.hpp"
 #include "../default_style.hpp"
 #include "glint_slider.hpp"
+#include "glint_checkbox.hpp"
+#include "glint_radio.hpp"
 
 #include <cmath>
 #include <limits>
@@ -739,7 +741,7 @@ class glint_input : public glint_element
 public:
   // ── Configuration ─────────────────────────────────────────────────────────
 
-  /** Input type: "text" | "number" | "password" | "email" | "range" */
+  /** Input type: "text" | "number" | "password" | "email" | "range" | "checkbox" | "radio" */
   std::string type        = "text";
 
   /** Placeholder text shown when the field is empty and unfocused. */
@@ -780,6 +782,26 @@ public:
   /** Called when the field loses focus (text types only). */
   std::function<void()> onBlur;
 
+  // ── Checkbox / radio fields ────────────────────────────────────────────────
+
+  /** Initial checked state (type="checkbox" / type="radio"). */
+  bool checked = false;
+
+  /** Label text displayed next to the box/circle (type="checkbox" / type="radio"). */
+  std::string text;
+
+  /** Box or circle size in pixels (type="checkbox" / type="radio"). */
+  float checkSize = 16.f;
+
+  /** Logical value this input represents — used by radio groups. */
+  std::string value;
+
+  /** Shared group that deselects other radios when this one is selected (type="radio"). */
+  std::shared_ptr<glint_radio_group> group;
+
+  /** Fired when checked state toggles (type="checkbox" / type="radio"). */
+  std::function<void(bool)> onCheck;
+
   // ── Construction ──────────────────────────────────────────────────────────
 
   glint_input()
@@ -795,6 +817,8 @@ public:
   /** Returns the current value as a string. */
   std::string getValue() const
   {
+    if (mCheckbox) return mCheckbox->checked ? "true" : "false";
+    if (mRadio)    return mRadio->value;
     if (mTextInput) return mTextInput->getValue();
     if (mSlider)
     {
@@ -892,6 +916,8 @@ private:
   std::string        mActiveType;
   glint_text_input*  mTextInput  = nullptr;
   glint_slider*      mSlider     = nullptr;
+  glint_checkbox*    mCheckbox   = nullptr;
+  glint_radio*       mRadio      = nullptr;
   float              mInitialFloatValue = 0.f;
   std::string        mPendingValue;
   bool               mFocusPending = false;   // true when shell was focused before delegate existed
@@ -900,8 +926,46 @@ private:
   {
     if (mTextInput) { removeChild(mTextInput); mTextInput = nullptr; }
     if (mSlider)    { removeChild(mSlider);    mSlider    = nullptr; }
+    if (mCheckbox)  { removeChild(mCheckbox);  mCheckbox  = nullptr; }
+    if (mRadio)     { removeChild(mRadio);     mRadio     = nullptr; }
 
-    if (type == "range")
+    if (type == "checkbox")
+    {
+      style.cursor       = "default";
+      auto* cb           = new glint_checkbox();
+      cb->style.position = "absolute";
+      cb->style.left     = 0.f;
+      cb->style.top      = 0.f;
+      cb->style.width    = "100%";
+      cb->style.height   = "100%";
+      cb->onChange = [this](bool v)
+      {
+        checked = v;
+        if (onCheck)  onCheck(v);
+        if (onChange) onChange(v ? "true" : "false");
+      };
+      addChild(cb);
+      mCheckbox = cb;
+    }
+    else if (type == "radio")
+    {
+      style.cursor      = "default";
+      auto* r           = new glint_radio();
+      r->style.position = "absolute";
+      r->style.left     = 0.f;
+      r->style.top      = 0.f;
+      r->style.width    = "100%";
+      r->style.height   = "100%";
+      r->onChange = [this](bool v)
+      {
+        checked = v;
+        if (onCheck)  onCheck(v);
+        if (onChange) onChange(this->value);
+      };
+      addChild(r);
+      mRadio = r;
+    }
+    else if (type == "range")
     {
       auto* sl           = new glint_slider();
       sl->style.position = "absolute";
@@ -964,6 +1028,20 @@ private:
       mSlider->min  = min;
       mSlider->max  = max;
       mSlider->step = step;
+    }
+    if (mCheckbox)
+    {
+      mCheckbox->checked = checked;
+      mCheckbox->text    = text;
+      mCheckbox->size    = checkSize;
+    }
+    if (mRadio)
+    {
+      mRadio->checked = checked;
+      mRadio->text    = text;
+      mRadio->size    = checkSize;
+      mRadio->value   = value;
+      mRadio->group   = group;
     }
   }
 };

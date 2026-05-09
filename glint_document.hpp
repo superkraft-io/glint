@@ -182,7 +182,7 @@ public:
   /**
    * Resource request callback — mirroring WebView2 / WKWebView interception.
    *
-   * Called before every file-based resource load (CSS background-image, mask url(),
+   * Called before every file-based resource load (CSS background-img, mask url(),
    * SVG files, etc.).  Populate req.responseData with raw encoded bytes to intercept
    * the load; leave it null to fall through to the normal disk-load + cache path.
    *
