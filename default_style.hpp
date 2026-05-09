@@ -231,7 +231,7 @@ datepicker {
   cursor: pointer;
 }
 
-.dp-cell-label {
+.dp-cell-label <{
   font-size: 12px;
 }
 
