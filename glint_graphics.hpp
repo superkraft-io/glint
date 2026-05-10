@@ -43,6 +43,7 @@
 #include "include/core/SkStream.h"
 #include "include/core/SkTextBlob.h"
 #include "include/core/SkTypeface.h"
+#include "include/core/SkColorFilter.h"
 #include "modules/svg/include/SkSVGDOM.h"
 
 #if defined(SK_BUILD_FOR_WIN)
@@ -700,7 +701,7 @@ public:
 	}
 
 	void DrawSVG(const glint_svg& svg, const glint_rect& dest, const void* /*unused*/ = nullptr,
-							 const glint_color* /*stroke*/ = nullptr, const glint_color* /*fill*/ = nullptr)
+							 const glint_color* /*stroke*/ = nullptr, const glint_color* fill = nullptr)
 	{
 		if (auto* canvas = static_cast<SkCanvas*>(mDrawContext))
 		{
@@ -708,12 +709,31 @@ public:
 			if (!dom) return;
 			canvas->save();
 			canvas->translate(dest.L, dest.T);
-			const SkSize natural = dom->containerSize();
-			const float srcW = natural.width() > 0.f ? natural.width() : std::max(1.f, dest.W());
-			const float srcH = natural.height() > 0.f ? natural.height() : std::max(1.f, dest.H());
+			// Use the stable load-time size stored in glint_svg::mSize (W()/H()).
+			// Reading dom->containerSize() here is wrong because setContainerSize()
+			// mutates the shared cached DOM — making srcW/srcH stale after the first draw.
+			const float srcW = svg.W() > 0.f ? svg.W() : std::max(1.f, dest.W());
+			const float srcH = svg.H() > 0.f ? svg.H() : std::max(1.f, dest.H());
 			dom->setContainerSize(SkSize::Make(dest.W(), dest.H()));
 			canvas->scale(dest.W() / srcW, dest.H() / srcH);
-			dom->render(canvas);
+			if (fill)
+			{
+				// Apply fill tint: render SVG into a layer then colorize via SrcIn.
+				// This replaces every drawn pixel's color with `fill` while keeping
+				// the original alpha shape — equivalent to CSS `color` on an SVG <img>.
+				SkPaint layerPaint;
+				layerPaint.setColorFilter(
+					SkColorFilters::Blend(
+						SkColorSetARGB(fill->A, fill->R, fill->G, fill->B),
+						SkBlendMode::kSrcIn));
+				canvas->saveLayer(nullptr, &layerPaint);
+				dom->render(canvas);
+				canvas->restore();
+			}
+			else
+			{
+				dom->render(canvas);
+			}
 			canvas->restore();
 		}
 	}

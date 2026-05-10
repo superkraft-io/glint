@@ -796,7 +796,7 @@ static std::string glint_add_default(const std::string& key)
   if (key=="vertical-align")    return "middle";
   if (key=="text-decoration")   return "line-through";
   if (key=="shadow-enabled")    return "true";
-  if (key=="object-fit")        return "contain";
+  if (key=="object-fit")        return "fill";
   if (key=="object-position")   return "center";
   if (key=="transform")         return "translateX(-50%)";
   if (key=="filter")            return "blur(4px)";

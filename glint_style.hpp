@@ -2516,7 +2516,7 @@ struct glint_style
 
   // Object fit — img/media components (mirrors CSS object-fit / object-position).
   // Consumed by glint_image; ignored by other components.
-  std::string objectFit      = "contain";        // "contain"|"cover"|"fill"|"none"
+  std::string objectFit      = "fill";           // "fill"|"contain"|"cover"|"none" — matches Chrome <img> default
   std::string objectPosition = "center center";  // "left|center|right  top|center|middle|bottom"
 
   // CSS transform (translate subset).

@@ -54,10 +54,10 @@ class glint_image : public glint_element
 
   static Fit parseFit(const std::string& s)
   {
-    if (s == "cover") return Fit::Cover;
-    if (s == "fill")  return Fit::Fill;
-    if (s == "none")  return Fit::None;
-    return Fit::Contain; // default
+    if (s == "contain") return Fit::Contain;
+    if (s == "cover")   return Fit::Cover;
+    if (s == "none")    return Fit::None;
+    return Fit::Fill; // default — matches Chrome <img> object-fit:fill
   }
 
   static void parsePosition(const std::string& s, EAlign& h, EVAlign& v)
@@ -281,7 +281,8 @@ protected:
             dest = AlignRect(content, svgW, svgH, alignH, alignV);
           break;
       }
-      g.DrawSVG(_svgImg, dest);
+      const glint_color* fillPtr = style.fill.isSet ? &style.fill.value : nullptr;
+      g.DrawSVG(_svgImg, dest, nullptr, nullptr, fillPtr);
       return;
     }
 
@@ -402,7 +403,8 @@ protected:
         canvas->clipRect(SkRect::MakeLTRB(content.L, content.T, content.R, content.B));
 
       glint_canvas svgGraphics(canvas, mpG ? mpG->GetWindow() : nullptr);
-      svgGraphics.DrawSVG(_svgImg, dest);
+      const glint_color* fillPtr = style.fill.isSet ? &style.fill.value : nullptr;
+      svgGraphics.DrawSVG(_svgImg, dest, nullptr, nullptr, fillPtr);
 
       canvas->restore();
       return;

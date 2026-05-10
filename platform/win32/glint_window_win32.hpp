@@ -1284,6 +1284,22 @@ private:
       return 0;
     }
 
+    case WM_MBUTTONDOWN:
+    {
+      ::SetCapture(hwnd);
+      glint_win32_host::routeMiddleButtonDown(self->mOwnRoot.get(), self->mPrevX, self->mPrevY, wp, lp, self->mDpr);
+      glint_win32_host::invalidateWindow(hwnd);
+      return 0;
+    }
+
+    case WM_MBUTTONUP:
+    {
+      ::ReleaseCapture();
+      glint_win32_host::routeMiddleButtonUp(self->mOwnRoot.get(), wp, lp, self->mDpr);
+      glint_win32_host::invalidateWindow(hwnd);
+      return 0;
+    }
+
     case WM_MOUSEMOVE:
     {
       glint_win32_host::routeMouseMove(hwnd, self->mOwnRoot.get(), self->mPrevX, self->mPrevY, wp, lp, self->mDpr);

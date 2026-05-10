@@ -15,12 +15,13 @@
 // host UI SDK.
 struct glint_mouse_mod
 {
-  bool L = false;   // left mouse button held
-  bool R = false;   // right mouse button held
-  bool S = false;   // Shift
-  bool C = false;   // Ctrl
-  bool A = false;   // Alt / Option
-  bool M = false;   // Meta / Cmd (macOS)
+  bool L   = false;   // left mouse button held
+  bool R   = false;   // right mouse button held
+  bool Mid = false;   // middle mouse button held
+  bool S   = false;   // Shift
+  bool C   = false;   // Ctrl
+  bool A   = false;   // Alt / Option
+  bool M   = false;   // Meta / Cmd (macOS)
 };
 
 // ── glint_key_press ──────────────────────────────────────────────────────────

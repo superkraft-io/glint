@@ -42,8 +42,9 @@ inline glint_mouse_mod modifierKeysFromWParam(WPARAM wp)
 inline glint_mouse_mod mouseButtonsFromWParam(WPARAM wp)
 {
   glint_mouse_mod modifiers = modifierKeysFromWParam(wp);
-  modifiers.L = (wp & MK_LBUTTON) != 0;
-  modifiers.R = (wp & MK_RBUTTON) != 0;
+  modifiers.L   = (wp & MK_LBUTTON) != 0;
+  modifiers.R   = (wp & MK_RBUTTON) != 0;
+  modifiers.Mid = (wp & MK_MBUTTON) != 0;
   return modifiers;
 }
 
@@ -93,6 +94,31 @@ inline void routeRightButtonUp(glint_document* document, WPARAM wp, LPARAM lp, f
     document->OnMouseUp(x, y, modifierKeysFromWParam(wp));
 }
 
+inline void routeMiddleButtonDown(glint_document* document, float& prevX, float& prevY, WPARAM wp, LPARAM lp, float scale = 1.f)
+{
+  const float invScale = scale > 0.f ? 1.f / scale : 1.f;
+  const float x = static_cast<float>(GET_X_LPARAM(lp)) * invScale;
+  const float y = static_cast<float>(GET_Y_LPARAM(lp)) * invScale;
+  prevX = x;
+  prevY = y;
+
+  glint_mouse_mod modifiers = modifierKeysFromWParam(wp);
+  modifiers.Mid = true;
+  if (document)
+    document->OnMouseDown(x, y, modifiers);
+}
+
+inline void routeMiddleButtonUp(glint_document* document, WPARAM wp, LPARAM lp, float scale = 1.f)
+{
+  const float invScale = scale > 0.f ? 1.f / scale : 1.f;
+  const float x = static_cast<float>(GET_X_LPARAM(lp)) * invScale;
+  const float y = static_cast<float>(GET_Y_LPARAM(lp)) * invScale;
+
+  glint_mouse_mod modifiers = modifierKeysFromWParam(wp);
+  if (document)
+    document->OnMouseUp(x, y, modifiers);
+}
+
 inline void routeMouseMove(HWND hwnd, glint_document* document, float& prevX, float& prevY, WPARAM wp, LPARAM lp, float scale = 1.f)
 {
   const float invScale = scale > 0.f ? 1.f / scale : 1.f;
@@ -106,7 +132,7 @@ inline void routeMouseMove(HWND hwnd, glint_document* document, float& prevX, fl
   if (document)
   {
     const glint_mouse_mod modifiers = mouseButtonsFromWParam(wp);
-    if (modifiers.L)
+    if (modifiers.L || modifiers.Mid)
       document->OnMouseDrag(x, y, deltaX, deltaY, modifiers);
     else
       document->OnMouseOver(x, y, modifiers, deltaX, deltaY);
