@@ -254,10 +254,10 @@ protected:
       const glint_rect content = getContent();
       const float svgW = _svgImg.W();
       const float svgH = _svgImg.H();
-      Fit     fit    = parseFit(style.objectFit);
+      Fit     fit    = parseFit(computedStyle.objectFit);
       EAlign  alignH = EAlign::Center;
       EVAlign alignV = EVAlign::Middle;
-      parsePosition(style.objectPosition, alignH, alignV);
+      parsePosition(computedStyle.objectPosition, alignH, alignV);
       glint_rect dest = content;
       switch (fit)
       {
@@ -294,10 +294,10 @@ protected:
     const float bmpH    = static_cast<float>(bitmap.FH());
     if (bmpW <= 0.f || bmpH <= 0.f) return;
 
-    Fit     fit = parseFit(style.objectFit);
+    Fit     fit = parseFit(computedStyle.objectFit);
     EAlign  alignH = EAlign::Center;
     EVAlign alignV = EVAlign::Middle;
-    parsePosition(style.objectPosition, alignH, alignV);
+    parsePosition(computedStyle.objectPosition, alignH, alignV);
 
     switch (fit)
     {
@@ -367,10 +367,10 @@ protected:
       const glint_rect content = getContent();
       const float svgW = _svgImg.W();
       const float svgH = _svgImg.H();
-      Fit     fit    = parseFit(style.objectFit);
+      Fit     fit    = parseFit(computedStyle.objectFit);
       EAlign  alignH = EAlign::Center;
       EVAlign alignV = EVAlign::Middle;
-      parsePosition(style.objectPosition, alignH, alignV);
+      parsePosition(computedStyle.objectPosition, alignH, alignV);
 
       glint_rect dest = content;
       switch (fit)
@@ -424,10 +424,10 @@ protected:
     const float physW   = static_cast<float>(img->width());
     const float physH   = static_cast<float>(img->height());
 
-    Fit     fit    = parseFit(style.objectFit);
+    Fit     fit    = parseFit(computedStyle.objectFit);
     EAlign  alignH = EAlign::Center;
     EVAlign alignV = EVAlign::Middle;
-    parsePosition(style.objectPosition, alignH, alignV);
+    parsePosition(computedStyle.objectPosition, alignH, alignV);
 
     SkSamplingOptions sampling(SkFilterMode::kLinear, SkMipmapMode::kLinear);
 
