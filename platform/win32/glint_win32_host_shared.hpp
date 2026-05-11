@@ -164,7 +164,28 @@ inline void routeMouseWheel(HWND hwnd, glint_document* document, WPARAM wp, LPAR
   const float x = static_cast<float>(point.x) * invScale;
   const float y = static_cast<float>(point.y) * invScale;
   const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wp)) / WHEEL_DELTA * 40.f;
-  document->OnMouseWheel(x, y, 0.f, -delta, modifierKeysFromWParam(wp));
+  const auto  mod   = modifierKeysFromWParam(wp);
+  // Shift+wheel → horizontal scroll (common browser/app convention).
+  if (mod.S) document->OnMouseWheel(x, y, -delta, 0.f, mod);
+  else       document->OnMouseWheel(x, y, 0.f,   -delta, mod);
+}
+
+// WM_MOUSEHWHEEL — native horizontal tilt-wheel event.
+// Positive delta = wheel tilted right = scroll right (positive deltaX).
+inline void routeMouseWheelH(HWND hwnd, glint_document* document, WPARAM wp, LPARAM lp, float scale = 1.f)
+{
+  if (!document)
+    return;
+
+  POINT point = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+  if (hwnd)
+    ::ScreenToClient(hwnd, &point);
+
+  const float invScale = scale > 0.f ? 1.f / scale : 1.f;
+  const float x = static_cast<float>(point.x) * invScale;
+  const float y = static_cast<float>(point.y) * invScale;
+  const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wp)) / WHEEL_DELTA * 40.f;
+  document->OnMouseWheel(x, y, delta, 0.f, modifierKeysFromWParam(wp));
 }
 
 inline void routeChar(glint_document* document, WPARAM wp)

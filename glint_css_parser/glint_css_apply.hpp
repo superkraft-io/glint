@@ -323,6 +323,9 @@ public:
       if (ss >> trackTok) style.scrollbarTrackColor = sk_color(trackTok.c_str());
       return;
     }
+    if (prop == "scrollbar-thumb-border-radius") { style.scrollbarThumbBorderRadius = toFloat(val); return; }
+    if (prop == "scrollbar-thumb-width")         { style.scrollbarThumbWidth         = toFloat(val); return; }
+    if (prop == "scrollbar-thumb-height")        { style.scrollbarThumbHeight        = toFloat(val); return; }
 
     // ── OBJECT ────────────────────────────────────────────────────────────────
     if (prop == "object-fit")      { style.objectFit      = val; return; }

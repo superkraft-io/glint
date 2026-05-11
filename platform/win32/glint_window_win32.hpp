@@ -1324,6 +1324,13 @@ private:
       return 0;
     }
 
+    case WM_MOUSEHWHEEL:
+    {
+      glint_win32_host::routeMouseWheelH(hwnd, self->mOwnRoot.get(), wp, lp, self->mDpr);
+      glint_win32_host::invalidateWindow(hwnd);
+      return 0;
+    }
+
     // ── Keyboard ─────────────────────────────────────────────────────────────
     case WM_CHAR:
     {

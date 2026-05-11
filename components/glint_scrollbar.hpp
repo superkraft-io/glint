@@ -83,7 +83,7 @@ public:
 
     auto* thumb = new ThumbComp(this);
     thumb->style.backgroundColor = thumbColor;
-    thumb->style.borderRadius    = 3.f;
+    thumb->style.borderRadius    = mScrollParent ? mScrollParent->style.scrollbarThumbBorderRadius : 3.f;
     track->addChild(thumb);
     mThumb = thumb;
 
@@ -349,9 +349,32 @@ inline void glint_scrollbar::Layout(glint_canvas* /*g*/)
                               : 0.f;
 
     if (isVertical())
-      mThumb->mRect = mThumb->mPaintRECT = glint_rect(tr.L, tr.T + thumbOff, tr.R, tr.T + thumbOff + thumbSz);
+    {
+      glint_rect thumbRect(tr.L, tr.T + thumbOff, tr.R, tr.T + thumbOff + thumbSz);
+      const float twProp = mScrollParent ? mScrollParent->style.scrollbarThumbWidth : -1.f;
+      if (twProp > 0.f)
+      {
+        const float tw    = std::min(twProp, thumbRect.W());
+        const float inset = (thumbRect.W() - tw) * 0.5f;
+        thumbRect.L += inset;
+        thumbRect.R -= inset;
+      }
+      mThumb->mRect = mThumb->mPaintRECT = thumbRect;
+    }
     else
-      mThumb->mRect = mThumb->mPaintRECT = glint_rect(tr.L + thumbOff, tr.T, tr.L + thumbOff + thumbSz, tr.B);
+    {
+      glint_rect thumbRect(tr.L + thumbOff, tr.T, tr.L + thumbOff + thumbSz, tr.B);
+      const float thProp = mScrollParent ? mScrollParent->style.scrollbarThumbHeight : -1.f;
+      if (thProp > 0.f)
+      {
+        const float th    = std::min(thProp, thumbRect.H());
+        const float inset = (thumbRect.H() - th) * 0.5f;
+        thumbRect.T += inset;
+        thumbRect.B -= inset;
+      }
+      mThumb->mRect = mThumb->mPaintRECT = thumbRect;
+    }
+    mThumb->style.borderRadius = mScrollParent ? mScrollParent->style.scrollbarThumbBorderRadius : 3.f;
   }
 }
 

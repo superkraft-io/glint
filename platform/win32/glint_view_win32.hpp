@@ -821,6 +821,13 @@ private:
         return 0;
       }
 
+      case WM_MOUSEHWHEEL:
+      {
+        glint_win32_host::routeMouseWheelH(hwnd, self->mDocument.get(), wp, lp, self->mDpr);
+        glint_win32_host::invalidateWindow(hwnd);
+        return 0;
+      }
+
       case WM_CHAR:
       {
         glint_win32_host::routeChar(self->mDocument.get(), wp);

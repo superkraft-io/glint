@@ -856,9 +856,11 @@
     // Absolute children — positioned against their CSS containing block
     // (nearest positioned ancestor, per CSS spec; falls back to direct parent).
     // Browser CSS rules: left wins over right; top wins over bottom.
+    // Scrollbar children are excluded — _positionScrollbars() owns their rects.
     for (auto& child : mChildren)
     {
       if (child->computedStyle.position != "absolute") continue;
+      if (child.get() == mScrollbarV || child.get() == mScrollbarH || child.get() == mScrollCorner) continue;
       const glint_rect cb  = _containingBlockContent(child.get());
       const float cbW = cb.W(), cbH = cb.H();
       const float w = std::max(0.f, childPrefW(*child, cbW));
@@ -1771,6 +1773,8 @@
     {
       if (child->computedStyle.display == "none") continue;
       const bool  isAbs = (child->computedStyle.position == "absolute");
+      // Scrollbar children are excluded — _positionScrollbars() owns their rects.
+      if (isAbs && (child.get() == mScrollbarV || child.get() == mScrollbarH || child.get() == mScrollCorner)) continue;
       const bool  isRel = (child->computedStyle.position == "relative");
       const float mL    = isAbs ? 0.f : child->computedStyle.marginLeft.resolve(rW);
       const float mT    = isAbs ? 0.f : child->computedStyle.marginTop.resolve(rW);

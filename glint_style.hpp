@@ -2213,6 +2213,9 @@ struct glint_style
     , scrollbarThumbColor(o.scrollbarThumbColor)
     , scrollbarTrackColor(o.scrollbarTrackColor)
     , scrollbarButtonColor(o.scrollbarButtonColor)
+    , scrollbarThumbBorderRadius(o.scrollbarThumbBorderRadius)
+    , scrollbarThumbWidth(o.scrollbarThumbWidth)
+    , scrollbarThumbHeight(o.scrollbarThumbHeight)
     , objectFit(o.objectFit), objectPosition(o.objectPosition)
     , transform(o.transform)
     , filter(o.filter)
@@ -2332,10 +2335,13 @@ struct glint_style
     overflowX          = o.overflowX;
     overflowY          = o.overflowY;
     // overflow proxy pointers already point to our own fields — don't overwrite.
-    scrollbarWidth       = o.scrollbarWidth;
-    scrollbarThumbColor  = o.scrollbarThumbColor;
-    scrollbarTrackColor  = o.scrollbarTrackColor;
-    scrollbarButtonColor = o.scrollbarButtonColor;
+    scrollbarWidth             = o.scrollbarWidth;
+    scrollbarThumbColor        = o.scrollbarThumbColor;
+    scrollbarTrackColor        = o.scrollbarTrackColor;
+    scrollbarButtonColor       = o.scrollbarButtonColor;
+    scrollbarThumbBorderRadius = o.scrollbarThumbBorderRadius;
+    scrollbarThumbWidth        = o.scrollbarThumbWidth;
+    scrollbarThumbHeight       = o.scrollbarThumbHeight;
     transform        = o.transform;
     filter           = o.filter;
     backdropFilter   = o.backdropFilter;
@@ -2509,10 +2515,13 @@ struct glint_style
   //
   // When unset on the glint_scrollbar itself, these are inherited from the
   // parent scrollable component at construction time.
-  float    scrollbarWidth       = 12.f;
-  sk_color scrollbarThumbColor  = glint_color(255, 110, 110, 110);
-  sk_color scrollbarTrackColor  = glint_color(255,  40,  40,  40);
-  sk_color scrollbarButtonColor = glint_color(255,  65,  65,  65);
+  float    scrollbarWidth             = 12.f;
+  sk_color scrollbarThumbColor        = glint_color(255, 110, 110, 110);
+  sk_color scrollbarTrackColor        = glint_color(255,  40,  40,  40);
+  sk_color scrollbarButtonColor       = glint_color(255,  65,  65,  65);
+  float    scrollbarThumbBorderRadius = 3.f;    // thumb corner radius (px)
+  float    scrollbarThumbWidth        = -1.f;   // thumb width for vertical bar; -1 = fill track
+  float    scrollbarThumbHeight       = -1.f;   // thumb height for horizontal bar; -1 = fill track
 
   // Object fit — img/media components (mirrors CSS object-fit / object-position).
   // Consumed by glint_image; ignored by other components.
