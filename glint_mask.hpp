@@ -717,7 +717,7 @@ inline sk_sp<SkSVGDOM> glint_load_svg_dom(
     std::lock_guard<std::mutex> lock(glint_svg_cache_mutex());
     auto& cache = glint_svg_dom_cache();
     auto it = cache.find(path);
-    if (it != cache.end()) return it->second;
+    if (it != cache.end()) return it->second.dom;
   }
 
   GlintCachedResource cachedRes;
