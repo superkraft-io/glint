@@ -1546,19 +1546,16 @@ public:
     // Fast path: most parents have all children at zIndex 0 (e.g. labels in
     // text content). Skip the sort vector entirely and walk mChildren directly.
     // computedStyle.zIndex is kept fresh by tickTransitionsAll() which runs
-    // before draw.  Sort also fires when any child is positioned so that
-    // positioned elements always paint above non-positioned ones (CSS model).
-    bool _needsPaintOrderSort = false;
+    // before draw.
+    bool _anyNonZeroZ = false;
     for (auto& child : mChildren)
     {
       auto* c = child.get();
       if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-      const auto& _pos = c->computedStyle.position;
-      if (c->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
-        { _needsPaintOrderSort = true; break; }
+      if (c->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
     }
 
-    if (!_needsPaintOrderSort)
+    if (!_anyNonZeroZ)
     {
       {
         render_timing_scope _timingScope(render_timing_bucket::content);
@@ -1590,21 +1587,8 @@ public:
         if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
         _drawOrder.push_back({ c, c->computedStyle.zIndex });
       }
-      // CSS stacking context paint phases (Chrome model):
-      //   0 — positioned children with z-index < 0   (before parent content)
-      //   1 — non-positioned children                 (after parent content, tree order)
-      //   2 — positioned children with z-index >= 0  (after parent content, sorted)
-      auto _paintPhase = [](const _ChildDrawOrder& e) -> int {
-        const auto& _p = e.node->computedStyle.position;
-        const bool _isPos = !_p.empty() && _p != "static";
-        if (_isPos && e.zIndex < 0) return 0;
-        if (!_isPos) return 1;
-        return 2;
-      };
       std::stable_sort(_drawOrder.begin(), _drawOrder.end(),
-        [&](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
-          const int pa = _paintPhase(a), pb = _paintPhase(b);
-          if (pa != pb) return pa < pb;
+        [](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
           return a.zIndex < b.zIndex;
         });
 
@@ -1612,7 +1596,7 @@ public:
         render_timing_scope _timingScope(render_timing_bucket::children);
         for (const auto& entry : _drawOrder)
         {
-          if (_paintPhase(entry) >= 1) break;
+          if (entry.zIndex >= 0) break;
           const auto _childStart = std::chrono::steady_clock::now();
           entry.node->DrawToCanvas(canvas);
           _recordChildSubtreeTiming(
@@ -1630,7 +1614,7 @@ public:
         render_timing_scope _timingScope(render_timing_bucket::children);
         for (const auto& entry : _drawOrder)
         {
-          if (_paintPhase(entry) == 0) continue;
+          if (entry.zIndex < 0) continue;
           const auto _childStart = std::chrono::steady_clock::now();
           entry.node->DrawToCanvas(canvas);
           _recordChildSubtreeTiming(
