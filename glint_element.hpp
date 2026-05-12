@@ -1866,20 +1866,15 @@ public:
     // such labels). Detect this fast path and skip the sort vector entirely.
     // computedStyle.zIndex is kept fresh by tickTransitionsAll() running before
     // Draw, so reading it here avoids the heavy _mergedStyle() copy.
-    // Sort also fires when any child is positioned (non-static) so that
-    // positioned elements always paint above non-positioned ones per the CSS
-    // stacking model — even when both have z-index 0 (z-index: auto).
-    bool _needsPaintOrderSort = false;
+    bool _anyNonZeroZ = false;
     for (auto& child : mChildren)
     {
       auto* c = child.get();
       if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-      const auto& _pos = c->computedStyle.position;
-      if (c->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
-        { _needsPaintOrderSort = true; break; }
+      if (c->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
     }
 
-    if (!_needsPaintOrderSort)
+    if (!_anyNonZeroZ)
     {
       drawContent(g);
 
@@ -1901,37 +1896,22 @@ public:
         if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
         _drawOrder.push_back({ c, c->computedStyle.zIndex });
       }
-      // CSS stacking context paint phases (Chrome model):
-      //   0 — positioned children with z-index < 0   (before parent content)
-      //   1 — non-positioned children                 (after parent content, tree order)
-      //   2 — positioned children with z-index >= 0  (after parent content, sorted)
-      auto _paintPhase = [](const _ChildDrawOrder& e) -> int {
-        const auto& _p = e.node->computedStyle.position;
-        const bool _isPos = !_p.empty() && _p != "static";
-        if (_isPos && e.zIndex < 0) return 0;
-        if (!_isPos) return 1;
-        return 2;
-      };
       std::stable_sort(_drawOrder.begin(), _drawOrder.end(),
-        [&](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
-          const int pa = _paintPhase(a), pb = _paintPhase(b);
-          if (pa != pb) return pa < pb;
+        [](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
           return a.zIndex < b.zIndex;
         });
 
-      // Phase 0: positioned z-index < 0 children paint before parent content.
       for (const auto& entry : _drawOrder)
       {
-        if (_paintPhase(entry) >= 1) break;
+        if (entry.zIndex >= 0) break;
         entry.node->Draw(g);
       }
 
       drawContent(g);
 
-      // Phases 1 & 2: non-positioned then positioned z-index >= 0.
       for (const auto& entry : _drawOrder)
       {
-        if (_paintPhase(entry) == 0) continue;
+        if (entry.zIndex < 0) continue;
         entry.node->Draw(g);
       }
     }
