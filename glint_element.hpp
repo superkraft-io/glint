@@ -113,7 +113,7 @@ inline glint_rect sk_rect(float x, float y, float width, float height)
 
 // Forward declaration — glint_document is defined in glint_document.hpp.
 class glint_document;
-// Forward declaration — glint_scrollbar is defined in components/glint_scrollbar.hpp.
+// Forward declaration — glint_scrollbar is defined in components/glint_scrollbar/glint_scrollbar.hpp.
 class glint_scrollbar;
 
 // ── glint_element ───────────────────────────────────────────────────────────
@@ -411,6 +411,8 @@ public:
   float mScrollLeft   = 0.f;   // current horizontal scroll offset (px)
   float mScrollWidth  = 0.f;   // total measured content width  (set by Layout)
   float mScrollHeight = 0.f;   // total measured content height (set by Layout)
+  float mLastScrollMaxX = -1.f;
+  float mLastScrollMaxY = -1.f;
 
   // Scrollbar child components. Typed as glint_element* so this header doesn't
   // need the full glint_scrollbar definition (forward-declared above).
@@ -478,6 +480,22 @@ public:
   virtual std::chrono::steady_clock::time_point nextPeriodicRedrawTime() const
   {
     return std::chrono::steady_clock::time_point::max();
+  }
+
+  /** True when this node or any descendant still has an in-flight CSS
+   *  transition or @keyframes animation. Used by host timer heartbeats so
+   *  animation redraws cannot stall if a WM_PAINT follow-up is deferred. */
+  bool hasActiveAnimationSubtree() const
+  {
+    if (!mActiveTransitions_.empty()) return true;
+
+    for (const auto& anim : mActiveAnimations_)
+      if (!anim.finished) return true;
+
+    for (const auto& child : mChildren)
+      if (child && child->hasActiveAnimationSubtree()) return true;
+
+    return false;
   }
 
   /**
@@ -1375,10 +1393,14 @@ public:
       // Leaf: own text overflows past our layout rect.
       if (!innerText.empty() && isPointOverText(lx, ly)) return this;
       // Container: a descendant may own the overflow content.
-      bool _anyNonZeroZ = false;
+      bool _needsHitSort = false;
       for (auto& child : mChildren)
-        if (child->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
-      if (!_anyNonZeroZ)
+      {
+        const auto& _pos = child->computedStyle.position;
+        if (child->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
+          { _needsHitSort = true; break; }
+      }
+      if (!_needsHitSort)
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
           if (auto* h = it->get()->HitTest(lx, ly)) return h;
@@ -1391,6 +1413,13 @@ public:
           _hitOrder.push_back(it->get());
         std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
           [](const glint_element* a, const glint_element* b) {
+            const auto& _pa = a->computedStyle.position;
+            const auto& _pb = b->computedStyle.position;
+            const bool _isPosA = !_pa.empty() && _pa != "static";
+            const bool _isPosB = !_pb.empty() && _pb != "static";
+            const int phA = (_isPosA && a->computedStyle.zIndex < 0) ? 0 : (!_isPosA ? 1 : 2);
+            const int phB = (_isPosB && b->computedStyle.zIndex < 0) ? 0 : (!_isPosB ? 1 : 2);
+            if (phA != phB) return phA > phB;
             return a->computedStyle.zIndex > b->computedStyle.zIndex;
           });
         for (auto* c : _hitOrder)
@@ -1417,14 +1446,16 @@ public:
       // Hit-test in reverse z-index order (highest z-index first = topmost painted first).
       // Fast path when no child has a non-zero zIndex (the common case): walk
       // mChildren in reverse without allocating a sort vector.
-      bool _anyNonZeroZ = false;
+      bool _needsHitSort = false;
       for (auto& child : mChildren)
       {
         auto* c = child.get();
         if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-        if (c->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+        const auto& _pos = c->computedStyle.position;
+        if (c->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
+          { _needsHitSort = true; break; }
       }
-      if (!_anyNonZeroZ)
+      if (!_needsHitSort)
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
         {
@@ -1444,6 +1475,13 @@ public:
       }
       std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
         [](const glint_element* a, const glint_element* b) {
+          const auto& _pa = a->computedStyle.position;
+          const auto& _pb = b->computedStyle.position;
+          const bool _isPosA = !_pa.empty() && _pa != "static";
+          const bool _isPosB = !_pb.empty() && _pb != "static";
+          const int phA = (_isPosA && a->computedStyle.zIndex < 0) ? 0 : (!_isPosA ? 1 : 2);
+          const int phB = (_isPosB && b->computedStyle.zIndex < 0) ? 0 : (!_isPosB ? 1 : 2);
+          if (phA != phB) return phA > phB;
           return a->computedStyle.zIndex > b->computedStyle.zIndex;
         });
       for (auto* c : _hitOrder)
@@ -1451,12 +1489,16 @@ public:
       return this;
     }
 
-    // Standard hit test (no scroll) — highest z-index tested first.
+    // Standard hit test (no scroll) — highest paint phase + z-index tested first.
     {
-      bool _anyNonZeroZ = false;
+      bool _needsHitSort = false;
       for (auto& child : mChildren)
-        if (child->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
-      if (!_anyNonZeroZ)
+      {
+        const auto& _pos = child->computedStyle.position;
+        if (child->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
+          { _needsHitSort = true; break; }
+      }
+      if (!_needsHitSort)
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
           if (auto* hit = it->get()->HitTest(lx, ly)) return hit;
@@ -1468,6 +1510,13 @@ public:
         _hitOrder.push_back(it->get());
       std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
         [](const glint_element* a, const glint_element* b) {
+          const auto& _pa = a->computedStyle.position;
+          const auto& _pb = b->computedStyle.position;
+          const bool _isPosA = !_pa.empty() && _pa != "static";
+          const bool _isPosB = !_pb.empty() && _pb != "static";
+          const int phA = (_isPosA && a->computedStyle.zIndex < 0) ? 0 : (!_isPosA ? 1 : 2);
+          const int phB = (_isPosB && b->computedStyle.zIndex < 0) ? 0 : (!_isPosB ? 1 : 2);
+          if (phA != phB) return phA > phB;
           return a->computedStyle.zIndex > b->computedStyle.zIndex;
         });
       for (auto* c : _hitOrder)
@@ -1817,15 +1866,20 @@ public:
     // such labels). Detect this fast path and skip the sort vector entirely.
     // computedStyle.zIndex is kept fresh by tickTransitionsAll() running before
     // Draw, so reading it here avoids the heavy _mergedStyle() copy.
-    bool _anyNonZeroZ = false;
+    // Sort also fires when any child is positioned (non-static) so that
+    // positioned elements always paint above non-positioned ones per the CSS
+    // stacking model — even when both have z-index 0 (z-index: auto).
+    bool _needsPaintOrderSort = false;
     for (auto& child : mChildren)
     {
       auto* c = child.get();
       if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-      if (c->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+      const auto& _pos = c->computedStyle.position;
+      if (c->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
+        { _needsPaintOrderSort = true; break; }
     }
 
-    if (!_anyNonZeroZ)
+    if (!_needsPaintOrderSort)
     {
       drawContent(g);
 
@@ -1847,25 +1901,37 @@ public:
         if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
         _drawOrder.push_back({ c, c->computedStyle.zIndex });
       }
+      // CSS stacking context paint phases (Chrome model):
+      //   0 — positioned children with z-index < 0   (before parent content)
+      //   1 — non-positioned children                 (after parent content, tree order)
+      //   2 — positioned children with z-index >= 0  (after parent content, sorted)
+      auto _paintPhase = [](const _ChildDrawOrder& e) -> int {
+        const auto& _p = e.node->computedStyle.position;
+        const bool _isPos = !_p.empty() && _p != "static";
+        if (_isPos && e.zIndex < 0) return 0;
+        if (!_isPos) return 1;
+        return 2;
+      };
       std::stable_sort(_drawOrder.begin(), _drawOrder.end(),
-        [](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
+        [&](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
+          const int pa = _paintPhase(a), pb = _paintPhase(b);
+          if (pa != pb) return pa < pb;
           return a.zIndex < b.zIndex;
         });
 
-      // Negative z-index children paint before the parent's content, which brings
-      // the active standalone path closer to Chrome's stacking order.
+      // Phase 0: positioned z-index < 0 children paint before parent content.
       for (const auto& entry : _drawOrder)
       {
-        if (entry.zIndex >= 0) break;
+        if (_paintPhase(entry) >= 1) break;
         entry.node->Draw(g);
       }
 
       drawContent(g);
 
-      // Non-negative children continue to paint after the parent's content.
+      // Phases 1 & 2: non-positioned then positioned z-index >= 0.
       for (const auto& entry : _drawOrder)
       {
-        if (entry.zIndex < 0) continue;
+        if (_paintPhase(entry) == 0) continue;
         entry.node->Draw(g);
       }
     }
@@ -1877,6 +1943,8 @@ public:
   // rounded source img that filter operates on.
   if (_rootCanvas) _drawBorderSkia(_rootCanvas, computedStyle, mRect);
 
+    // Close in LIFO order: self-filter (innermost) before backdrop (outermost).
+    if (_hasFilter) glint_filter::EndLayer(g);
     if (_hasBackdropFilter) glint_filter::EndBackdropLayer(g);
     // Close backdrop shader layers in REVERSE order.
     for (auto _shIt2 = _bdParsed.shaderIds.rbegin(); _shIt2 != _bdParsed.shaderIds.rend(); ++_shIt2) {
@@ -1884,7 +1952,6 @@ public:
       if (_shSit != shaders.end() && _shSit->second->isBackdrop && _shCanvas)
         _shSit->second->endBackdropLayer(_shCanvas);
     }
-    if (_hasFilter) glint_filter::EndLayer(g);
     // Keep redraws going while any shader is animated.
     for (auto& [_sid, _s] : shaders)
       if (_s->animated) { setDirty(false); break; }

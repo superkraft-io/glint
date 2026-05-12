@@ -1479,10 +1479,12 @@ public:
       }
     }
 
-    if (_hasFilterDTC) glint_filter::BeginLayer(canvas, mPaintRECT, _fParsedDTC.css);
-
     std::unique_ptr<render_timing_scope> _backdropTimingScope;
 
+    // CSS paint model: backdrop-filter samples the canvas pixels BEHIND this element,
+    // so its layer must be opened first (outermost), before the self-filter layer.
+    // Opening the self-filter saveLayer first would give backdrop-filter an empty
+    // layer to sample from, producing no visible effect.
     for (auto& _shId : _bdParsedDTC.shaderIds) {
       auto _shIt = shaders.find(_shId);
       if (_shIt != shaders.end() && _shIt->second->isBackdrop) {
@@ -1495,6 +1497,9 @@ public:
       _backdropTimingScope = std::make_unique<render_timing_scope>(render_timing_bucket::backdrop);
       glint_filter::BeginBackdropLayer(canvas, mPaintRECT, computedStyle, _bdParsedDTC.css);
     }
+
+    // Self-filter layer opens INSIDE the backdrop layer (correct LIFO nesting).
+    if (_hasFilterDTC) glint_filter::BeginLayer(canvas, mPaintRECT, _fParsedDTC.css);
 
     // Draw non-backdrop (bg) shaders as the background layer, before content.
     for (auto& _shId : _fParsedDTC.shaderIds) {
@@ -1541,16 +1546,19 @@ public:
     // Fast path: most parents have all children at zIndex 0 (e.g. labels in
     // text content). Skip the sort vector entirely and walk mChildren directly.
     // computedStyle.zIndex is kept fresh by tickTransitionsAll() which runs
-    // before draw.
-    bool _anyNonZeroZ = false;
+    // before draw.  Sort also fires when any child is positioned so that
+    // positioned elements always paint above non-positioned ones (CSS model).
+    bool _needsPaintOrderSort = false;
     for (auto& child : mChildren)
     {
       auto* c = child.get();
       if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-      if (c->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+      const auto& _pos = c->computedStyle.position;
+      if (c->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
+        { _needsPaintOrderSort = true; break; }
     }
 
-    if (!_anyNonZeroZ)
+    if (!_needsPaintOrderSort)
     {
       {
         render_timing_scope _timingScope(render_timing_bucket::content);
@@ -1582,8 +1590,21 @@ public:
         if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
         _drawOrder.push_back({ c, c->computedStyle.zIndex });
       }
+      // CSS stacking context paint phases (Chrome model):
+      //   0 — positioned children with z-index < 0   (before parent content)
+      //   1 — non-positioned children                 (after parent content, tree order)
+      //   2 — positioned children with z-index >= 0  (after parent content, sorted)
+      auto _paintPhase = [](const _ChildDrawOrder& e) -> int {
+        const auto& _p = e.node->computedStyle.position;
+        const bool _isPos = !_p.empty() && _p != "static";
+        if (_isPos && e.zIndex < 0) return 0;
+        if (!_isPos) return 1;
+        return 2;
+      };
       std::stable_sort(_drawOrder.begin(), _drawOrder.end(),
-        [](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
+        [&](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
+          const int pa = _paintPhase(a), pb = _paintPhase(b);
+          if (pa != pb) return pa < pb;
           return a.zIndex < b.zIndex;
         });
 
@@ -1591,7 +1612,7 @@ public:
         render_timing_scope _timingScope(render_timing_bucket::children);
         for (const auto& entry : _drawOrder)
         {
-          if (entry.zIndex >= 0) break;
+          if (_paintPhase(entry) >= 1) break;
           const auto _childStart = std::chrono::steady_clock::now();
           entry.node->DrawToCanvas(canvas);
           _recordChildSubtreeTiming(
@@ -1609,7 +1630,7 @@ public:
         render_timing_scope _timingScope(render_timing_bucket::children);
         for (const auto& entry : _drawOrder)
         {
-          if (entry.zIndex < 0) continue;
+          if (_paintPhase(entry) == 0) continue;
           const auto _childStart = std::chrono::steady_clock::now();
           entry.node->DrawToCanvas(canvas);
           _recordChildSubtreeTiming(
@@ -1620,6 +1641,9 @@ public:
     }
 
     if (_clipContent) canvas->restore();
+
+    // Close in LIFO order: self-filter (innermost) before backdrop (outermost).
+    if (_hasFilterDTC) glint_filter::EndLayer(canvas);
 
     if (_hasBackdropFilterDTC)
     {
@@ -1632,7 +1656,6 @@ public:
       if (_shSit != shaders.end() && _shSit->second->isBackdrop)
         _shSit->second->endBackdropLayer(canvas);
     }
-    if (_hasFilterDTC) glint_filter::EndLayer(canvas);
 
     // CSS parity: border-radius shapes the source paint, filter composites that
     // rounded source, and mask applies afterward to the filtered result.

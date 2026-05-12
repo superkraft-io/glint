@@ -28,35 +28,36 @@
  *
  * Internal structure (automatically created, visible in inspector):
  *   glint_scrollbar                       (absolute, fills one edge)
- *     glint_scrollbar::ArrowComp [minus]  (up/left button, square)
- *     glint_scrollbar::TrackComp          (track background)
- *       glint_scrollbar::ThumbComp        (draggable thumb, absolute inside track)
- *     glint_scrollbar::ArrowComp [plus]   (down/right button, square)
+ *     glint_scrollbar_arrow [minus]       (up/left button, square)
+ *     glint_scrollbar_track               (track background)
+ *       glint_scrollbar_thumb             (draggable thumb, absolute inside track)
+ *     glint_scrollbar_arrow [plus]        (down/right button, square)
  *
  * After this file is included, glint_element::_ensureScrollbars() is defined.
  */
 
-#include "../glint_element.hpp"
+#include "../../glint_element.hpp"
+
+#include "glint_scrollbar_arrow.hpp"
+#include "glint_scrollbar_thumb.hpp"
+#include "glint_scrollbar_track.hpp"
 
 #include <algorithm>
-
-// ── glint_scrollbar ───────────────────────────────────────────────────────────
 
 class glint_scrollbar : public glint_element
 {
 public:
   enum class Axis { Vertical, Horizontal };
 
-  Axis             mAxis;
-  glint_element* mScrollParent  = nullptr;   // the component that owns this scrollbar
-  float            mLineHeight    = 40.f;      // pixels scrolled per arrow-button click
-  bool             buttonsVisible = false;     // show/hide up-down (left-right) arrow buttons
+  Axis                   mAxis;
+  glint_element*         mScrollParent  = nullptr;
+  float                  mLineHeight    = 40.f;
+  bool                   buttonsVisible = false;
 
-  // Owns of internal child components (pointers into mChildren).
-  glint_element* mBtnMinus = nullptr;   // up  / left  arrow
-  glint_element* mTrack    = nullptr;   // track background
-  glint_element* mThumb    = nullptr;   // draggable thumb (child of mTrack)
-  glint_element* mBtnPlus  = nullptr;   // down / right arrow
+  glint_scrollbar_arrow* mBtnMinus = nullptr;
+  glint_scrollbar_track* mTrack    = nullptr;
+  glint_scrollbar_thumb* mThumb    = nullptr;
+  glint_scrollbar_arrow* mBtnPlus  = nullptr;
 
   glint_scrollbar(Axis axis, glint_element* scrollParent)
     : mAxis(axis), mScrollParent(scrollParent)
@@ -70,26 +71,48 @@ public:
     const glint_color btnColor   = mScrollParent
       ? mScrollParent->style.scrollbarButtonColor.value : glint_color(255,  65,  65,  65);
 
-    auto* btnM = new ArrowComp(this, true);
+    auto* btnM = new glint_scrollbar_arrow(true);
     btnM->style.backgroundColor = btnColor;
     btnM->style.display         = "none";
+    btnM->onPress = [this]() {
+      const float delta = mLineHeight;
+      setScrollPos(getScrollPos() - delta);
+    };
+    btnM->getBaseColor = [this]() {
+      return mScrollParent
+        ? mScrollParent->style.scrollbarButtonColor.value
+        : glint_color(255, 65, 65, 65);
+    };
     addChild(btnM);
     mBtnMinus = btnM;
 
-    auto* track = new TrackComp(this);
+    auto* track = new glint_scrollbar_track();
     track->style.backgroundColor = trackColor;
+    track->onPress = [this](float x, float y) { onTrackClick(x, y); };
     addChild(track);
     mTrack = track;
 
-    auto* thumb = new ThumbComp(this);
+    auto* thumb = new glint_scrollbar_thumb();
     thumb->style.backgroundColor = thumbColor;
     thumb->style.borderRadius    = mScrollParent ? mScrollParent->style.scrollbarThumbBorderRadius : 3.f;
+    thumb->onPress = [this](float x, float y) { startThumbDrag(x, y); };
+    thumb->onDrag = [this](float x, float y, float, float) { updateThumbDrag(x, y); };
+    thumb->onRelease = [this]() { endThumbDrag(); };
     track->addChild(thumb);
     mThumb = thumb;
 
-    auto* btnP = new ArrowComp(this, false);
+    auto* btnP = new glint_scrollbar_arrow(false);
     btnP->style.backgroundColor = btnColor;
     btnP->style.display         = "none";
+    btnP->onPress = [this]() {
+      const float delta = mLineHeight;
+      setScrollPos(getScrollPos() + delta);
+    };
+    btnP->getBaseColor = [this]() {
+      return mScrollParent
+        ? mScrollParent->style.scrollbarButtonColor.value
+        : glint_color(255, 65, 65, 65);
+    };
     addChild(btnP);
     mBtnPlus = btnP;
   }
@@ -103,9 +126,7 @@ public:
 
   void Layout(glint_canvas* g) override;
 
-  // ── Scroll accessors ───────────────────────────────────────────────────────
-
-  float getScrollPos()   const
+  float getScrollPos() const
   {
     if (!mScrollParent) return 0.f;
     return isVertical() ? mScrollParent->mScrollTop : mScrollParent->mScrollLeft;
@@ -115,7 +136,7 @@ public:
   {
     if (!mScrollParent) return 1.f;
     const float sbW = mScrollParent->style.scrollbarWidth;
-    const glint_rect pr  = mScrollParent->GetPaintRECT();
+    const glint_rect pr = mScrollParent->GetPaintRECT();
     if (isVertical())
       return pr.H() - (mScrollParent->mScrollbarH && mScrollParent->mScrollbarH->style.display != "none" ? sbW : 0.f);
     else
@@ -141,26 +162,24 @@ public:
       mScrollParent->mScrollTop  = clamped;
     else
       mScrollParent->mScrollLeft = clamped;
-    // Sync element property (read path — no recursion since we set the field directly).
     mScrollParent->element.scrollWidth  = mScrollParent->mScrollWidth;
     mScrollParent->element.scrollHeight = mScrollParent->mScrollHeight;
-    // Full setDirty: scrollbar thumb position is computed during Layout().
     mScrollParent->setDirty(false);
   }
 
-  // ── Thumb drag ─────────────────────────────────────────────────────────────
-
   void startThumbDrag(float mouseX, float mouseY)
   {
-    mDragging        = true;
-    mDragStartScroll = getScrollPos();
-    mDragStartMouse  = isVertical() ? mouseY : mouseX;
+    if (!mThumb) return;
+    const glint_rect thumbRect = mThumb->GetPaintRECT();
+    mDragging = true;
+    mDragGrabOffset = isVertical() ? (mouseY - thumbRect.T) : (mouseX - thumbRect.L);
   }
 
   void updateThumbDrag(float mouseX, float mouseY)
   {
     if (!mDragging || !mTrack) return;
-    const float trackSize  = isVertical() ? mTrack->GetPaintRECT().H() : mTrack->GetPaintRECT().W();
+    const glint_rect trackRect = mTrack->GetPaintRECT();
+    const float trackSize  = isVertical() ? trackRect.H() : trackRect.W();
     const float viewSize   = getViewportSize();
     const float contentSz  = getContentSize();
     const float scrollMax  = getScrollMax();
@@ -171,13 +190,16 @@ public:
     const float trackUsable = trackSize - thumbSz;
     if (trackUsable <= 0.f) return;
 
-    const float delta = (isVertical() ? mouseY : mouseX) - mDragStartMouse;
-    setScrollPos(mDragStartScroll + delta * scrollMax / trackUsable);
+    const float mousePos = isVertical() ? mouseY : mouseX;
+    const float trackStart = isVertical() ? trackRect.T : trackRect.L;
+    const float thumbOff = std::max(0.f, std::min(mousePos - trackStart - mDragGrabOffset, trackUsable));
+    setScrollPos((thumbOff / trackUsable) * scrollMax);
   }
 
-  void endThumbDrag() { mDragging = false; }
-
-  // ── Track click (page scroll) ──────────────────────────────────────────────
+  void endThumbDrag()
+  {
+    mDragging = false;
+  }
 
   void onTrackClick(float mouseX, float mouseY)
   {
@@ -193,94 +215,8 @@ public:
 
 private:
   bool  mDragging        = false;
-  float mDragStartScroll = 0.f;
-  float mDragStartMouse  = 0.f;
-
-  // ── Inner component types ──────────────────────────────────────────────────
-
-  /** Draggable thumb — routes mousedown/drag/up to parent scrollbar. */
-  struct ThumbComp : public glint_element
-  {
-    glint_scrollbar* mScrollbar;
-    explicit ThumbComp(glint_scrollbar* sb) : mScrollbar(sb)
-    { style.position = "absolute"; }
-
-    void OnMouseDown(float x, float y, const glint_mouse_mod&) override
-    { mScrollbar->startThumbDrag(x, y); }
-
-    void OnMouseDrag(float x, float y, float, float, const glint_mouse_mod&) override
-    { mScrollbar->updateThumbDrag(x, y); }
-
-    void OnMouseUp(float, float, const glint_mouse_mod&) override
-    { mScrollbar->endThumbDrag(); }
-
-    const char* typeName() const override { return "scrollbar-thumb"; }
-  };
-
-  /** Track background — page-scrolls on click. */
-  struct TrackComp : public glint_element
-  {
-    glint_scrollbar* mScrollbar;
-    explicit TrackComp(glint_scrollbar* sb) : mScrollbar(sb) {}
-
-    void OnMouseDown(float x, float y, const glint_mouse_mod&) override
-    { mScrollbar->onTrackClick(x, y); }
-
-    const char* typeName() const override { return "scrollbar-track"; }
-  };
-
-  /** Arrow button — scrolls by mLineHeight per click with hover colour feedback. */
-  struct ArrowComp : public glint_element
-  {
-    glint_scrollbar* mScrollbar;
-    bool             mIsMinus;
-    bool             mHovered = false;
-
-    ArrowComp(glint_scrollbar* sb, bool isMinus)
-      : mScrollbar(sb), mIsMinus(isMinus)
-    {
-      style.position = "absolute";
-      element.addEventListener("mouseenter", [this](glint_event&) { mHovered = true;  setDirty(false); });
-      element.addEventListener("mouseleave", [this](glint_event&) { mHovered = false; setDirty(false); });
-    }
-
-    void OnMouseDown(float, float, const glint_mouse_mod&) override
-    {
-      const float delta = mScrollbar->mLineHeight;
-      mScrollbar->setScrollPos(mScrollbar->getScrollPos() + (mIsMinus ? -delta : delta));
-    }
-
-    void Draw(glint_canvas& g) override
-    {
-      // Draw with a slightly lighter colour on hover.
-      if (mHovered)
-      {
-        const glint_color base = mScrollbar->mScrollParent
-          ? mScrollbar->mScrollParent->style.scrollbarButtonColor.value
-          : glint_color(255, 65, 65, 65);
-        glint_style hov = style;
-        hov.backgroundColor = glint_color(
-          base.A,
-          std::min(255, base.R + 25),
-          std::min(255, base.G + 25),
-          std::min(255, base.B + 25));
-        DrawBackground(g, hov);
-      }
-      else
-      {
-        glint_element::Draw(g);
-      }
-    }
-
-    const char* typeName() const override
-    { return mIsMinus ? "scrollbar-arrow-minus" : "scrollbar-arrow-plus"; }
-  };
+  float mDragGrabOffset  = 0.f;
 };
-
-// New API name — both refer to the same class.
-// (glint_scrollbar is constructed internally by the scroll system; no createElement registration)
-
-// ── glint_scrollbar::Layout ───────────────────────────────────────────────────
 
 inline void glint_scrollbar::Layout(glint_canvas* /*g*/)
 {
@@ -297,24 +233,19 @@ inline void glint_scrollbar::Layout(glint_canvas* /*g*/)
   if (mBtnMinus) mBtnMinus->style.backgroundColor = btnColor;
   if (mBtnPlus)  mBtnPlus->style.backgroundColor  = btnColor;
 
-  // Sync button display with the buttonsVisible flag every layout pass so a
-  // runtime change (scrollbar->buttonsVisible = true; setDirty(false)) takes
-  // effect without requiring a full tree rebuild.
   const std::string btnDisplay = buttonsVisible ? "" : "none";
   if (mBtnMinus) mBtnMinus->style.display = btnDisplay;
   if (mBtnPlus)  mBtnPlus->style.display  = btnDisplay;
 
   if (isVertical())
   {
-    // Clamp each button to at most half the scrollbar height so they never
-    // overlap or exceed bounds when the component is very small.
     const float avail  = sb.H();
     const float btnSz  = buttonsVisible ? std::min(sbW, avail * 0.5f) : 0.f;
     const float trackT = sb.T + btnSz;
     const float trackB = std::max(trackT, sb.B - btnSz);
     if (mBtnMinus) mBtnMinus->mRect = mBtnMinus->mPaintRECT = glint_rect(sb.L, sb.T,    sb.R, trackT);
     if (mBtnPlus)  mBtnPlus->mRect  = mBtnPlus->mPaintRECT  = glint_rect(sb.L, trackB,  sb.R, sb.B);
-    if (mTrack)    mTrack->mRect    = mTrack->mPaintRECT     = glint_rect(sb.L, trackT,  sb.R, trackB);
+    if (mTrack)    mTrack->mRect    = mTrack->mPaintRECT    = glint_rect(sb.L, trackT,  sb.R, trackB);
   }
   else
   {
@@ -324,10 +255,9 @@ inline void glint_scrollbar::Layout(glint_canvas* /*g*/)
     const float trackR = std::max(trackL, sb.R - btnSz);
     if (mBtnMinus) mBtnMinus->mRect = mBtnMinus->mPaintRECT = glint_rect(sb.L,   sb.T, trackL,  sb.B);
     if (mBtnPlus)  mBtnPlus->mRect  = mBtnPlus->mPaintRECT  = glint_rect(trackR, sb.T, sb.R,    sb.B);
-    if (mTrack)    mTrack->mRect    = mTrack->mPaintRECT     = glint_rect(trackL, sb.T, trackR,  sb.B);
+    if (mTrack)    mTrack->mRect    = mTrack->mPaintRECT    = glint_rect(trackL, sb.T, trackR,  sb.B);
   }
 
-  // ── Position thumb inside track ─────────────────────────────────────────
   if (mTrack && mThumb)
   {
     const glint_rect tr        = mTrack->GetPaintRECT();
@@ -378,10 +308,6 @@ inline void glint_scrollbar::Layout(glint_canvas* /*g*/)
   }
 }
 
-// ── glint_element::_ensureScrollbars ───────────────────────────────────────
-// Defined here (after glint_scrollbar is complete) because it constructs
-// glint_scrollbar instances.  Declared in glint_element.hpp.
-
 inline void glint_element::_ensureScrollbars(bool needsX, bool needsY)
 {
   if (needsY && !mScrollbarV)
@@ -405,7 +331,6 @@ inline void glint_element::_ensureScrollbars(bool needsX, bool needsY)
     corner->style.backgroundColor = style.scrollbarTrackColor;
     addChild(corner);
     mScrollCorner = corner;
-    // Expose on element so devs can reach it.
     element.scrollCornerBox = mScrollCorner;
   }
 }

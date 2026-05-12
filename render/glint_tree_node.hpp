@@ -235,6 +235,7 @@ inline glint_style_info glint_style_serialize(const glint_style& s)
     m["mask-clip"]         = s.maskClip;
     m["mask-composite"]    = s.maskComposite;
     m["transition"]        = s.transition;
+    m["animation"]         = s.animation;
 
     return m;
 }
