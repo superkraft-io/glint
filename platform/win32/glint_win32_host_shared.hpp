@@ -10,10 +10,73 @@
 #include <windowsx.h>
 
 #include <chrono>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace glint_win32_host
 {
+inline std::unordered_map<std::string, HCURSOR>& customCursorRegistry()
+{
+  static std::unordered_map<std::string, HCURSOR> registry;
+  return registry;
+}
+
+inline std::mutex& customCursorRegistryMutex()
+{
+  static std::mutex registryMutex;
+  return registryMutex;
+}
+
+inline void registerCustomCursor(const std::string& token, HCURSOR cursor)
+{
+  if (token.empty())
+  {
+    if (cursor)
+      ::DestroyCursor(cursor);
+    return;
+  }
+
+  HCURSOR oldCursor = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(customCursorRegistryMutex());
+    auto& registry = customCursorRegistry();
+    auto it = registry.find(token);
+    if (it != registry.end())
+    {
+      oldCursor = it->second;
+      if (cursor)
+        it->second = cursor;
+      else
+        registry.erase(it);
+    }
+    else if (cursor)
+    {
+      registry.emplace(token, cursor);
+    }
+  }
+
+  if (oldCursor && oldCursor != cursor)
+    ::DestroyCursor(oldCursor);
+}
+
+inline void unregisterCustomCursor(const std::string& token)
+{
+  registerCustomCursor(token, nullptr);
+}
+
+inline HCURSOR findCustomCursor(const std::string& token)
+{
+  if (token.empty())
+    return nullptr;
+
+  std::lock_guard<std::mutex> lock(customCursorRegistryMutex());
+  const auto& registry = customCursorRegistry();
+  auto it = registry.find(token);
+  return it != registry.end() ? it->second : nullptr;
+}
+
 inline void invalidateWindow(HWND hwnd)
 {
   if (hwnd)
@@ -409,6 +472,9 @@ inline HCURSOR glint_cursor_vertical_text()
 //   https://source.chromium.org/chromium/chromium/src/+/main:ui/base/win/win_cursor_factory.cc
 inline HCURSOR cssToHCursor(const std::string& css)
 {
+  if (HCURSOR custom = findCustomCursor(css))
+    return custom;
+
   // "none" — 1x1 fully transparent cursor (AND=0xFF XOR=0x00 → invisible).
   if (css == "none")
   {
