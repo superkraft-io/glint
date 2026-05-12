@@ -1393,14 +1393,10 @@ public:
       // Leaf: own text overflows past our layout rect.
       if (!innerText.empty() && isPointOverText(lx, ly)) return this;
       // Container: a descendant may own the overflow content.
-      bool _needsHitSort = false;
+      bool _anyNonZeroZ = false;
       for (auto& child : mChildren)
-      {
-        const auto& _pos = child->computedStyle.position;
-        if (child->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
-          { _needsHitSort = true; break; }
-      }
-      if (!_needsHitSort)
+        if (child->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+      if (!_anyNonZeroZ)
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
           if (auto* h = it->get()->HitTest(lx, ly)) return h;
@@ -1413,13 +1409,6 @@ public:
           _hitOrder.push_back(it->get());
         std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
           [](const glint_element* a, const glint_element* b) {
-            const auto& _pa = a->computedStyle.position;
-            const auto& _pb = b->computedStyle.position;
-            const bool _isPosA = !_pa.empty() && _pa != "static";
-            const bool _isPosB = !_pb.empty() && _pb != "static";
-            const int phA = (_isPosA && a->computedStyle.zIndex < 0) ? 0 : (!_isPosA ? 1 : 2);
-            const int phB = (_isPosB && b->computedStyle.zIndex < 0) ? 0 : (!_isPosB ? 1 : 2);
-            if (phA != phB) return phA > phB;
             return a->computedStyle.zIndex > b->computedStyle.zIndex;
           });
         for (auto* c : _hitOrder)
@@ -1446,16 +1435,14 @@ public:
       // Hit-test in reverse z-index order (highest z-index first = topmost painted first).
       // Fast path when no child has a non-zero zIndex (the common case): walk
       // mChildren in reverse without allocating a sort vector.
-      bool _needsHitSort = false;
+      bool _anyNonZeroZ = false;
       for (auto& child : mChildren)
       {
         auto* c = child.get();
         if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-        const auto& _pos = c->computedStyle.position;
-        if (c->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
-          { _needsHitSort = true; break; }
+        if (c->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
       }
-      if (!_needsHitSort)
+      if (!_anyNonZeroZ)
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
         {
@@ -1475,13 +1462,6 @@ public:
       }
       std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
         [](const glint_element* a, const glint_element* b) {
-          const auto& _pa = a->computedStyle.position;
-          const auto& _pb = b->computedStyle.position;
-          const bool _isPosA = !_pa.empty() && _pa != "static";
-          const bool _isPosB = !_pb.empty() && _pb != "static";
-          const int phA = (_isPosA && a->computedStyle.zIndex < 0) ? 0 : (!_isPosA ? 1 : 2);
-          const int phB = (_isPosB && b->computedStyle.zIndex < 0) ? 0 : (!_isPosB ? 1 : 2);
-          if (phA != phB) return phA > phB;
           return a->computedStyle.zIndex > b->computedStyle.zIndex;
         });
       for (auto* c : _hitOrder)
@@ -1489,16 +1469,12 @@ public:
       return this;
     }
 
-    // Standard hit test (no scroll) — highest paint phase + z-index tested first.
+    // Standard hit test (no scroll) — highest z-index tested first.
     {
-      bool _needsHitSort = false;
+      bool _anyNonZeroZ = false;
       for (auto& child : mChildren)
-      {
-        const auto& _pos = child->computedStyle.position;
-        if (child->computedStyle.zIndex != 0 || (!_pos.empty() && _pos != "static"))
-          { _needsHitSort = true; break; }
-      }
-      if (!_needsHitSort)
+        if (child->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+      if (!_anyNonZeroZ)
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
           if (auto* hit = it->get()->HitTest(lx, ly)) return hit;
@@ -1510,13 +1486,6 @@ public:
         _hitOrder.push_back(it->get());
       std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
         [](const glint_element* a, const glint_element* b) {
-          const auto& _pa = a->computedStyle.position;
-          const auto& _pb = b->computedStyle.position;
-          const bool _isPosA = !_pa.empty() && _pa != "static";
-          const bool _isPosB = !_pb.empty() && _pb != "static";
-          const int phA = (_isPosA && a->computedStyle.zIndex < 0) ? 0 : (!_isPosA ? 1 : 2);
-          const int phB = (_isPosB && b->computedStyle.zIndex < 0) ? 0 : (!_isPosB ? 1 : 2);
-          if (phA != phB) return phA > phB;
           return a->computedStyle.zIndex > b->computedStyle.zIndex;
         });
       for (auto* c : _hitOrder)
