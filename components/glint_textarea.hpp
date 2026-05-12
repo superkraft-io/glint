@@ -22,7 +22,7 @@
  */
 
 #include "glint_text_editor_base.hpp"
-#include "glint_scrollbar.hpp"
+#include "glint_scrollbar/glint_scrollbar.hpp"
 #include "../default_style.hpp"
 
 #include <algorithm>

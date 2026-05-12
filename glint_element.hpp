@@ -113,7 +113,7 @@ inline glint_rect sk_rect(float x, float y, float width, float height)
 
 // Forward declaration — glint_document is defined in glint_document.hpp.
 class glint_document;
-// Forward declaration — glint_scrollbar is defined in components/glint_scrollbar.hpp.
+// Forward declaration — glint_scrollbar is defined in components/glint_scrollbar/glint_scrollbar.hpp.
 class glint_scrollbar;
 
 // ── glint_element ───────────────────────────────────────────────────────────
@@ -411,6 +411,8 @@ public:
   float mScrollLeft   = 0.f;   // current horizontal scroll offset (px)
   float mScrollWidth  = 0.f;   // total measured content width  (set by Layout)
   float mScrollHeight = 0.f;   // total measured content height (set by Layout)
+  float mLastScrollMaxX = -1.f;
+  float mLastScrollMaxY = -1.f;
 
   // Scrollbar child components. Typed as glint_element* so this header doesn't
   // need the full glint_scrollbar definition (forward-declared above).
@@ -478,6 +480,22 @@ public:
   virtual std::chrono::steady_clock::time_point nextPeriodicRedrawTime() const
   {
     return std::chrono::steady_clock::time_point::max();
+  }
+
+  /** True when this node or any descendant still has an in-flight CSS
+   *  transition or @keyframes animation. Used by host timer heartbeats so
+   *  animation redraws cannot stall if a WM_PAINT follow-up is deferred. */
+  bool hasActiveAnimationSubtree() const
+  {
+    if (!mActiveTransitions_.empty()) return true;
+
+    for (const auto& anim : mActiveAnimations_)
+      if (!anim.finished) return true;
+
+    for (const auto& child : mChildren)
+      if (child && child->hasActiveAnimationSubtree()) return true;
+
+    return false;
   }
 
   /**

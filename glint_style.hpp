@@ -2228,6 +2228,7 @@ struct glint_style
     , backgroundBlendMode(o.backgroundBlendMode)
     , isolation(o.isolation)
     , transition(o.transition)
+    , animation(o.animation)
     , borderTopLeftRadius(o.borderTopLeftRadius)
     , borderTopRightRadius(o.borderTopRightRadius)
     , borderBottomRightRadius(o.borderBottomRightRadius)
@@ -2357,6 +2358,7 @@ struct glint_style
     backgroundBlendMode = o.backgroundBlendMode;
     isolation        = o.isolation;
     transition       = o.transition;
+    animation        = o.animation;
     borderTopLeftRadius     = o.borderTopLeftRadius;
     borderTopRightRadius    = o.borderTopRightRadius;
     borderBottomRightRadius = o.borderBottomRightRadius;

@@ -498,6 +498,7 @@ static inline void glint_style_set_by_name(glint_style& s,
   else if (key == "mask-clip")        s.maskClip       = val;
   else if (key == "mask-composite")   s.maskComposite  = val;
   else if (key == "transition")       s.transition = val;
+  else if (key == "animation")        s.animation = val;
 }
 
 // -- glint_style_is_valid_by_name ----------------------------------------------
@@ -731,7 +732,7 @@ static const std::vector<const char*>& glint_all_style_keys()
     "mask","mask-mode","mask-position","mask-size",
     "mask-repeat","mask-origin","mask-clip","mask-composite",
     "object-fit","object-position",
-    "transition",
+    "transition","animation",
   };
   return keys;
 }
@@ -813,6 +814,7 @@ static std::string glint_add_default(const std::string& key)
   if (key=="mask-clip")         return "border-box";
   if (key=="mask-composite")    return "add";
   if (key=="transition")        return "none";
+  if (key=="animation")         return "none";
   // Shorthand keys — set all sides at once; per-side rows appear after rebuild
   if (key=="padding")       return "8";
   if (key=="margin")        return "4";

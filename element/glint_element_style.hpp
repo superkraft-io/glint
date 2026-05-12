@@ -451,6 +451,7 @@
     _IW_OF(fontWeight);
     if (style.textAlign  != sD.textAlign)  r.textAlign  = style.textAlign;
     _IW_S(verticalAlign);
+    _IW_S(textDecoration);
     _IW_C(selectionColor);
     // Padding — use _IW_SIDE to preserve % raw strings (e.g. "50%") so that
     // resolve() can multiply against the parent dimension at layout time.

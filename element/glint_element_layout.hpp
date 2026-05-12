@@ -1889,8 +1889,8 @@
 
   /**
    * Ensure vertical/horizontal scrollbar children exist.
-   * DECLARED here; DEFINED at the bottom of glint_scrollbar.hpp (needs the full
-   * glint_scrollbar type).
+    * DECLARED here; DEFINED at the bottom of
+    * components/glint_scrollbar/glint_scrollbar.hpp (needs the full glint_scrollbar type).
    */
   void _ensureScrollbars(bool needsX, bool needsY);
 
@@ -1914,14 +1914,27 @@
   }
 
   /** Clamp mScrollTop / mScrollLeft to [0, maxScroll] based on measured content dims. */
-  void _clampScroll()
+  void _clampScroll(bool showX, bool showY)
   {
     const glint_rect pr  = GetPaintRECT();
     const float sbW = computedStyle.scrollbarWidth;
-    const float viewW = pr.W() - (mScrollbarV && mScrollbarV->style.display != "none" ? sbW : 0.f);
-    const float viewH = pr.H() - (mScrollbarH && mScrollbarH->style.display != "none" ? sbW : 0.f);
-    mScrollLeft = std::max(0.f, std::min(mScrollLeft, std::max(0.f, mScrollWidth  - viewW)));
-    mScrollTop  = std::max(0.f, std::min(mScrollTop,  std::max(0.f, mScrollHeight - viewH)));
+    const float viewW = pr.W() - (showY ? sbW : 0.f);
+    const float viewH = pr.H() - (showX ? sbW : 0.f);
+    const float maxX = std::max(0.f, mScrollWidth  - viewW);
+    const float maxY = std::max(0.f, mScrollHeight - viewH);
+
+    // If the viewport shrank and the element was already pinned to the prior
+    // edge, keep it pinned to the new edge instead of leaving it short by the
+    // delta between old and new max scroll.
+    if (mLastScrollMaxX >= 0.f && maxX > mLastScrollMaxX && std::fabs(mScrollLeft - mLastScrollMaxX) <= 0.5f)
+      mScrollLeft = maxX;
+    if (mLastScrollMaxY >= 0.f && maxY > mLastScrollMaxY && std::fabs(mScrollTop - mLastScrollMaxY) <= 0.5f)
+      mScrollTop = maxY;
+
+    mScrollLeft = std::max(0.f, std::min(mScrollLeft, maxX));
+    mScrollTop  = std::max(0.f, std::min(mScrollTop,  maxY));
+    mLastScrollMaxX = maxX;
+    mLastScrollMaxY = maxY;
   }
 
   /**
@@ -2003,35 +2016,39 @@
     bool showSbarY = (computedStyle.overflowY == "scroll");
     bool showSbarX = (computedStyle.overflowX == "scroll");
 
-    // ── "auto" two-pass measurement ──────────────────────────────────────────
+    // ── "auto" overflow measurement — iterate to a stable X/Y decision ─────
     if (computedStyle.overflowY == "auto" || computedStyle.overflowX == "auto")
     {
-      // Pass 1: lay out with full content rect to measure overflow.
-      const glint_rect full = getContent();
-      if (computedStyle.display == "flex")
-        layoutFlex(g, full, full.W(), full.H());
-      else if (_isTableDisplay(computedStyle.display))
-        layoutTable(g, full, full.W(), full.H());
-      else
-        layoutBlock(g, full, full.W(), full.H());
+      auto layoutForRect = [&](const glint_rect& r) {
+        if (computedStyle.display == "flex")
+          layoutFlex(g, r, r.W(), r.H());
+        else if (_isTableDisplay(computedStyle.display))
+          layoutTable(g, r, r.W(), r.H());
+        else
+          layoutBlock(g, r, r.W(), r.H());
+      };
 
-      float cW = 0.f, cH = 0.f;
-      _measureContentExtent(full, cW, cH);
-
-      if (computedStyle.overflowY == "auto") showSbarY = (cH > full.H());
-      if (computedStyle.overflowX == "auto") showSbarX = (cW > full.W());
-
-      // Adding Y bar may reduce width enough to trigger X overflow.
-      if (showSbarY && computedStyle.overflowX == "auto" && !showSbarX)
+      for (int i = 0; i < 3; ++i)
       {
-        glint_rect r2 = getContent(); r2.R -= sbW;
-        r2.R = std::max(r2.L, r2.R);
-        if (computedStyle.display == "flex") layoutFlex(g, r2, r2.W(), r2.H());
-        else if (_isTableDisplay(computedStyle.display)) layoutTable(g, r2, r2.W(), r2.H());
-        else                                              layoutBlock(g, r2, r2.W(), r2.H());
-        float cW2 = 0.f, cH2 = 0.f;
-        _measureContentExtent(r2, cW2, cH2);
-        if (cW2 > r2.W()) showSbarX = true;
+        const bool prevShowSbarX = showSbarX;
+        const bool prevShowSbarY = showSbarY;
+
+        glint_rect probe = getContent();
+        if (showSbarY) probe.R -= sbW;
+        if (showSbarX) probe.B -= sbW;
+        probe.R = std::max(probe.L, probe.R);
+        probe.B = std::max(probe.T, probe.B);
+
+        layoutForRect(probe);
+
+        float cW = 0.f, cH = 0.f;
+        _measureContentExtent(probe, cW, cH);
+
+        if (computedStyle.overflowY == "auto") showSbarY = (cH > probe.H());
+        if (computedStyle.overflowX == "auto") showSbarX = (cW > probe.W());
+
+        if (showSbarX == prevShowSbarX && showSbarY == prevShowSbarY)
+          break;
       }
     }
 
@@ -2058,16 +2075,17 @@
     _measureContentExtent(contentR, cW, cH);
 
     // Children are positioned relative to contentR (the padding-inset rect), but
-    // _clampScroll uses GetPaintRECT().H() as viewH — which is larger than contentR.H()
-    // by (paddingTop + paddingBottom). Add the padding back so both values live in the
-    // same coordinate space and the full padding area is reachable when scrolled.
+    // _clampScroll uses GetPaintRECT() as the viewport basis. Add padding and border
+    // back so measured scroll extents live in the same border-box coordinate space.
     const float pT = (float)computedStyle.paddingTop,  pB = (float)computedStyle.paddingBottom;
     const float pL = (float)computedStyle.paddingLeft,  pR = (float)computedStyle.paddingRight;
-    mScrollWidth  = cW + pL + pR;
-    mScrollHeight = cH + pT + pB;
+    const float bT = computedStyle.resolvedBorderWidth(0), bR = computedStyle.resolvedBorderWidth(1);
+    const float bB = computedStyle.resolvedBorderWidth(2), bL = computedStyle.resolvedBorderWidth(3);
+    mScrollWidth  = cW + pL + pR + bL + bR;
+    mScrollHeight = cH + pT + pB + bT + bB;
 
     // ── Clamp scroll position to valid range ─────────────────────────────────
-    _clampScroll();
+    _clampScroll(showSbarX, showSbarY);
 
     // ── Position scrollbar children at component edges ────────────────────────
     _positionScrollbars(g, showSbarX, showSbarY);

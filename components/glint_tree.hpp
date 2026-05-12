@@ -622,7 +622,7 @@ protected:
 
     // Create / show / hide the vertical scrollbar child.
     _ensureScrollbars(/*needsX=*/false, needsY);
-    _clampScroll();
+    _clampScroll(/*showX=*/false, /*showY=*/needsY);
     _positionScrollbars(g, /*showX=*/false, needsY);
 
     // Sync the DOM-compatible read-only properties.

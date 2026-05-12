@@ -222,6 +222,9 @@ inline bool shouldScheduleTimerRedraw(glint_document* document, bool redrawReque
   if (redrawRequested)
     return true;
 
+  if (document && document->mCanvas.hasActiveAnimationSubtree())
+    return true;
+
   glint_element* focused = document ? document->getFocusedNode() : nullptr;
   if (!focused || !focused->wantsPeriodicRedraw())
     return false;
