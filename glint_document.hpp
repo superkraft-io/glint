@@ -179,6 +179,11 @@ public:
    *  Return true to consume the event (stop further propagation). */
   std::function<bool(const glint_key_press&)> onGlobalKeyDown;
 
+  /** Global key interceptor for key releases — mirrors onGlobalKeyDown and fires
+   *  before focused-node keyup dispatch, regardless of focus state.
+   *  Return true to consume the event (stop further propagation). */
+  std::function<bool(const glint_key_press&)> onGlobalKeyUp;
+
   /**
    * Resource request callback — mirroring WebView2 / WKWebView interception.
    *
@@ -1038,6 +1043,7 @@ public:
 
   bool OnKeyUp(const glint_key_press& key)
   {
+    if (onGlobalKeyUp && onGlobalKeyUp(key)) return true;
     if (!mFocusedNode) return false;
     glint_keyboard_event e;
     e.type      = "keyup";
