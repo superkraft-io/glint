@@ -142,6 +142,9 @@ protected:
   /** Window title bar caption (wide string). */
   virtual const wchar_t* windowTitle() const = 0;
 
+  /** Refresh the native window title from the current virtual title getters. */
+  virtual void refreshWindowTitle() {}
+
   /** Called by the platform subclass inside WM_CREATE / windowDidLoad, after
    *  mOwnRoot has been created and its canvas configured as a flex column.
    *  Subclasses populate mOwnRoot->mCanvas with their child components here. */

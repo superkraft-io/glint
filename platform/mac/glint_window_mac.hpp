@@ -191,6 +191,8 @@ protected:
   /** Window title shown in the titlebar (UTF-8). Default: "glint Window". */
   virtual const char* macTitleUTF8() const { return "glint Window"; }
 
+  void refreshWindowTitle() override;
+
   /** Initial content size in points (not pixels). */
   int defaultWidth()  const override { return 820; }
   int defaultHeight() const override { return 650; }

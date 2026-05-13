@@ -831,6 +831,14 @@ private:
     mLastRedrawByTypeSample = mRedrawByType;
   }
 
+protected:
+  void refreshWindowTitle() override
+  {
+    if (!mHWND) return;
+    ::SetWindowTextW(mHWND, windowTitle());
+  }
+
+private:
   void recreateSurface() override
   {
     recreateRendererSurface();
@@ -1243,8 +1251,12 @@ private:
       return 1;
 
     case WM_CLOSE:
+    {
+      LRESULT r = self->handleMessage(msg, wp, lp);
+      if (r != -1) return r;
       ::DestroyWindow(hwnd);
       return 0;
+    }
 
     case WM_DESTROY:
       ::KillTimer(hwnd, SKUI_ANIM_TIMER);

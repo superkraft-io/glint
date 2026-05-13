@@ -509,6 +509,21 @@ void glint_window_mac::requestRedraw()
   }
 }
 
+void glint_window_mac::refreshWindowTitle()
+{
+  if (usePopupStyle()) return;
+
+  _dispatchMain([this]() {
+    NSPanel* panel = (__bridge NSPanel*)mPanelHandle;
+    if (!panel) return;
+
+    const char* title = macTitleUTF8();
+    NSString* nsTitle = [NSString stringWithUTF8String:(title ? title : "")];
+    if (!nsTitle) nsTitle = @"";
+    [panel setTitle:nsTitle];
+  });
+}
+
 void glint_window_mac::setTimer(int timerId, double intervalSec, bool oneShot)
 {
   if ([NSThread isMainThread]) {
