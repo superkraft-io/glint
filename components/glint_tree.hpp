@@ -580,6 +580,7 @@ public:
         mScrollTop = rowBot - viewH;
       const float maxScroll = std::max(0.f, mScrollHeight - viewH);
       mScrollTop = std::max(0.f, std::min(mScrollTop, maxScroll));
+      _refreshRootHoverFromPointer();
       setDirty(false);
       return;
     }

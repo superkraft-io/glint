@@ -99,6 +99,9 @@ inline glint_mouse_mod modifierKeysFromWParam(WPARAM wp)
   glint_mouse_mod modifiers = {};
   modifiers.S = (wp & MK_SHIFT) != 0;
   modifiers.C = (wp & MK_CONTROL) != 0;
+  // Windows mouse-message wParam does not carry Alt, so query the current
+  // key state directly to keep mouse-driven modifier behaviors working.
+  modifiers.A = (::GetKeyState(VK_MENU) & 0x8000) != 0;
   return modifiers;
 }
 

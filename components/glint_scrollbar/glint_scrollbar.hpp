@@ -164,6 +164,7 @@ public:
       mScrollParent->mScrollLeft = clamped;
     mScrollParent->element.scrollWidth  = mScrollParent->mScrollWidth;
     mScrollParent->element.scrollHeight = mScrollParent->mScrollHeight;
+    mScrollParent->_refreshRootHoverFromPointer();
     mScrollParent->setDirty(false);
   }
 

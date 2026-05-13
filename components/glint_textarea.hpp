@@ -590,6 +590,7 @@ private:
       mScrollTop = caretTop;
 
     mScrollTop = std::max(0.f, mScrollTop);
+    _refreshRootHoverFromPointer();
     setDirty(false);
   }
 };

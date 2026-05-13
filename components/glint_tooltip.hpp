@@ -6,6 +6,7 @@
  *
  * The tooltip popup is absolutely positioned above the element.
  * It appears on mouseenter and disappears on mouseleave.
+ * It also hides on pointer press so rebuilt controls cannot leave the popup stuck.
  *
  * Usage (direct):
  *   add.fromClass<glint_tooltip>([](glint_tooltip& t) {
@@ -54,9 +55,11 @@ public:
     });
 
     element.addEventListener("mouseleave", [this](glint_event&) {
-      if (!mPopupInBody) return;
-      mPopup->className = "glint_tooltip_popup";
-      setDirty(false);
+      _hidePopup();
+    });
+
+    element.addEventListener("mousedown", [this](glint_event&) {
+      _hidePopup();
     });
   }
 
@@ -74,6 +77,13 @@ private:
   glint_element* mPopup      = nullptr;
   bool           mPopupInBody = false;
 
+  void _hidePopup()
+  {
+    if (!mPopupInBody || !mPopup) return;
+    mPopup->className = "glint_tooltip_popup";
+    setDirty(false);
+  }
+
   // Add the popup to the body element (mRoot->mCanvas) on first Layout.
   // After this, body owns the popup and it paints above all normal content.
   void _ensurePopupInBody()
@@ -84,8 +94,8 @@ private:
   }
 
   // Position the popup in body-absolute coordinates.
-  // mRect is already in absolute document coordinates (the layout engine
-  // accumulates cb.L/T at every level), so no parent-chain walk is needed.
+  // mRect is in document layout space, so subtract ancestor scroll offsets to
+  // match the element's visible screen-space position inside scrolled parents.
   void _positionPopup()
   {
     if (!mPopup || !mPopupInBody) return;
@@ -94,7 +104,14 @@ private:
     const float selfW = mRect.W();
     const float selfH = mRect.H();
 
-    mPopup->style.left = mRect.L + (selfW - popW) * 0.5f;
-    mPopup->style.top  = mRect.T + selfH + 6.f;   // 6 px gap below element
+    float left = mRect.L;
+    float top  = mRect.T;
+    for (glint_element* p = mParent; p; p = p->mParent) {
+      left -= p->mScrollLeft;
+      top  -= p->mScrollTop;
+    }
+
+    mPopup->style.left = left + (selfW - popW) * 0.5f;
+    mPopup->style.top  = top + selfH + 6.f;   // 6 px gap below element
   }
 };

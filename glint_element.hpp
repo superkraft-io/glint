@@ -2487,6 +2487,10 @@ protected:
   // Defined at the bottom of glint_document.hpp after the full document definition.
   float _getRootDpr() const;
 
+  // Re-run root hover hit-testing using the last known pointer position.
+  // Defined at the bottom of glint_document.hpp after the full document definition.
+  void _refreshRootHoverFromPointer();
+
   // ── Internal: createElement registry ─────────────────────────────────────
   static std::map<std::string, std::function<glint_element*()>>& _elementFactories()
   {

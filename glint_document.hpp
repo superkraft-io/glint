@@ -1598,8 +1598,19 @@ public:
   // ── Mouse events ─────────────────────────────────────────────────────────
   // Called by the adapter after converting host-specific types to glint_mouse_mod.
 
+  void RefreshHoverFromCurrentPointer()
+  {
+    if (!mPointerInWindow) return;
+    OnMouseOver(mPointerX, mPointerY, mPointerMod, 0.f, 0.f);
+  }
+
   void OnMouseDown(float x, float y, const glint_mouse_mod& mod)
   {
+    mPointerInWindow = true;
+    mPointerX = x;
+    mPointerY = y;
+    mPointerMod = mod;
+
     auto* hit = hitTest(x, y);
     // Inspect mode: clicking in the main UI selects that component persistently,
     // then immediately exits inspect mode (like Chrome DevTools).
@@ -1666,6 +1677,11 @@ public:
 
   void OnMouseUp(float x, float y, const glint_mouse_mod& mod)
   {
+    mPointerInWindow = true;
+    mPointerX = x;
+    mPointerY = y;
+    mPointerMod = mod;
+
     if (mMouseDownNode)
     {
       // Clear :active before any events fire so cssStyle_ is current when
@@ -1726,6 +1742,11 @@ public:
 
   void OnMouseDrag(float x, float y, float dX, float dY, const glint_mouse_mod& mod)
   {
+    mPointerInWindow = true;
+    mPointerX = x;
+    mPointerY = y;
+    mPointerMod = mod;
+
     if (mMouseDownNode)
     {
       // ── Cross-element selection ────────────────────────────────────────────
@@ -1792,6 +1813,11 @@ public:
 
   void OnMouseOver(float x, float y, const glint_mouse_mod& mod, float dX = 0.f, float dY = 0.f)
   {
+    mPointerInWindow = true;
+    mPointerX = x;
+    mPointerY = y;
+    mPointerMod = mod;
+
     auto* hit = hitTest(x, y);
 
     // Inspect mode: update the transient hover highlight and notify the inspector
@@ -1916,6 +1942,8 @@ public:
 
   void OnMouseOut()
   {
+    mPointerInWindow = false;
+
     if (mHoveredNode)
     {
       glint_mouse_mod mod{};
@@ -1963,6 +1991,11 @@ public:
    */
   void OnMouseWheel(float x, float y, float deltaX, float deltaY, const glint_mouse_mod& mod)
   {
+    mPointerInWindow = true;
+    mPointerX = x;
+    mPointerY = y;
+    mPointerMod = mod;
+
     auto* hit = hitTest(x, y);
 
     // Dispatch "wheel" DOM event first — listener can call preventDefault() to
@@ -2027,6 +2060,7 @@ public:
         // is resolved during Layout(), so we must mark the document
         // layout-dirty (not just paint-dirty) for the thumb to track. This
         // runs at input rate, not frame rate, so it's cheap.
+        node->_refreshRootHoverFromPointer();
         node->setDirty(false);
         break;
       }
@@ -2876,6 +2910,10 @@ private:
   glint_element* mMouseDownNode  = nullptr;
   glint_element* mFocusedNode    = nullptr;  // currently focused (keyboard) node
   bool             mFocusViaKeyboard = false;  // true only for Tab/Shift+Tab focus (:focus-visible)
+  bool             mPointerInWindow = false;
+  float            mPointerX = 0.f;
+  float            mPointerY = 0.f;
+  glint_mouse_mod  mPointerMod{};
 
   glint_element* mLastClickNode = nullptr;
   std::chrono::steady_clock::time_point mLastClickTime{};
@@ -3318,6 +3356,11 @@ inline void glint_element::_markRootLayoutDirty()
 inline float glint_element::_getRootDpr() const
 {
   return mRoot ? mRoot->devicePixelRatio : 1.f;
+}
+
+inline void glint_element::_refreshRootHoverFromPointer()
+{
+  if (mRoot) mRoot->RefreshHoverFromCurrentPointer();
 }
 
 // ── glint_document ─────────────────────────────────────────────────────────────────

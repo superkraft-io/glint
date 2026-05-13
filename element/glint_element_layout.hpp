@@ -1869,6 +1869,7 @@
         mScrollTop = std::max(0.f, std::min(v, std::max(0.f, mScrollHeight - viewH)));
         glint_event se; se.type = "scroll"; se.bubbles = false; se.cancelable = false;
         dispatchDOMEvent(se);
+        _refreshRootHoverFromPointer();
         setDirty(false);
       },
       // scrollLeft getter
@@ -1882,6 +1883,7 @@
         mScrollLeft = std::max(0.f, std::min(v, std::max(0.f, mScrollWidth - viewW)));
         glint_event se; se.type = "scroll"; se.bubbles = false; se.cancelable = false;
         dispatchDOMEvent(se);
+        _refreshRootHoverFromPointer();
         setDirty(false);
       }
     );
