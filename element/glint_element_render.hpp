@@ -1552,7 +1552,7 @@ public:
     {
       auto* c = child.get();
       if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-      if (c->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+      if (c->computedStyle.zIndex != 0 || c->mPaintInOverlayPass) { _anyNonZeroZ = true; break; }
     }
 
     if (!_anyNonZeroZ)
@@ -1580,14 +1580,21 @@ public:
     {
       struct _ChildDrawOrder { glint_element* node; int zIndex; };
       std::vector<_ChildDrawOrder> _drawOrder;
+      std::vector<_ChildDrawOrder> _overlayOrder;
       _drawOrder.reserve(mChildren.size());
+      _overlayOrder.reserve(mChildren.size());
       for (auto& child : mChildren)
       {
         auto* c = child.get();
         if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-        _drawOrder.push_back({ c, c->computedStyle.zIndex });
+        if (c->mPaintInOverlayPass) _overlayOrder.push_back({ c, c->computedStyle.zIndex });
+        else                        _drawOrder.push_back({ c, c->computedStyle.zIndex });
       }
       std::stable_sort(_drawOrder.begin(), _drawOrder.end(),
+        [](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
+          return a.zIndex < b.zIndex;
+        });
+      std::stable_sort(_overlayOrder.begin(), _overlayOrder.end(),
         [](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
           return a.zIndex < b.zIndex;
         });
@@ -1615,6 +1622,15 @@ public:
         for (const auto& entry : _drawOrder)
         {
           if (entry.zIndex < 0) continue;
+          const auto _childStart = std::chrono::steady_clock::now();
+          entry.node->DrawToCanvas(canvas);
+          _recordChildSubtreeTiming(
+            entry.node,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
+        }
+
+        for (const auto& entry : _overlayOrder)
+        {
           const auto _childStart = std::chrono::steady_clock::now();
           entry.node->DrawToCanvas(canvas);
           _recordChildSubtreeTiming(

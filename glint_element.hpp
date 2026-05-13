@@ -342,6 +342,11 @@ public:
   // snapshots back to live glint_element pointers.
   uint64_t mId = 0;
 
+  // Overlay pass flag — when true, the parent paints and hit-tests this child after
+  // all normal siblings regardless of insertion order. This gives root-level overlays
+  // a stable top layer without requiring DOM reordering.
+  bool mPaintInOverlayPass = false;
+
   // Debug-only removal flag toggled by the inspector. Removed nodes stay alive
   // but are treated as hidden and excluded from the inspector tree.
   bool mInspectorRemoved = false;
@@ -1395,7 +1400,7 @@ public:
       // Container: a descendant may own the overflow content.
       bool _anyNonZeroZ = false;
       for (auto& child : mChildren)
-        if (child->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+        if (child->computedStyle.zIndex != 0 || child->mPaintInOverlayPass) { _anyNonZeroZ = true; break; }
       if (!_anyNonZeroZ)
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
@@ -1409,6 +1414,8 @@ public:
           _hitOrder.push_back(it->get());
         std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
           [](const glint_element* a, const glint_element* b) {
+            if (a->mPaintInOverlayPass != b->mPaintInOverlayPass)
+              return a->mPaintInOverlayPass && !b->mPaintInOverlayPass;
             return a->computedStyle.zIndex > b->computedStyle.zIndex;
           });
         for (auto* c : _hitOrder)
@@ -1440,7 +1447,7 @@ public:
       {
         auto* c = child.get();
         if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-        if (c->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+        if (c->computedStyle.zIndex != 0 || c->mPaintInOverlayPass) { _anyNonZeroZ = true; break; }
       }
       if (!_anyNonZeroZ)
       {
@@ -1462,6 +1469,8 @@ public:
       }
       std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
         [](const glint_element* a, const glint_element* b) {
+          if (a->mPaintInOverlayPass != b->mPaintInOverlayPass)
+            return a->mPaintInOverlayPass && !b->mPaintInOverlayPass;
           return a->computedStyle.zIndex > b->computedStyle.zIndex;
         });
       for (auto* c : _hitOrder)
@@ -1473,7 +1482,7 @@ public:
     {
       bool _anyNonZeroZ = false;
       for (auto& child : mChildren)
-        if (child->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
+        if (child->computedStyle.zIndex != 0 || child->mPaintInOverlayPass) { _anyNonZeroZ = true; break; }
       if (!_anyNonZeroZ)
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
@@ -1486,6 +1495,8 @@ public:
         _hitOrder.push_back(it->get());
       std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
         [](const glint_element* a, const glint_element* b) {
+          if (a->mPaintInOverlayPass != b->mPaintInOverlayPass)
+            return a->mPaintInOverlayPass && !b->mPaintInOverlayPass;
           return a->computedStyle.zIndex > b->computedStyle.zIndex;
         });
       for (auto* c : _hitOrder)
