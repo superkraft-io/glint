@@ -886,13 +886,46 @@ private:
     mWpx = static_cast<int>(std::lround(static_cast<float>(mW) * mDpr));
     mHpx = static_cast<int>(std::lround(static_cast<float>(mH) * mDpr));
 
+    RECT initialRect = { 0, 0, mWpx, mHpx };
+    typedef BOOL (WINAPI* AdjustWindowRectExForDpiProc)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    static AdjustWindowRectExForDpiProc adjustWindowRectExForDpi = [] {
+      HMODULE h = ::GetModuleHandleW(L"user32.dll");
+      return h ? reinterpret_cast<AdjustWindowRectExForDpiProc>(
+                   ::GetProcAddress(h, "AdjustWindowRectExForDpi"))
+               : nullptr;
+    }();
+    const DWORD exStyle = windowExStyle() | (useTransparency() ? WS_EX_LAYERED : 0u);
+    const DWORD style   = windowStyle();
+    const UINT dpi      = static_cast<UINT>(std::lround(mDpr * 96.f));
+    if (adjustWindowRectExForDpi)
+      adjustWindowRectExForDpi(&initialRect, style, FALSE, exStyle, dpi);
+    else
+      ::AdjustWindowRectEx(&initialRect, style, FALSE, exStyle);
+
+    const int frameW = initialRect.right - initialRect.left;
+    const int frameH = initialRect.bottom - initialRect.top;
+
+    int windowX = CW_USEDEFAULT;
+    int windowY = CW_USEDEFAULT;
+    if (HMONITOR primary = ::MonitorFromPoint(anchor, MONITOR_DEFAULTTOPRIMARY))
+    {
+      MONITORINFO info = { sizeof(MONITORINFO) };
+      if (::GetMonitorInfoW(primary, &info))
+      {
+        const int workW = info.rcWork.right - info.rcWork.left;
+        const int workH = info.rcWork.bottom - info.rcWork.top;
+        windowX = info.rcWork.left + ((workW > frameW) ? ((workW - frameW) / 2) : 0);
+        windowY = info.rcWork.top + ((workH > frameH) ? ((workH - frameH) / 2) : 0);
+      }
+    }
+
     mHWND = ::CreateWindowExW(
-      windowExStyle() | (useTransparency() ? WS_EX_LAYERED : 0u),
+      exStyle,
       windowClassName(),
       windowTitle(),
-      windowStyle(),
-      CW_USEDEFAULT, CW_USEDEFAULT,
-      mWpx, mHpx,
+      style,
+      windowX, windowY,
+      frameW, frameH,
       nullptr, nullptr,
       instance,
       this    // passed to WM_NCCREATE as lpCreateParams
