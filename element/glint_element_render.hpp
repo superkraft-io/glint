@@ -1547,15 +1547,7 @@ public:
     // text content). Skip the sort vector entirely and walk mChildren directly.
     // computedStyle.zIndex is kept fresh by tickTransitionsAll() which runs
     // before draw.
-    bool _anyNonZeroZ = false;
-    for (auto& child : mChildren)
-    {
-      auto* c = child.get();
-      if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-      if (c->computedStyle.zIndex != 0 || c->mPaintInOverlayPass) { _anyNonZeroZ = true; break; }
-    }
-
-    if (!_anyNonZeroZ)
+    if (!_hasSpecialDirectChildPaintOrder())
     {
       {
         render_timing_scope _timingScope(render_timing_bucket::content);
@@ -1578,36 +1570,22 @@ public:
     }
     else
     {
-      struct _ChildDrawOrder { glint_element* node; int zIndex; };
-      std::vector<_ChildDrawOrder> _drawOrder;
-      std::vector<_ChildDrawOrder> _overlayOrder;
-      _drawOrder.reserve(mChildren.size());
-      _overlayOrder.reserve(mChildren.size());
-      for (auto& child : mChildren)
-      {
-        auto* c = child.get();
-        if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-        if (c->mPaintInOverlayPass) _overlayOrder.push_back({ c, c->computedStyle.zIndex });
-        else                        _drawOrder.push_back({ c, c->computedStyle.zIndex });
-      }
-      std::stable_sort(_drawOrder.begin(), _drawOrder.end(),
-        [](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
-          return a.zIndex < b.zIndex;
-        });
-      std::stable_sort(_overlayOrder.begin(), _overlayOrder.end(),
-        [](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
-          return a.zIndex < b.zIndex;
-        });
+      std::vector<glint_element*> _negativeChildren;
+      std::vector<glint_element*> _normalChildren;
+      std::vector<glint_element*> _zeroChildren;
+      std::vector<glint_element*> _positiveChildren;
+      std::vector<glint_element*> _overlayChildren;
+      _collectDirectChildPaintOrder(
+        _negativeChildren, _normalChildren, _zeroChildren, _positiveChildren, _overlayChildren);
 
       {
         render_timing_scope _timingScope(render_timing_bucket::children);
-        for (const auto& entry : _drawOrder)
+        for (auto* child : _negativeChildren)
         {
-          if (entry.zIndex >= 0) break;
           const auto _childStart = std::chrono::steady_clock::now();
-          entry.node->DrawToCanvas(canvas);
+          child->DrawToCanvas(canvas);
           _recordChildSubtreeTiming(
-            entry.node,
+            child,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
         }
       }
@@ -1619,22 +1597,39 @@ public:
 
       {
         render_timing_scope _timingScope(render_timing_bucket::children);
-        for (const auto& entry : _drawOrder)
+        for (auto* child : _normalChildren)
         {
-          if (entry.zIndex < 0) continue;
           const auto _childStart = std::chrono::steady_clock::now();
-          entry.node->DrawToCanvas(canvas);
+          child->DrawToCanvas(canvas);
           _recordChildSubtreeTiming(
-            entry.node,
+            child,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
         }
 
-        for (const auto& entry : _overlayOrder)
+        for (auto* child : _zeroChildren)
         {
           const auto _childStart = std::chrono::steady_clock::now();
-          entry.node->DrawToCanvas(canvas);
+          child->DrawToCanvas(canvas);
           _recordChildSubtreeTiming(
-            entry.node,
+            child,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
+        }
+
+        for (auto* child : _positiveChildren)
+        {
+          const auto _childStart = std::chrono::steady_clock::now();
+          child->DrawToCanvas(canvas);
+          _recordChildSubtreeTiming(
+            child,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
+        }
+
+        for (auto* child : _overlayChildren)
+        {
+          const auto _childStart = std::chrono::steady_clock::now();
+          child->DrawToCanvas(canvas);
+          _recordChildSubtreeTiming(
+            child,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
         }
       }

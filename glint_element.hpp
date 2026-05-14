@@ -1398,10 +1398,7 @@ public:
       // Leaf: own text overflows past our layout rect.
       if (!innerText.empty() && isPointOverText(lx, ly)) return this;
       // Container: a descendant may own the overflow content.
-      bool _anyNonZeroZ = false;
-      for (auto& child : mChildren)
-        if (child->computedStyle.zIndex != 0 || child->mPaintInOverlayPass) { _anyNonZeroZ = true; break; }
-      if (!_anyNonZeroZ)
+      if (!_hasSpecialDirectChildPaintOrder(false))
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
           if (auto* h = it->get()->HitTest(lx, ly)) return h;
@@ -1409,15 +1406,7 @@ public:
       else
       {
         std::vector<glint_element*> _hitOrder;
-        _hitOrder.reserve(mChildren.size());
-        for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
-          _hitOrder.push_back(it->get());
-        std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
-          [](const glint_element* a, const glint_element* b) {
-            if (a->mPaintInOverlayPass != b->mPaintInOverlayPass)
-              return a->mPaintInOverlayPass && !b->mPaintInOverlayPass;
-            return a->computedStyle.zIndex > b->computedStyle.zIndex;
-          });
+        _collectDirectChildHitOrder(_hitOrder, false);
         for (auto* c : _hitOrder)
           if (auto* h = c->HitTest(lx, ly)) return h;
       }
@@ -1442,14 +1431,7 @@ public:
       // Hit-test in reverse z-index order (highest z-index first = topmost painted first).
       // Fast path when no child has a non-zero zIndex (the common case): walk
       // mChildren in reverse without allocating a sort vector.
-      bool _anyNonZeroZ = false;
-      for (auto& child : mChildren)
-      {
-        auto* c = child.get();
-        if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-        if (c->computedStyle.zIndex != 0 || c->mPaintInOverlayPass) { _anyNonZeroZ = true; break; }
-      }
-      if (!_anyNonZeroZ)
+      if (!_hasSpecialDirectChildPaintOrder())
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
         {
@@ -1460,19 +1442,7 @@ public:
         return this;
       }
       std::vector<glint_element*> _hitOrder;
-      _hitOrder.reserve(mChildren.size());
-      for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
-      {
-        auto* c = it->get();
-        if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-        _hitOrder.push_back(c);
-      }
-      std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
-        [](const glint_element* a, const glint_element* b) {
-          if (a->mPaintInOverlayPass != b->mPaintInOverlayPass)
-            return a->mPaintInOverlayPass && !b->mPaintInOverlayPass;
-          return a->computedStyle.zIndex > b->computedStyle.zIndex;
-        });
+      _collectDirectChildHitOrder(_hitOrder);
       for (auto* c : _hitOrder)
         if (auto* hit = c->HitTest(hx, hy)) return hit;
       return this;
@@ -1480,25 +1450,14 @@ public:
 
     // Standard hit test (no scroll) — highest z-index tested first.
     {
-      bool _anyNonZeroZ = false;
-      for (auto& child : mChildren)
-        if (child->computedStyle.zIndex != 0 || child->mPaintInOverlayPass) { _anyNonZeroZ = true; break; }
-      if (!_anyNonZeroZ)
+      if (!_hasSpecialDirectChildPaintOrder(false))
       {
         for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
           if (auto* hit = it->get()->HitTest(lx, ly)) return hit;
         return this;
       }
       std::vector<glint_element*> _hitOrder;
-      _hitOrder.reserve(mChildren.size());
-      for (auto it = mChildren.rbegin(); it != mChildren.rend(); ++it)
-        _hitOrder.push_back(it->get());
-      std::stable_sort(_hitOrder.begin(), _hitOrder.end(),
-        [](const glint_element* a, const glint_element* b) {
-          if (a->mPaintInOverlayPass != b->mPaintInOverlayPass)
-            return a->mPaintInOverlayPass && !b->mPaintInOverlayPass;
-          return a->computedStyle.zIndex > b->computedStyle.zIndex;
-        });
+      _collectDirectChildHitOrder(_hitOrder, false);
       for (auto* c : _hitOrder)
         if (auto* hit = c->HitTest(lx, ly)) return hit;
     }
@@ -1842,19 +1801,7 @@ public:
         _canvas->translate(-mScrollLeft, -mScrollTop);
     }
 
-    // Most parents have all children at zIndex 0 (the text page is hundreds of
-    // such labels). Detect this fast path and skip the sort vector entirely.
-    // computedStyle.zIndex is kept fresh by tickTransitionsAll() running before
-    // Draw, so reading it here avoids the heavy _mergedStyle() copy.
-    bool _anyNonZeroZ = false;
-    for (auto& child : mChildren)
-    {
-      auto* c = child.get();
-      if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-      if (c->computedStyle.zIndex != 0) { _anyNonZeroZ = true; break; }
-    }
-
-    if (!_anyNonZeroZ)
+    if (!_hasSpecialDirectChildPaintOrder())
     {
       drawContent(g);
 
@@ -1867,33 +1814,27 @@ public:
     }
     else
     {
-      struct _ChildDrawOrder { glint_element* node; int zIndex; };
-      std::vector<_ChildDrawOrder> _drawOrder;
-      _drawOrder.reserve(mChildren.size());
-      for (auto& child : mChildren)
-      {
-        auto* c = child.get();
-        if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-        _drawOrder.push_back({ c, c->computedStyle.zIndex });
-      }
-      std::stable_sort(_drawOrder.begin(), _drawOrder.end(),
-        [](const _ChildDrawOrder& a, const _ChildDrawOrder& b) {
-          return a.zIndex < b.zIndex;
-        });
+      std::vector<glint_element*> _negativeChildren;
+      std::vector<glint_element*> _normalChildren;
+      std::vector<glint_element*> _zeroChildren;
+      std::vector<glint_element*> _positiveChildren;
+      std::vector<glint_element*> _overlayChildren;
+      _collectDirectChildPaintOrder(
+        _negativeChildren, _normalChildren, _zeroChildren, _positiveChildren, _overlayChildren);
 
-      for (const auto& entry : _drawOrder)
-      {
-        if (entry.zIndex >= 0) break;
-        entry.node->Draw(g);
-      }
+      for (auto* child : _negativeChildren)
+        child->Draw(g);
 
       drawContent(g);
 
-      for (const auto& entry : _drawOrder)
-      {
-        if (entry.zIndex < 0) continue;
-        entry.node->Draw(g);
-      }
+      for (auto* child : _normalChildren)
+        child->Draw(g);
+      for (auto* child : _zeroChildren)
+        child->Draw(g);
+      for (auto* child : _positiveChildren)
+        child->Draw(g);
+      for (auto* child : _overlayChildren)
+        child->Draw(g);
     }
 
     // Restore scroll clip + translation before drawing scrollbar overlays.
@@ -2322,6 +2263,131 @@ public:
     mSkipNextTick_ = true;
     for (auto& ch : mChildren)
       ch->tickTransitionsAll();
+  }
+
+  bool _isNonStaticPositioned() const
+  {
+    return !computedStyle.position.empty() && computedStyle.position != "static";
+  }
+
+  bool _isFlexItem() const
+  {
+    return mParent && mParent->computedStyle.display == "flex";
+  }
+
+  bool _createsStackingContextForPaintOrder() const
+  {
+    if (mPaintInOverlayPass) return true;
+    if (_isFlexItem() && computedStyle.zIndex != 0) return true;
+    if (_isNonStaticPositioned() && computedStyle.zIndex != 0) return true;
+    if (computedStyle.opacity < 0.9999f) return true;
+    if (!computedStyle.transform.empty() && computedStyle.transform != "none") return true;
+    if (!computedStyle.filter.empty() && computedStyle.filter != "none") return true;
+    if (!computedStyle.backdropFilter.empty() && computedStyle.backdropFilter != "none") return true;
+    if (!computedStyle.mixBlendMode.empty() && computedStyle.mixBlendMode != "normal") return true;
+    if (computedStyle.isolation == "isolate") return true;
+    return false;
+  }
+
+  bool _participatesInOwnPaintOrder() const
+  {
+    return mPaintInOverlayPass || _createsStackingContextForPaintOrder() || _isNonStaticPositioned();
+  }
+
+  bool _hasSpecialDirectChildPaintOrder(bool skipScrollbars = true) const
+  {
+    for (const auto& child : mChildren)
+    {
+      auto* c = child.get();
+      if (!c) continue;
+      if (skipScrollbars && (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner)) continue;
+      if (c->mPaintInOverlayPass || c->_participatesInOwnPaintOrder())
+        return true;
+    }
+    return false;
+  }
+
+  void _collectDirectChildPaintOrder(std::vector<glint_element*>& negativeChildren,
+                                     std::vector<glint_element*>& normalChildren,
+                                     std::vector<glint_element*>& zeroChildren,
+                                     std::vector<glint_element*>& positiveChildren,
+                                     std::vector<glint_element*>& overlayChildren,
+                                     bool skipScrollbars = true) const
+  {
+    negativeChildren.clear();
+    normalChildren.clear();
+    zeroChildren.clear();
+    positiveChildren.clear();
+    overlayChildren.clear();
+
+    negativeChildren.reserve(mChildren.size());
+    normalChildren.reserve(mChildren.size());
+    zeroChildren.reserve(mChildren.size());
+    positiveChildren.reserve(mChildren.size());
+    overlayChildren.reserve(mChildren.size());
+
+    for (const auto& child : mChildren)
+    {
+      auto* c = child.get();
+      if (!c) continue;
+      if (skipScrollbars && (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner)) continue;
+
+      if (c->mPaintInOverlayPass)
+      {
+        overlayChildren.push_back(c);
+        continue;
+      }
+
+      if (!c->_participatesInOwnPaintOrder())
+      {
+        normalChildren.push_back(c);
+        continue;
+      }
+
+      if (c->computedStyle.zIndex < 0)
+        negativeChildren.push_back(c);
+      else if (c->computedStyle.zIndex > 0)
+        positiveChildren.push_back(c);
+      else
+        zeroChildren.push_back(c);
+    }
+
+    const auto byAscendingZ = [](const glint_element* a, const glint_element* b) {
+      return a->computedStyle.zIndex < b->computedStyle.zIndex;
+    };
+
+    std::stable_sort(negativeChildren.begin(), negativeChildren.end(), byAscendingZ);
+    std::stable_sort(positiveChildren.begin(), positiveChildren.end(), byAscendingZ);
+    std::stable_sort(overlayChildren.begin(), overlayChildren.end(), byAscendingZ);
+
+  }
+
+  void _collectDirectChildHitOrder(std::vector<glint_element*>& hitOrder,
+                                   bool skipScrollbars = true) const
+  {
+    std::vector<glint_element*> negativeChildren;
+    std::vector<glint_element*> normalChildren;
+    std::vector<glint_element*> zeroChildren;
+    std::vector<glint_element*> positiveChildren;
+    std::vector<glint_element*> overlayChildren;
+    _collectDirectChildPaintOrder(
+      negativeChildren, normalChildren, zeroChildren, positiveChildren, overlayChildren, skipScrollbars);
+
+    hitOrder.clear();
+    hitOrder.reserve(
+      negativeChildren.size() + normalChildren.size() + zeroChildren.size()
+      + positiveChildren.size() + overlayChildren.size());
+
+    for (auto it = overlayChildren.rbegin(); it != overlayChildren.rend(); ++it)
+      hitOrder.push_back(*it);
+    for (auto it = positiveChildren.rbegin(); it != positiveChildren.rend(); ++it)
+      hitOrder.push_back(*it);
+    for (auto it = zeroChildren.rbegin(); it != zeroChildren.rend(); ++it)
+      hitOrder.push_back(*it);
+    for (auto it = normalChildren.rbegin(); it != normalChildren.rend(); ++it)
+      hitOrder.push_back(*it);
+    for (auto it = negativeChildren.rbegin(); it != negativeChildren.rend(); ++it)
+      hitOrder.push_back(*it);
   }
 
   /** Force-refresh computedStyle for this element from the current `style` and
