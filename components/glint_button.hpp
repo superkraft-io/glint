@@ -125,31 +125,28 @@ public:
       _sc->concat(_tmat);
     }
     DrawBackground(g, mStateComputedStyle);
-    std::vector<glint_element*> _drawOrder;
-    _drawOrder.reserve(mChildren.size());
-    for (auto& child : mChildren)
-      _drawOrder.push_back(child.get());
-    std::stable_sort(_drawOrder.begin(), _drawOrder.end(),
-      [](const glint_element* a, const glint_element* b) {
-        return a->computedStyle.zIndex < b->computedStyle.zIndex;
-      });
+    std::vector<glint_element*> _negativeChildren;
+    std::vector<glint_element*> _normalChildren;
+    std::vector<glint_element*> _zeroChildren;
+    std::vector<glint_element*> _positiveChildren;
+    std::vector<glint_element*> _overlayChildren;
+    _collectDirectChildPaintOrder(
+      _negativeChildren, _normalChildren, _zeroChildren, _positiveChildren, _overlayChildren, false);
 
-    for (auto* c : _drawOrder)
-    {
-      if (c->computedStyle.zIndex >= 0) break;
+    for (auto* c : _negativeChildren)
       c->Draw(g);
-    }
 
     mActiveStyle = &mStateComputedStyle;
     drawContent(g);
 
-    // Recurse children (e.g. an svg icon nested inside a button).
-    // Mirrors the base draw path's negative/non-negative z-index split.
-    for (auto* c : _drawOrder)
-    {
-      if (c->computedStyle.zIndex < 0) continue;
+    for (auto* c : _normalChildren)
       c->Draw(g);
-    }
+    for (auto* c : _zeroChildren)
+      c->Draw(g);
+    for (auto* c : _positiveChildren)
+      c->Draw(g);
+    for (auto* c : _overlayChildren)
+      c->Draw(g);
 
     // Border paints on top of content — mirrors DrawToCanvas and the base _drawImpl.
     if (_sc) _drawBorderSkia(_sc, mStateComputedStyle, mRect);
@@ -417,30 +414,28 @@ protected:
         canvas->drawRect(skRect(mRect), p);
     }
 
-    std::vector<glint_element*> _drawOrder;
-    _drawOrder.reserve(mChildren.size());
-    for (auto& child : mChildren)
-      _drawOrder.push_back(child.get());
-    std::stable_sort(_drawOrder.begin(), _drawOrder.end(),
-      [](const glint_element* a, const glint_element* b) {
-        return a->computedStyle.zIndex < b->computedStyle.zIndex;
-      });
+    std::vector<glint_element*> _negativeChildren;
+    std::vector<glint_element*> _normalChildren;
+    std::vector<glint_element*> _zeroChildren;
+    std::vector<glint_element*> _positiveChildren;
+    std::vector<glint_element*> _overlayChildren;
+    _collectDirectChildPaintOrder(
+      _negativeChildren, _normalChildren, _zeroChildren, _positiveChildren, _overlayChildren, false);
 
-    for (auto* child : _drawOrder)
-    {
-      if (child->computedStyle.zIndex >= 0) break;
+    for (auto* child : _negativeChildren)
       child->DrawToCanvas(canvas);
-    }
 
     mActiveStyle = &mStateComputedStyle;
     DrawContentToCanvas(canvas);
 
-    // Recurse children (rare for buttons but supported)
-    for (auto* child : _drawOrder)
-    {
-      if (child->computedStyle.zIndex < 0) continue;
+    for (auto* child : _normalChildren)
       child->DrawToCanvas(canvas);
-    }
+    for (auto* child : _zeroChildren)
+      child->DrawToCanvas(canvas);
+    for (auto* child : _positiveChildren)
+      child->DrawToCanvas(canvas);
+    for (auto* child : _overlayChildren)
+      child->DrawToCanvas(canvas);
 
     mActiveStyle = nullptr;
 

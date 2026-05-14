@@ -2205,6 +2205,7 @@ struct glint_style
     , position(o.position)
     , left(o.left), top(o.top), right(o.right), bottom(o.bottom), width(o.width), height(o.height)
     , minWidth(o.minWidth), maxWidth(o.maxWidth), minHeight(o.minHeight), maxHeight(o.maxHeight)
+    , zIndex(o.zIndex)
     , display(o.display), pointerEvents(o.pointerEvents), cursor(o.cursor), userSelect(o.userSelect), whiteSpace(o.whiteSpace), flexDirection(o.flexDirection)
     , justifyContent(o.justifyContent), alignItems(o.alignItems), gap(o.gap), flexGrow(o.flexGrow)
     , overflowX(o.overflowX), overflowY(o.overflowY)
@@ -2321,6 +2322,7 @@ struct glint_style
     maxWidth        = o.maxWidth;
     minHeight       = o.minHeight;
     maxHeight       = o.maxHeight;
+    zIndex          = o.zIndex;
     display         = o.display;
     pointerEvents   = o.pointerEvents;
     cursor          = o.cursor;
