@@ -47,6 +47,8 @@
 // EGL — present on every Mesa-based Linux / WSLg installation
 #  include <EGL/egl.h>
 #  include <EGL/eglext.h>
+// Desktop OpenGL (for glFinish, glClear, GL_ALPHA_BITS, etc.)
+#  include <GL/gl.h>
 // Skia Ganesh / GL headers
 #  include "include/gpu/ganesh/gl/GrGLAssembleInterface.h"
 #  include "include/gpu/ganesh/gl/GrGLDirectContext.h"
@@ -326,23 +328,25 @@ float glint_window_linux::detectDpr() const
 
 bool glint_window_linux::initGpu()
 {
-  // mEglDisplay was set by createXWindow(); mEglSurface holds the EGLConfig
-  // we chose there (temporarily).
   EGLDisplay eglDpy = static_cast<EGLDisplay>(mEglDisplay);
   if (eglDpy == EGL_NO_DISPLAY)
-    return false;
+  { fprintf(stderr, "[glint] initGpu: no EGL display\n"); return false; }
+
+  fprintf(stderr, "[glint] initGpu: depth=%d EGL vendor=%s version=%s apis=%s\n",
+          mDepth,
+          eglQueryString(eglDpy, EGL_VENDOR),
+          eglQueryString(eglDpy, EGL_VERSION),
+          eglQueryString(eglDpy, EGL_CLIENT_APIS));
 
   EGLConfig eglCfg = static_cast<EGLConfig>(mEglSurface);
-  mEglSurface = nullptr;   // clear the temp value
+  mEglSurface = nullptr;
 
   if (!eglCfg)
-    return false;
+  { fprintf(stderr, "[glint] initGpu: no EGL config\n"); return false; }
 
-  // Detect whether we're using desktop GL or GLES by querying the current API
-  // (eglBindAPI was called in createXWindow).
   const EGLenum activeApi = eglQueryAPI();
+  fprintf(stderr, "[glint] initGpu: activeApi=%u\n", activeApi);
 
-  // Create the EGL context
   EGLint ctxAttrs[8];
   int    idx = 0;
   if (activeApi == EGL_OPENGL_ES_API)
@@ -350,38 +354,57 @@ bool glint_window_linux::initGpu()
     ctxAttrs[idx++] = EGL_CONTEXT_CLIENT_VERSION;
     ctxAttrs[idx++] = 2;
   }
+  else
+  {
+    // Desktop GL: request 3.0 so Skia Ganesh gets a usable context
+    ctxAttrs[idx++] = EGL_CONTEXT_MAJOR_VERSION;
+    ctxAttrs[idx++] = 3;
+    ctxAttrs[idx++] = EGL_CONTEXT_MINOR_VERSION;
+    ctxAttrs[idx++] = 0;
+  }
   ctxAttrs[idx++] = EGL_NONE;
 
   EGLContext eglCtx = eglCreateContext(eglDpy, eglCfg, EGL_NO_CONTEXT, ctxAttrs);
   if (eglCtx == EGL_NO_CONTEXT)
-    return false;
+  { fprintf(stderr, "[glint] initGpu: eglCreateContext failed err=0x%x\n", eglGetError()); return false; }
 
-  // Create the EGL window surface from the X11 window
   const EGLNativeWindowType xwin = static_cast<EGLNativeWindowType>(mXWindow);
   EGLSurface eglSurf = eglCreateWindowSurface(eglDpy, eglCfg, xwin, nullptr);
   if (eglSurf == EGL_NO_SURFACE)
   {
+    fprintf(stderr, "[glint] initGpu: eglCreateWindowSurface failed err=0x%x\n", eglGetError());
     eglDestroyContext(eglDpy, eglCtx);
     return false;
   }
 
-  // Make context current
   if (!eglMakeCurrent(eglDpy, eglSurf, eglSurf, eglCtx))
   {
+    fprintf(stderr, "[glint] initGpu: eglMakeCurrent failed err=0x%x\n", eglGetError());
     eglDestroySurface(eglDpy, eglSurf);
     eglDestroyContext(eglDpy, eglCtx);
     return false;
   }
+  fprintf(stderr, "[glint] initGpu: EGL context current\n");
 
-  // Leave swap interval at the EGL default (1).  On WSLg/XWayland the Mesa
-  // LLVMpipe driver has no real hardware vsync so the swap returns promptly
-  // regardless.  Setting interval=0 breaks frame presentation on XWayland
-  // (the Wayland compositor drops frames before they ever appear on screen).
-
+  // Leave swap interval at the EGL default (1).
   mEglSurface = static_cast<void*>(eglSurf);
   mEglContext = static_cast<void*>(eglCtx);
 
-  // Build Skia GL interface using eglGetProcAddress as the loader
+  // ── Raw-GL sanity test ───────────────────────────────────────────────────
+  // Clear to a distinctive dark-gray (matching our clear color) and swap.
+  // If the window shows content here, EGL presentation is working and any
+  // later blank window is a Skia-setup issue.
+  {
+    glClearColor(24.f/255.f, 24.f/255.f, 24.f/255.f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();
+    EGLBoolean testOk = eglSwapBuffers(eglDpy, eglSurf);
+    fprintf(stderr, "[glint] initGpu: raw GL test swap %s\n",
+            testOk ? "OK" : "FAILED");
+    eglWaitNative(EGL_CORE_NATIVE_ENGINE);
+    XSync(static_cast<Display*>(mDisplay), False);
+  }
+
   auto glInterface = GrGLMakeAssembledInterface(
       nullptr,
       [](void* /*ctx*/, const char name[]) -> GrGLFuncPtr {
@@ -390,6 +413,7 @@ bool glint_window_linux::initGpu()
 
   if (!glInterface)
   {
+    fprintf(stderr, "[glint] initGpu: GrGLMakeAssembledInterface failed\n");
     eglMakeCurrent(eglDpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroySurface(eglDpy, eglSurf);
     eglDestroyContext(eglDpy, eglCtx);
@@ -400,6 +424,7 @@ bool glint_window_linux::initGpu()
   mGrContext = GrDirectContexts::MakeGL(std::move(glInterface));
   if (!mGrContext)
   {
+    fprintf(stderr, "[glint] initGpu: MakeGL failed\n");
     eglMakeCurrent(eglDpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroySurface(eglDpy, eglSurf);
     eglDestroyContext(eglDpy, eglCtx);
@@ -407,8 +432,10 @@ bool glint_window_linux::initGpu()
     return false;
   }
 
+  fprintf(stderr, "[glint] initGpu: GrDirectContext ready, creating surface %dx%d\n", mWpx, mHpx);
   mGpuOk = true;
-  recreateSurface();   // create the initial SkSurface wrapping FBO 0
+  recreateSurface();
+  fprintf(stderr, "[glint] initGpu: mGpuSurface=%p mCanvas=%p\n", (void*)mGpuSurface.get(), (void*)mCanvas);
   return true;
 }
 
@@ -449,11 +476,22 @@ void glint_window_linux::recreateSurface()
   eglQuerySurface(eglDpy, eglSurf, EGL_WIDTH,  &surfW);
   eglQuerySurface(eglDpy, eglSurf, EGL_HEIGHT, &surfH);
 
+  // Query the actual GL framebuffer alpha bits so we can pick the right
+  // Skia color type. Mesa LLVMpipe may give an RGBA or RGB framebuffer
+  // depending on the EGL config chosen.
+  GLint alphaBits = 0;
+  glGetIntegerv(GL_ALPHA_BITS, &alphaBits);
+  fprintf(stderr, "[glint] recreateSurface: surfW=%d surfH=%d alphaBits=%d\n",
+          surfW, surfH, alphaBits);
+
   // Wrap FBO 0 (the default framebuffer) as a Skia render target.
-  // 0x8058 = GL_RGBA8 (same value in both desktop GL and GLES)
+  // Use GL_RGBA8 (0x8058) when alpha is present, GL_RGB8 (0x8051) when not.
   GrGLFramebufferInfo fbInfo{};
   fbInfo.fFBOID  = 0;
-  fbInfo.fFormat = 0x8058; // GL_RGBA8
+  fbInfo.fFormat = (alphaBits > 0) ? 0x8058u : 0x8051u; // GL_RGBA8 : GL_RGB8
+
+  const SkColorType skColorType =
+      (alphaBits > 0) ? kRGBA_8888_SkColorType : kRGB_888x_SkColorType;
 
   const GrBackendRenderTarget backendRT =
       GrBackendRenderTargets::MakeGL(surfW, surfH,
@@ -465,7 +503,7 @@ void glint_window_linux::recreateSurface()
       mGrContext.get(),
       backendRT,
       kBottomLeft_GrSurfaceOrigin,
-      kRGBA_8888_SkColorType,
+      skColorType,
       nullptr,
       nullptr);
 
@@ -822,7 +860,11 @@ bool glint_window_linux::shouldTimerRedraw() const
 void glint_window_linux::paint()
 {
   if (!mOwnRoot || !mCanvas || !mDisplay || !mXWindow)
+  {
+    fprintf(stderr, "[glint] paint: early-return root=%p canvas=%p dpy=%p win=%lu\n",
+            (void*)mOwnRoot.get(), mCanvas, mDisplay, mXWindow);
     return;
+  }
   if (mWpx <= 0 || mHpx <= 0)
     return;
 
@@ -842,12 +884,52 @@ void glint_window_linux::paint()
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU
   if (mGpuOk && mGrContext && mGpuSurface)
   {
-    // Flush Skia's deferred work and present via EGL.
-    // kNo = don't stall the CPU waiting for the (software) GPU to finish;
-    // eglSwapBuffers handles synchronisation with the display server.
-    mGrContext->flushAndSubmit(GrSyncCpu::kNo);
-    eglSwapBuffers(static_cast<EGLDisplay>(mEglDisplay),
+    static int swapN = 0;
+    ++swapN;
+    if (swapN <= 5)
+      fprintf(stderr, "[glint] paint#%d: flushing (%dx%d)...\n", swapN, mWpx, mHpx);
+
+    // Flush all Skia deferred draw commands into GL.
+    mGrContext->flushAndSubmit();
+
+    // Sample the center pixel to confirm Skia actually wrote something.
+    if (swapN <= 3)
+    {
+      uint8_t px[4] = {0,0,0,0};
+      glReadPixels(mWpx/2, mHpx/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      fprintf(stderr, "[glint] paint#%d center px: r=%d g=%d b=%d a=%d\n",
+              swapN, px[0], px[1], px[2], px[3]);
+    }
+
+    // Force alpha channel to 1.0 across the entire framebuffer.
+    // On depth-32 RGBA visuals XWayland composites using the alpha channel;
+    // if Skia leaves any alpha=0 pixels the window appears transparent.
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+    glClearColor(0.f, 0.f, 0.f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    // Wait for the software rasterizer to finish all GL commands before
+    // handing the buffer to EGL for presentation.
+    glFinish();
+
+    EGLBoolean swapOk = eglSwapBuffers(static_cast<EGLDisplay>(mEglDisplay),
                    static_cast<EGLSurface>(mEglSurface));
+    if (!swapOk)
+      fprintf(stderr, "[glint] eglSwapBuffers FAILED err=0x%x\n", eglGetError());
+    else if (swapN <= 5)
+      fprintf(stderr, "[glint] paint#%d: swap OK\n", swapN);
+
+    // eglWaitNative flushes Mesa's internal X11/XCB connection so that
+    // DRI2/XShm Present requests are actually delivered to the X server.
+    eglWaitNative(EGL_CORE_NATIVE_ENGINE);
+
+    // XSync (not XFlush) — on Mesa DRI2 software path the present requests
+    // go over Mesa's internal XCB connection; XSync does a round-trip that
+    // ensures the X server has processed all pending requests from all
+    // clients including Mesa before we return.
+    XSync(static_cast<Display*>(mDisplay), False);
+
     mRedrawRequested.store(false, std::memory_order_relaxed);
     return;
   }
