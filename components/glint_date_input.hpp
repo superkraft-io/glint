@@ -297,6 +297,10 @@ private:
              bottomLeft.y - (LONG)bH,
              bottomLeft.x + (LONG)bW,
              bottomLeft.y };
+#elif defined(__linux__)
+    return (mRoot && mRoot->linuxWindow)
+      ? mRoot->linuxWindow->contentRectToScreen(cl, ct, bW, bH)
+      : RECT{};
 #else
     return (mRoot && mRoot->macWindow)
       ? mRoot->macWindow->contentRectToScreen(cl, ct, bW, bH)
