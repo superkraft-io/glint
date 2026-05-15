@@ -2103,6 +2103,19 @@ public:
       if (!e->cssStyle_.cursor.empty() && e->cssStyle_.cursor != "auto")
         return e->cssStyle_.cursor;
     }
+    // If any element on the hovered branch disables selection, suppress the
+    // automatic text-cursor fallback for plain text descendants in that branch.
+    bool selectionBlocked = false;
+    for (const glint_element* e = hit; e; e = e->mParent)
+    {
+      const std::string& us = e->style.userSelect.empty()
+                              ? e->cssStyle_.userSelect : e->style.userSelect;
+      if (us == "none")
+      {
+        selectionBlocked = true;
+        break;
+      }
+    }
     // Type-based fallback: dedicated text-editor elements get a whole-element
     // I-beam. Plain elements with innerText use per-glyph-bounding-box hit
     // testing to match Chrome's cursor:auto behaviour — I-beam only over the
@@ -2112,6 +2125,8 @@ public:
       const char* tn = e->typeName();
       if (tn && (std::strcmp(tn, "text-input") == 0 || std::strcmp(tn, "textarea") == 0))
         return "text";
+      // Skip the auto I-beam fallback anywhere under a non-selectable branch.
+      if (selectionBlocked) continue;
       // Skip elements that have opted out of text selection.
       const std::string& us = e->style.userSelect.empty()
                               ? e->cssStyle_.userSelect : e->style.userSelect;
