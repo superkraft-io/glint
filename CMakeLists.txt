@@ -81,6 +81,8 @@ endif()
 set(_SKIA_SRC_DIR "${GLINT_DEPS_DIR}/src/skia")
 set(_SKIA_LIB_ROOT "${GLINT_DEPS_DIR}/${_GLINT_SKIA_PLATFORM}/${_GLINT_SKIA_ARCH}")
 set(_SKIA_BIN_DIR "${GLINT_DEPS_DIR}/${_GLINT_SKIA_PLATFORM}/bin")
+set(_SKIA_DEBUG_LIB_DIR "${_SKIA_LIB_ROOT}/Debug")
+set(_SKIA_RELEASE_LIB_DIR "${_SKIA_LIB_ROOT}/Release")
 
 if(NOT EXISTS "${_SKIA_SRC_DIR}/include/core/SkCanvas.h")
   message(FATAL_ERROR
@@ -88,15 +90,48 @@ if(NOT EXISTS "${_SKIA_SRC_DIR}/include/core/SkCanvas.h")
     "or point GLINT_DEPS_DIR at a compatible Skia bundle.")
 endif()
 
-if(CMAKE_CONFIGURATION_TYPES)
-  set(_SKIA_CONFIG_DIR "$<IF:$<CONFIG:Debug>,Debug,Release>")
-else()
-  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(_SKIA_CONFIG_DIR "Debug")
-  else()
-    set(_SKIA_CONFIG_DIR "Release")
-  endif()
+set(_GLINT_MSVC_RUNTIME_LIBRARY_EXPR "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(_GLINT_SKIA_DEBUG_FALLBACK FALSE)
+
+set(_GLINT_HAS_DEBUG_SKIA_LIBS FALSE)
+set(_GLINT_HAS_RELEASE_SKIA_LIBS FALSE)
+if(EXISTS "${_SKIA_DEBUG_LIB_DIR}")
+  set(_GLINT_HAS_DEBUG_SKIA_LIBS TRUE)
 endif()
+if(EXISTS "${_SKIA_RELEASE_LIB_DIR}")
+  set(_GLINT_HAS_RELEASE_SKIA_LIBS TRUE)
+endif()
+
+if(_GLINT_HAS_DEBUG_SKIA_LIBS AND _GLINT_HAS_RELEASE_SKIA_LIBS)
+  if(CMAKE_CONFIGURATION_TYPES)
+    set(_SKIA_CONFIG_DIR "$<IF:$<CONFIG:Debug>,Debug,Release>")
+  else()
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+      set(_SKIA_CONFIG_DIR "Debug")
+    else()
+      set(_SKIA_CONFIG_DIR "Release")
+    endif()
+  endif()
+elseif(_GLINT_HAS_DEBUG_SKIA_LIBS)
+  set(_SKIA_CONFIG_DIR "Debug")
+  set(_GLINT_MSVC_RUNTIME_LIBRARY_EXPR "MultiThreadedDebug")
+  set(_GLINT_SKIA_DEBUG_FALLBACK TRUE)
+  message(WARNING
+    "glint: Skia Release libraries are missing under ${_SKIA_RELEASE_LIB_DIR}; "
+    "using Debug libraries for all configurations.")
+elseif(_GLINT_HAS_RELEASE_SKIA_LIBS)
+  set(_SKIA_CONFIG_DIR "Release")
+  set(_GLINT_MSVC_RUNTIME_LIBRARY_EXPR "MultiThreaded")
+  message(WARNING
+    "glint: Skia Debug libraries are missing under ${_SKIA_DEBUG_LIB_DIR}; "
+    "using Release libraries for all configurations.")
+else()
+  message(FATAL_ERROR
+    "Missing Skia libraries under ${_SKIA_LIB_ROOT}. Expected Debug and/or Release directories.")
+endif()
+
+set(GLINT_MSVC_RUNTIME_LIBRARY_EXPR "${_GLINT_MSVC_RUNTIME_LIBRARY_EXPR}" CACHE INTERNAL
+  "Resolved MSVC runtime library expression for the active Skia bundle" FORCE)
 
 set(_SKIA_LIB_DIR "${_SKIA_LIB_ROOT}/${_SKIA_CONFIG_DIR}")
 set(_GLINT_SKIA_LIBRARY_NAMES
@@ -128,7 +163,7 @@ add_library(glint_core INTERFACE)
 add_library(glint::core ALIAS glint_core)
 set_target_properties(glint_core PROPERTIES EXPORT_NAME core)
 set_property(TARGET glint_core PROPERTY
-  INTERFACE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  INTERFACE_MSVC_RUNTIME_LIBRARY "${GLINT_MSVC_RUNTIME_LIBRARY_EXPR}")
 target_include_directories(glint_core INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/..>
   $<BUILD_INTERFACE:${_SKIA_SRC_DIR}>
@@ -171,12 +206,16 @@ target_compile_definitions(glint_core INTERFACE
   $<$<PLATFORM_ID:Windows>:NOMINMAX>
   $<$<PLATFORM_ID:Windows>:OS_WIN>
   $<$<PLATFORM_ID:Windows>:WIN32_LEAN_AND_MEAN>
+  $<$<AND:$<PLATFORM_ID:Windows>,$<BOOL:${_GLINT_SKIA_DEBUG_FALLBACK}>,$<NOT:$<CONFIG:Debug>>>:_DEBUG>
+  $<$<AND:$<PLATFORM_ID:Windows>,$<BOOL:${_GLINT_SKIA_DEBUG_FALLBACK}>,$<NOT:$<CONFIG:Debug>>>:SK_DEBUG=1>
+  $<$<AND:$<PLATFORM_ID:Windows>,$<BOOL:${_GLINT_SKIA_DEBUG_FALLBACK}>,$<NOT:$<CONFIG:Debug>>>:_ITERATOR_DEBUG_LEVEL=2>
 )
 
 target_compile_options(glint_core INTERFACE
   $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/Od>
   $<$<CXX_COMPILER_ID:MSVC>:/bigobj>
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+  $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<BOOL:${_GLINT_SKIA_DEBUG_FALLBACK}>,$<NOT:$<CONFIG:Debug>>>:/UNDEBUG>
 )
 
 add_library(glint_host INTERFACE)
@@ -192,7 +231,7 @@ if(WIN32)
   add_library(glint_host_win32_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp")
   set_property(TARGET glint_host_win32_support PROPERTY
-    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    MSVC_RUNTIME_LIBRARY "${GLINT_MSVC_RUNTIME_LIBRARY_EXPR}")
   target_link_libraries(glint_host_win32_support PRIVATE glint::host)
   target_link_libraries(glint_host_win32 INTERFACE glint_host_win32_support)
 endif()

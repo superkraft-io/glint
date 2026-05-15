@@ -108,7 +108,7 @@ protected:
 
 #if (!defined(GLINT_RENDER_GPU) || !(GLINT_RENDER_GPU)) && !defined(__APPLE__)
   /** Non-GPU builds: recreateSurface() delegates to recreateCpuSurface(). */
-  void recreateSurface() { recreateCpuSurface(); }
+  virtual void recreateSurface() { recreateCpuSurface(); }
 
 #else // GLINT_RENDER_GPU || __APPLE__
   // ── GPU (Ganesh/GL or Metal) rendering surface ────────────────────────────

@@ -1211,9 +1211,10 @@ private:
     // ── Lifecycle ────────────────────────────────────────────────────────────
     case WM_CREATE:
       self->initRoot();
-      self->buildUI();
       self->initializeRenderer();
+      self->buildUI();
       self->onCreated();
+
       if (self->usesLayeredTransparency()) self->paint();   // layered windows skip WM_PAINT
       // Heartbeat timer — fires every ~16 ms so CSS transitions never stall
       // in the WM_PAINT chain.  WM_PAINT is a low-priority "background" message

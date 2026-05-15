@@ -184,7 +184,7 @@ private:
   std::string               mDiagnostic;
 };
 
-#if !defined(GLINT_ENABLE_D3D12) || !GLINT_ENABLE_D3D12
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && (!defined(GLINT_ENABLE_D3D12) || !GLINT_ENABLE_D3D12)
 class glint_opengl_renderer_backend_win32 final : public glint_renderer_backend_win32
 {
 public:
@@ -333,7 +333,7 @@ private:
   glint_win32_surface::open_gl_init_result  mLastInitResult = glint_win32_surface::open_gl_init_result::missing_window;
   std::string                               mDiagnostic;
 };
-#endif // !GLINT_ENABLE_D3D12
+#endif // GLINT_RENDER_GPU && !GLINT_ENABLE_D3D12
 
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
 class glint_d3d12_renderer_backend_win32 final : public glint_renderer_backend_win32
@@ -562,7 +562,7 @@ inline std::unique_ptr<glint_renderer_backend_win32> create_glint_renderer_backe
       return std::make_unique<glint_cpu_renderer_backend_win32>();
 
     case glint_backend::OpenGL:
-#if !defined(GLINT_ENABLE_D3D12) || !GLINT_ENABLE_D3D12
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && (!defined(GLINT_ENABLE_D3D12) || !GLINT_ENABLE_D3D12)
       return std::make_unique<glint_opengl_renderer_backend_win32>();
 #else
       return nullptr;

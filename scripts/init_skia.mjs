@@ -358,11 +358,12 @@ function buildGnArgs(configName, backend) {
 is_official_build = ${isDebug ? 'false' : 'true'}
 skia_use_system_libjpeg_turbo = false
 skia_use_system_libpng = false
+skia_use_system_libwebp = false
 skia_use_system_zlib = false
 skia_use_system_expat = false
 skia_use_system_icu = false
 skia_use_system_harfbuzz = false
-skia_use_libwebp_decode = false
+skia_use_libwebp_decode = true
 skia_use_libwebp_encode = false
 skia_use_xps = false
 skia_use_dng_sdk = false

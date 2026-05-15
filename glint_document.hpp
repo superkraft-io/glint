@@ -309,7 +309,6 @@ public:
         mHotWatchedPaths.push_back({ path, watchPath, surl, mtime });
       }
     }
-
     return true;
   }
 
