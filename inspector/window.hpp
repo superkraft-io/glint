@@ -860,7 +860,7 @@ public:
     auto it = sInstances.find(mainRoot);
     if (it != sInstances.end() && it->second->isRunning())
     {
-      // Already running � post the enable message to the inspector's HWND.
+      // Already running — post the enable message to the inspector's HWND.
 #if defined(_WIN32)
       if (HWND h = it->second->mHWNDAtom.load())
         ::PostMessage(h, WM_INSP_ENABLE_INSPECT, 0, 0);
@@ -868,6 +868,9 @@ public:
       glint_inspector_window* inst = it->second;
       auto alive = inst->mAlive;
       glint_window_mac::_dispatchMain([inst, alive]{ if (alive && alive->load()) inst->applyInspectMode(true); });
+#else
+      glint_inspector_window* inst = it->second;
+      inst->postCallback([inst]{ inst->applyInspectMode(true); });
 #endif
       return;
     }
@@ -1134,6 +1137,8 @@ private:
 #elif defined(__APPLE__)
         auto alive = mAlive;
         glint_window_mac::_dispatchMain([this, alive]{ if (alive->load()) refreshTree(); });
+#else
+        postCallback([this]{ refreshTree(); });
 #endif
       })
     );
@@ -1149,6 +1154,9 @@ private:
         const uint64_t id = e.id;
         auto alive = mAlive;
         glint_window_mac::_dispatchMain([this, alive, id]{ if (alive->load()) refreshStyle(id); });
+#else
+        const uint64_t id = e.id;
+        postCallback([this, id]{ refreshStyle(id); });
 #endif
       })
     );
@@ -1166,6 +1174,12 @@ private:
         auto alive = mAlive;
         glint_window_mac::_dispatchMain([this, alive, id]{
           if (!alive->load()) return;
+          if (mTree) mTree->hoverById(id);
+          requestRedraw();
+        });
+#else
+        const uint64_t id = e.id;
+        postCallback([this, id]{
           if (mTree) mTree->hoverById(id);
           requestRedraw();
         });
@@ -1194,6 +1208,18 @@ private:
           }
           requestRedraw();
         });
+#else
+        const uint64_t id = e.id;
+        postCallback([this, id]{
+          selectInspectorNodeById(id);
+          applyInspectMode(false);
+          if (mPreviewPopup) {
+            killTimer(WM_INSP_PREVIEW_SHOW_TIMER);
+            killTimer(WM_INSP_PREVIEW_HIDE_TIMER);
+            mPreviewPopup->dismiss();
+          }
+          requestRedraw();
+        });
 #endif
       })
     );
@@ -1205,6 +1231,8 @@ private:
     if (mHWND) ::KillTimer(mHWND, WM_INSP_TIMER_ID);
 #elif defined(__APPLE__)
     if (mAlive) mAlive->store(false);  // prevent queued dispatch blocks from running
+    killTimer(WM_INSP_TIMER_ID);
+#else
     killTimer(WM_INSP_TIMER_ID);
 #endif
     for (int id : mSubIds) glint_bus::unsubscribe(id);
@@ -2384,7 +2412,7 @@ function exportAbsoluteJSON() {
       ::SetTimer(mHWND, WM_INSP_TIMER_ID,
                  newMode ? WM_INSP_TIMER_MS_REALTIME : WM_INSP_TIMER_MS_NORMAL,
                  nullptr);
-#elif defined(__APPLE__)
+#else
     setTimer(WM_INSP_TIMER_ID,
              (newMode ? WM_INSP_TIMER_MS_REALTIME : WM_INSP_TIMER_MS_NORMAL) / 1000.0);
 #endif
@@ -2502,7 +2530,7 @@ function exportAbsoluteJSON() {
     {
 #if defined(_WIN32)
       ::KillTimer(mHWND, WM_INSP_PREVIEW_SHOW_TIMER);
-#elif defined(__APPLE__)
+#else
       killTimer(WM_INSP_PREVIEW_SHOW_TIMER);
 #endif
       if (mPreviewPopup)
@@ -2511,7 +2539,7 @@ function exportAbsoluteJSON() {
         if (mOwnRoot) mOwnRoot->setDirty(false);
 #if defined(_WIN32)
         ::InvalidateRect(mHWND, nullptr, FALSE);
-#elif defined(__APPLE__)
+#else
         requestRedraw();
 #endif
       }
@@ -2521,7 +2549,7 @@ function exportAbsoluteJSON() {
     {
 #if defined(_WIN32)
       ::KillTimer(mHWND, WM_INSP_PREVIEW_HIDE_TIMER);
-#elif defined(__APPLE__)
+#else
       killTimer(WM_INSP_PREVIEW_HIDE_TIMER);
 #endif
       if (mPreviewPopup)
@@ -2530,7 +2558,7 @@ function exportAbsoluteJSON() {
         if (mOwnRoot) mOwnRoot->setDirty(false);
 #if defined(_WIN32)
         ::InvalidateRect(mHWND, nullptr, FALSE);
-#elif defined(__APPLE__)
+#else
         requestRedraw();
 #endif
       }
@@ -2586,14 +2614,14 @@ function exportAbsoluteJSON() {
         if (mOwnRoot) mOwnRoot->setDirty(false);
 #if defined(_WIN32)
         ::InvalidateRect(mHWND, nullptr, FALSE);
-#elif defined(__APPLE__)
+#else
         requestRedraw();
 #endif
       }
     }
   }
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
   void onTimerFired(int id) override { handleTimerFired(id); }
 #endif
 
@@ -3182,7 +3210,7 @@ function exportAbsoluteJSON() {
             if (mHWND) ::KillTimer(mHWND, WM_INSP_PREVIEW_HIDE_TIMER);
             mPreviewPopup->prepareShow(path, rowLeft, rowTop, rowBot);
             if (mHWND) ::SetTimer(mHWND, WM_INSP_PREVIEW_SHOW_TIMER, 150, nullptr);
-#elif defined(__APPLE__)
+#else
             killTimer(WM_INSP_PREVIEW_HIDE_TIMER);
             mPreviewPopup->prepareShow(path, rowLeft, rowTop, rowBot);
             setTimer(WM_INSP_PREVIEW_SHOW_TIMER, 0.15);
@@ -3193,7 +3221,7 @@ function exportAbsoluteJSON() {
             if (!mPreviewPopup) return;
 #if defined(_WIN32)
             if (mHWND) ::KillTimer(mHWND, WM_INSP_PREVIEW_SHOW_TIMER);
-#elif defined(__APPLE__)
+#else
             killTimer(WM_INSP_PREVIEW_SHOW_TIMER);
 #endif
             if (mPreviewPopup->mState == InspImagePreviewPopup::State::Visible)
@@ -3201,7 +3229,7 @@ function exportAbsoluteJSON() {
               mPreviewPopup->prepareHide();
 #if defined(_WIN32)
               if (mHWND) ::SetTimer(mHWND, WM_INSP_PREVIEW_HIDE_TIMER, 100, nullptr);
-#elif defined(__APPLE__)
+#else
               setTimer(WM_INSP_PREVIEW_HIDE_TIMER, 0.10);
 #endif
             }

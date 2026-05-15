@@ -22,7 +22,12 @@
 #include "../../glint_bus.hpp"
 
 #include <atomic>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 // ── Win32 compat type aliases ─────────────────────────────────────────────────
 // Thin replacements used by inspector/window.hpp, style_editor.hpp, and
@@ -144,9 +149,40 @@ protected:
   void* mEglContext = nullptr;   // EGLContext
 
   bool mGpuOk = false;   // true once EGL + GrDirectContext are initialised
+  bool mGpuHasAlpha = false;
 #endif
 
   void refreshWindowTitle() override;
+
+  // ── Timer API (mirrors macOS glint_window_mac) ────────────────────────────
+  // Schedule a repeating timer that calls onTimerFired(timerId) on the
+  // window thread at the given interval.  Replaces any existing timer with
+  // the same id.  killTimer() cancels it.
+  void setTimer(int timerId, double intervalSec, bool oneShot = false);
+  void killTimer(int timerId);
+  virtual void onTimerFired(int /*timerId*/) {}
+
+  // ── Cross-thread dispatch ─────────────────────────────────────────────────
+  // Post a callable to be executed on the window's event-loop thread.
+  // Safe to call from any thread.
+  void postCallback(std::function<void()> fn);
+
+  // Pending timer callbacks posted from timer threads.
+  struct TimerEvent { int id; };
+  std::vector<TimerEvent> mPendingTimers;   // guarded by mTimerMutex
+  std::mutex              mTimerMutex;
+
+  // Pending cross-thread callbacks (guarded by mCallbackMutex).
+  std::vector<std::function<void()>> mPendingCallbacks;
+  std::mutex                         mCallbackMutex;
+
+  // Active timer threads (id → stop flag).
+  struct TimerEntry {
+    int  id;
+    std::atomic<bool> stop{false};
+    std::thread       thread;
+  };
+  std::vector<std::unique_ptr<TimerEntry>> mTimers;   // main-thread only
 
 private:
   void run();
@@ -156,6 +192,8 @@ private:
   void paint();
   void processXEvent(void* xevent);   // parameter is XEvent*
   bool shouldTimerRedraw() const;
+  void drainTimerEvents();
+  void drainCallbacks();
 
   float detectDpr() const;
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU

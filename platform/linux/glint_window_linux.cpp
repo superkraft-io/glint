@@ -35,6 +35,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <mutex>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -142,6 +144,86 @@ void glint_window_linux::requestRedraw()
     const char c = 'R';
     (void)::write(mWakeFd[1], &c, 1);
   }
+}
+
+void glint_window_linux::setTimer(int timerId, double intervalSec, bool /*oneShot*/)
+{
+  killTimer(timerId);
+
+  auto entry = std::make_unique<TimerEntry>();
+  entry->id = timerId;
+  auto* raw = entry.get();
+  mTimers.push_back(std::move(entry));
+
+  raw->thread = std::thread([this, raw, intervalSec, timerId]() {
+    const auto interval = std::chrono::duration<double>(intervalSec);
+    while (!raw->stop.load(std::memory_order_relaxed))
+    {
+      std::this_thread::sleep_for(interval);
+      if (raw->stop.load(std::memory_order_relaxed))
+        break;
+      if (!mRunning.load(std::memory_order_relaxed))
+        break;
+      {
+        std::lock_guard<std::mutex> lk(mTimerMutex);
+        mPendingTimers.push_back({timerId});
+      }
+      if (mWakeFd[1] != -1)
+      {
+        const char c = 'T';
+        (void)::write(mWakeFd[1], &c, 1);
+      }
+    }
+  });
+  raw->thread.detach();
+}
+
+void glint_window_linux::killTimer(int timerId)
+{
+  for (auto it = mTimers.begin(); it != mTimers.end(); )
+  {
+    if ((*it)->id == timerId)
+    {
+      (*it)->stop.store(true, std::memory_order_relaxed);
+      it = mTimers.erase(it);
+    }
+    else ++it;
+  }
+}
+
+void glint_window_linux::drainTimerEvents()
+{
+  std::vector<TimerEvent> events;
+  {
+    std::lock_guard<std::mutex> lk(mTimerMutex);
+    events.swap(mPendingTimers);
+  }
+  for (auto& ev : events)
+    onTimerFired(ev.id);
+}
+
+void glint_window_linux::postCallback(std::function<void()> fn)
+{
+  {
+    std::lock_guard<std::mutex> lk(mCallbackMutex);
+    mPendingCallbacks.push_back(std::move(fn));
+  }
+  if (mWakeFd[1] != -1)
+  {
+    const char c = 'C';
+    (void)::write(mWakeFd[1], &c, 1);
+  }
+}
+
+void glint_window_linux::drainCallbacks()
+{
+  std::vector<std::function<void()>> callbacks;
+  {
+    std::lock_guard<std::mutex> lk(mCallbackMutex);
+    callbacks.swap(mPendingCallbacks);
+  }
+  for (auto& cb : callbacks)
+    cb();
 }
 
 void glint_window_linux::openFileInDefaultApp(const std::string& path)
@@ -386,7 +468,10 @@ bool glint_window_linux::initGpu()
   }
   fprintf(stderr, "[glint] initGpu: EGL context current\n");
 
-  // Leave swap interval at the EGL default (1).
+  // Disable vsync (swap interval 0) so eglSwapBuffers returns immediately.
+  // On WSLg the Wayland compositor has no real vsync signal and blocking on it
+  // adds per-frame latency.  Frame pacing is provided by the timerfd (16 ms).
+  eglSwapInterval(eglDpy, 0);
   mEglSurface = static_cast<void*>(eglSurf);
   mEglContext = static_cast<void*>(eglCtx);
 
@@ -443,6 +528,7 @@ void glint_window_linux::destroyGpu()
 {
   mGpuSurface.reset();
   mGrContext.reset();
+  mGpuHasAlpha = false;
 
   EGLDisplay eglDpy = static_cast<EGLDisplay>(mEglDisplay);
   if (eglDpy != EGL_NO_DISPLAY)
@@ -481,6 +567,7 @@ void glint_window_linux::recreateSurface()
   // depending on the EGL config chosen.
   GLint alphaBits = 0;
   glGetIntegerv(GL_ALPHA_BITS, &alphaBits);
+  mGpuHasAlpha = alphaBits > 0;
   fprintf(stderr, "[glint] recreateSurface: surfW=%d surfH=%d alphaBits=%d\n",
           surfW, surfH, alphaBits);
 
@@ -868,6 +955,10 @@ void glint_window_linux::paint()
   if (mWpx <= 0 || mHpx <= 0)
     return;
 
+  // Clear the flag before drawing so that any setDirty() call made during
+  // DrawToCanvas (e.g. animation requesting its next frame) is not lost.
+  mRedrawRequested.store(false, std::memory_order_relaxed);
+
   mCanvas->clear(clearColor());
   if (mDpr != 1.f && mDpr > 0.f)
   {
@@ -884,53 +975,22 @@ void glint_window_linux::paint()
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU
   if (mGpuOk && mGrContext && mGpuSurface)
   {
-    static int swapN = 0;
-    ++swapN;
-    if (swapN <= 5)
-      fprintf(stderr, "[glint] paint#%d: flushing (%dx%d)...\n", swapN, mWpx, mHpx);
-
     // Flush all Skia deferred draw commands into GL.
     mGrContext->flushAndSubmit();
 
-    // Sample the center pixel to confirm Skia actually wrote something.
-    if (swapN <= 3)
+    // Only fix up alpha when the EGL framebuffer actually has an alpha channel.
+    // On opaque RGB framebuffers (the common WSLg d3d12 path) this extra full-
+    // screen clear just burns GPU time.
+    if (mGpuHasAlpha)
     {
-      uint8_t px[4] = {0,0,0,0};
-      glReadPixels(mWpx/2, mHpx/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-      fprintf(stderr, "[glint] paint#%d center px: r=%d g=%d b=%d a=%d\n",
-              swapN, px[0], px[1], px[2], px[3]);
+      glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+      glClearColor(0.f, 0.f, 0.f, 1.f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     }
 
-    // Force alpha channel to 1.0 across the entire framebuffer.
-    // On depth-32 RGBA visuals XWayland composites using the alpha channel;
-    // if Skia leaves any alpha=0 pixels the window appears transparent.
-    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
-    glClearColor(0.f, 0.f, 0.f, 1.f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-
-    // Wait for the software rasterizer to finish all GL commands before
-    // handing the buffer to EGL for presentation.
-    glFinish();
-
-    EGLBoolean swapOk = eglSwapBuffers(static_cast<EGLDisplay>(mEglDisplay),
+    eglSwapBuffers(static_cast<EGLDisplay>(mEglDisplay),
                    static_cast<EGLSurface>(mEglSurface));
-    if (!swapOk)
-      fprintf(stderr, "[glint] eglSwapBuffers FAILED err=0x%x\n", eglGetError());
-    else if (swapN <= 5)
-      fprintf(stderr, "[glint] paint#%d: swap OK\n", swapN);
-
-    // eglWaitNative flushes Mesa's internal X11/XCB connection so that
-    // DRI2/XShm Present requests are actually delivered to the X server.
-    eglWaitNative(EGL_CORE_NATIVE_ENGINE);
-
-    // XSync (not XFlush) — on Mesa DRI2 software path the present requests
-    // go over Mesa's internal XCB connection; XSync does a round-trip that
-    // ensures the X server has processed all pending requests from all
-    // clients including Mesa before we return.
-    XSync(static_cast<Display*>(mDisplay), False);
-
-    mRedrawRequested.store(false, std::memory_order_relaxed);
     return;
   }
   // GPU failed or not ready — fall through to CPU path
@@ -974,8 +1034,6 @@ void glint_window_linux::paint()
   XDestroyImage(img);
 
   XFlush(dpy);
-
-  mRedrawRequested.store(false, std::memory_order_relaxed);
 }
 
 void glint_window_linux::processXEvent(void* xev)
@@ -1196,16 +1254,23 @@ void glint_window_linux::run()
     ::timerfd_settime(timerFd, 0, &ts, nullptr);
   }
 
+  fprintf(stderr, "[glint] run: calling initRoot\n");
   initRoot();
+  fprintf(stderr, "[glint] run: initRoot done\n");
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU
   if (!initGpu())
     recreateCpuSurface();   // GPU init failed — use CPU fallback
+  fprintf(stderr, "[glint] run: initGpu done, mGpuOk=%d\n", (int)mGpuOk);
 #else
   recreateCpuSurface();
 #endif
+  fprintf(stderr, "[glint] run: calling buildUI\n");
   buildUI();
+  fprintf(stderr, "[glint] run: buildUI done, calling onCreated\n");
   onCreated();
+  fprintf(stderr, "[glint] run: onCreated done, calling onThreadStarted\n");
   onThreadStarted();
+  fprintf(stderr, "[glint] run: onThreadStarted done\n");
 
   Display*       dpy  = static_cast<Display*>(mDisplay);
   const int      xFd  = XConnectionNumber(dpy);
@@ -1230,9 +1295,18 @@ void glint_window_linux::run()
         goto cleanup;
     }
 
-    // Paint once after draining all queued events
+    // Paint once after draining all queued events.
+    // Track whether we already painted this iteration so the wake-pipe and
+    // timerfd handlers below don't trigger redundant back-to-back frames.
+    // (Animated shaders call setDirty() during DrawToCanvas which writes 'R'
+    // to the wake pipe AND leaves mRedrawRequested=true — without this guard
+    // we would paint 2-3 times per loop iteration, halving effective FPS.)
+    bool painted = false;
     if (mRedrawRequested.load(std::memory_order_relaxed))
+    {
       paint();
+      painted = true;
+    }
 
     // 2. Poll: X connection fd + wake pipe + timer fd
     {
@@ -1257,9 +1331,17 @@ void glint_window_linux::run()
         (void)::read(mWakeFd[0], buf, sizeof(buf));
         if (!mRunning.load(std::memory_order_relaxed))
           break;
-        // Explicit redraw request
-        if (mRedrawRequested.load(std::memory_order_relaxed))
+        // Fire any pending timer callbacks
+        drainTimerEvents();
+        // Fire any cross-thread callbacks
+        drainCallbacks();
+        // Only paint here for cross-thread callbacks that haven't been
+        // handled by the pre-poll paint above.
+        if (!painted && mRedrawRequested.load(std::memory_order_relaxed))
+        {
           paint();
+          painted = true;
+        }
       }
 
       // Timer: animation heartbeat
@@ -1267,7 +1349,7 @@ void glint_window_linux::run()
       {
         uint64_t exp = 0;
         (void)::read(timerFd, &exp, sizeof(exp));
-        if (shouldTimerRedraw())
+        if (!painted && shouldTimerRedraw())
           paint();
       }
     }

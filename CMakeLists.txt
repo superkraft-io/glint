@@ -294,14 +294,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_library(glint_host_linux INTERFACE)
   add_library(glint::host_linux ALIAS glint_host_linux)
   set_target_properties(glint_host_linux PROPERTIES EXPORT_NAME host_linux)
-  # Debug Skia on Linux is built with is_trivial_abi=true (since is_official_build=false),
-  # which defines SK_TRIVIAL_ABI=[[clang::trivial_abi]] in every Skia TU.
-  # Consumers must define the same macro so sk_sp<T> has the same ABI.
-  # Release Skia uses is_official_build=true → is_trivial_abi=false → no define needed.
+  # The prebuilt Linux Skia libs are always Debug builds (is_trivial_abi=true,
+  # SK_DEBUG defined). Consumers must define the same macros for ABI and
+  # SkNVRefCnt::unref() to match: unref() uses SkDEBUGCODE(fRefCnt.store(1))
+  # to restore the refcount before calling delete; without SK_DEBUG that store
+  # is omitted and the Skia lib's virtual destructor (compiled with SK_DEBUG)
+  # fires "NVRefCnt was 0".
   target_compile_definitions(glint_host_linux INTERFACE
-    "$<$<CONFIG:Debug>:SK_TRIVIAL_ABI=[[clang::trivial_abi]]>")
+    SK_TRIVIAL_ABI=[[clang::trivial_abi]]
+    SK_DEBUG)
   target_compile_definitions(glint_host_linux_support PRIVATE
-    "$<$<CONFIG:Debug>:SK_TRIVIAL_ABI=[[clang::trivial_abi]]>")
+    SK_TRIVIAL_ABI=[[clang::trivial_abi]]
+    SK_DEBUG)
   target_link_libraries(glint_host_linux INTERFACE
     glint::core
     glint_host_linux_support

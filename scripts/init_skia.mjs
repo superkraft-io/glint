@@ -495,8 +495,9 @@ function writeRenderBackendHeader(backend) {
 }
 
 const PREBUILT_URLS = {
-  win32: 'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-win.zip',
-  darwin: 'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-mac.zip'
+  win32:  'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-win.zip',
+  darwin: 'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-mac.zip',
+  linux:  'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-linux.zip'
 };
 
 function httpsGetFollowRedirects(url) {
@@ -530,7 +531,6 @@ async function downloadFile(url, destPath) {
 }
 
 async function extractZip(zipPath, destDir) {
-  // Use platform-native tools: PowerShell on Windows, unzip on macOS
   if (process.platform === 'win32') {
     const result = spawnSync('powershell', [
       '-NoProfile', '-NonInteractive', '-Command',
@@ -538,8 +538,28 @@ async function extractZip(zipPath, destDir) {
     ], { stdio: 'inherit' });
     if (result.status !== 0) fail('Failed to extract zip with PowerShell Expand-Archive.');
   } else {
-    const result = spawnSync('unzip', ['-o', zipPath, '-d', destDir], { stdio: 'inherit' });
-    if (result.status !== 0) fail('Failed to extract zip with unzip.');
+    // On Linux/macOS, zip files created on Windows store backslash path separators.
+    // unzip treats backslashes as filename characters (not separators), dumping everything flat.
+    // Use Python's zipfile module with explicit backslash→slash normalisation to handle both cases.
+    const pyScript = [
+      'import zipfile, os, sys',
+      'with zipfile.ZipFile(sys.argv[1]) as z:',
+      '    for m in z.namelist():',
+      '        p = m.replace("\\\\", "/").replace("\\\\\\\\", "/")',
+      '        t = os.path.join(sys.argv[2], p)',
+      '        if p.endswith("/"):',
+      '            os.makedirs(t, exist_ok=True)',
+      '        else:',
+      '            os.makedirs(os.path.dirname(t), exist_ok=True)',
+      '            data = z.read(m)',
+      '            open(t, "wb").write(data)',
+    ].join('\n');
+
+    const python = findCommand(['python3', 'python']);
+    if (!python) fail('python3 or python is required to extract the prebuilt zip on Linux/macOS. Install Python 3 and retry.');
+
+    const result = spawnSync(python.name, ['-c', pyScript, zipPath, destDir], { stdio: 'inherit' });
+    if (result.status !== 0) fail('Failed to extract zip with Python zipfile.');
   }
 }
 
