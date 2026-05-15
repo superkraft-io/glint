@@ -533,7 +533,8 @@ inline glint_div* glint_adder::div(std::function<void(glint_component_style&)> s
         if (autoH)
         {
           int lines = 1; for (char c : s.innerText) if (c == '\n') ++lines;
-          SkFont _fnt = glint_element::skFont(sz, s.style.fontFamily.c_str(), s.style.fontWeight, s.style.fontStyle.c_str()); SkFontMetrics _fm; _fnt.getMetrics(&_fm);
+          SkFont _fnt = glint_element::skFont(sz, s.style.fontFamily.c_str(), s.style.fontWeight, s.style.fontStyle.c_str());
+          SkFontMetrics _fm; _fnt.getMetrics(&_fm);
           const float lh = s.style.lineHeight > 0.f ? sz * s.style.lineHeight : (-_fm.fAscent + _fm.fDescent);
           const std::size_t _fnl = s.innerText.find('\n');
           const std::size_t _fll = (_fnl == std::string::npos) ? s.innerText.size() : _fnl;

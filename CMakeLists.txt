@@ -143,13 +143,19 @@ set(_GLINT_SKIA_LIBRARY_NAMES
   skunicode_icu
   skunicode_core
   svg
-  libpng
   zlib
 )
+# On Windows, Skia bundles libpng as a separate libpng.lib.
+# On Linux, libpng is compiled into libskia.a so no separate link entry is needed.
+if(WIN32)
+  list(APPEND _GLINT_SKIA_LIBRARY_NAMES libpng)
+endif()
 # freetype is only a separate static lib on some backends/platforms;
 # on Windows with OpenGL it is compiled directly into skia.lib.
 if(EXISTS "${_SKIA_LIB_ROOT}/Release/freetype.lib" OR
-   EXISTS "${_SKIA_LIB_ROOT}/Debug/freetype.lib")
+   EXISTS "${_SKIA_LIB_ROOT}/Debug/freetype.lib"   OR
+   EXISTS "${_SKIA_LIB_ROOT}/Release/libfreetype.a" OR
+   EXISTS "${_SKIA_LIB_ROOT}/Debug/libfreetype.a")
   list(APPEND _GLINT_SKIA_LIBRARY_NAMES freetype)
 endif()
 
@@ -197,9 +203,22 @@ if(NOT APPLE)
     $<INSTALL_INTERFACE:${_GLINT_INSTALL_SKIA_LIB_DIR}>
   )
 
-  target_link_libraries(glint_core INTERFACE
-    ${_GLINT_SKIA_LIBRARY_NAMES}
-  )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Skia's static libs have circular dependencies (svg→skia, svg→skshaper,
+    # skottie→sksg→skia, etc.).  Wrap them in --start-group/--end-group so the
+    # GNU linker re-scans the group until all references are satisfied.
+    target_link_libraries(glint_core INTERFACE
+      -Wl,--start-group
+      ${_GLINT_SKIA_LIBRARY_NAMES}
+      -Wl,--end-group
+      pthread
+      dl
+    )
+  else()
+    target_link_libraries(glint_core INTERFACE
+      ${_GLINT_SKIA_LIBRARY_NAMES}
+    )
+  endif()
 endif()
 
 target_compile_definitions(glint_core INTERFACE
@@ -300,6 +319,40 @@ if(APPLE)
   )
 endif()
 
+# ── Linux host target — X11 + CPU rasterisation ──────────────────────────────
+# GPU (GLX + Ganesh/GL) can be layered on top later; for now the platform
+# backend is CPU-only, keeping the dependency footprint minimal.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_library(glint_host_linux_support STATIC
+    "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/platform/linux/glint_window_linux.cpp")
+  target_compile_options(glint_host_linux_support PRIVATE
+    -Wall -Wextra -Wno-unused-parameter)
+  target_link_libraries(glint_host_linux_support PRIVATE glint::core)
+
+  add_library(glint_host_linux INTERFACE)
+  add_library(glint::host_linux ALIAS glint_host_linux)
+  set_target_properties(glint_host_linux PROPERTIES EXPORT_NAME host_linux)
+  # The prebuilt Linux Skia libs are always Debug builds (is_trivial_abi=true,
+  # SK_DEBUG defined). Consumers must define the same macros for ABI and
+  # SkNVRefCnt::unref() to match: unref() uses SkDEBUGCODE(fRefCnt.store(1))
+  # to restore the refcount before calling delete; without SK_DEBUG that store
+  # is omitted and the Skia lib's virtual destructor (compiled with SK_DEBUG)
+  # fires "NVRefCnt was 0".
+  target_compile_definitions(glint_host_linux INTERFACE
+    SK_TRIVIAL_ABI=[[clang::trivial_abi]]
+    SK_DEBUG)
+  target_compile_definitions(glint_host_linux_support PRIVATE
+    SK_TRIVIAL_ABI=[[clang::trivial_abi]]
+    SK_DEBUG)
+  target_link_libraries(glint_host_linux INTERFACE
+    glint::core
+    glint_host_linux_support
+    X11
+    fontconfig
+    dl)
+endif()
+
 if(GLINT_RENDER_GPU)
   target_compile_definitions(glint_host_win32 INTERFACE GLINT_RENDER_GPU)
   target_link_libraries(glint_host_win32 INTERFACE opengl32)
@@ -310,6 +363,13 @@ if(GLINT_RENDER_GPU)
   else()
     message(STATUS "glint: GPU rendering enabled for glint::host_win32 (WGL + Ganesh/GL)")
   endif()
+endif()
+
+if(GLINT_RENDER_GPU AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(glint_host_linux INTERFACE GLINT_RENDER_GPU SK_GANESH)
+  target_compile_definitions(glint_host_linux_support PRIVATE GLINT_RENDER_GPU SK_GANESH)
+  target_link_libraries(glint_host_linux INTERFACE EGL GL)
+  message(STATUS "glint: GPU rendering enabled for glint::host_linux (EGL + Ganesh/GL)")
 endif()
 
 # ── glint_configure_win32_app ─────────────────────────────────────────────────

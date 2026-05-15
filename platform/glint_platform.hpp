@@ -13,7 +13,7 @@
 
 namespace glint_platform {
 
-#if defined(__APPLE__) || defined(_WIN32)
+#if defined(__APPLE__) || defined(_WIN32) || defined(__linux__)
   /** Copy UTF-8 text to the system clipboard. */
   void        setClipboardText(const std::string& utf8);
   /** Read UTF-8 text from the system clipboard.  Returns "" if empty. */
@@ -26,7 +26,8 @@ namespace glint_platform {
    * disabledIds: item ids drawn greyed and non-clickable.
    * checkedIds: item ids drawn with a checkmark (current selection indicator).
    * Returns the id of the selected item, or 0 if dismissed.
-   * Implementations: glint_window_mac.mm (macOS), glint_window_win32.hpp (Win32).
+   * Implementations: glint_window_mac.mm (macOS), glint_window_win32.hpp (Win32),
+   *                  glint_window_linux.cpp (Linux).
    */
   int showContextMenu(int screenX, int screenY,
                       const std::vector<std::pair<int, std::string>>& items,
