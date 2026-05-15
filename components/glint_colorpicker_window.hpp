@@ -234,7 +234,145 @@ private:
   }
 };
 
-#else  // ── macOS implementation ─────────────────────────────────────────────
+#elif defined(__linux__)  // ── Linux (X11) implementation ──────────────────────
+
+#include "../platform/glint_window.hpp"   // glint_window_linux + all components
+#include "glint_colorpicker.hpp"
+
+#include <functional>
+
+// =============================================================================
+// glint_colorpicker_window (Linux / X11)
+// Persistent popup window hosting a glint_colorpicker.
+// Same open/reopen/hide/destroy API as Win32 and macOS versions.
+// =============================================================================
+class glint_colorpicker_window : public glint_window_linux
+{
+public:
+  static glint_colorpicker_window* open(
+    glint_color                       initialColor,
+    RECT                         anchorScreenRect,
+    std::function<void(glint_color)>  onChange  = nullptr,
+    std::function<void()>        onClosed  = nullptr)
+  {
+    auto* w = new glint_colorpicker_window();
+    w->mInitialColor = initialColor;
+    w->mAnchorRect   = anchorScreenRect;
+    w->mOnChange     = std::move(onChange);
+    w->mOnClosed     = std::move(onClosed);
+    w->startThread();
+    return w;
+  }
+
+  void reopen(glint_color                       initialColor,
+              RECT                         anchorScreenRect,
+              std::function<void(glint_color)>  onChange,
+              std::function<void()>        onClosed)
+  {
+    mInitialColor = initialColor;
+    mAnchorRect   = anchorScreenRect;
+    mOnChange     = std::move(onChange);
+    mOnClosed     = std::move(onClosed);
+    mClosedFired  = false;
+    _reposition(mAnchorRect);
+    if (mPicker) mPicker->setValue(initialColor);
+    requestRedraw();
+    showPanel();
+  }
+
+  void hide()
+  {
+    if (!mClosedFired) {
+      mClosedFired = true;
+      if (mOnClosed) mOnClosed();
+    }
+    hidePanel();
+  }
+
+  void destroy()
+  {
+    mDestroyRequested = true;
+    stopThread();
+  }
+
+  bool usePopupStyle() const override { return true; }
+  bool showOnCreate()  const override { return false; }
+  void onOutsideClick() override { hide(); }
+  int  defaultWidth()   const override { return 240; }
+  int  defaultHeight()  const override { return 240; }
+  const wchar_t* windowClassName() const override { return L"glint_color_picker"; }
+  const wchar_t* windowTitle()     const override { return L""; }
+  SkColor clearColor() const override { return SkColorSetARGB(0, 25, 25, 28); }
+
+protected:
+  void buildUI() override
+  {
+    mOwnRoot->skipInspectMode = true;
+
+    auto* wrap = new glint_element();
+    wrap->style.width           = "100%";
+    wrap->style.height          = "100%";
+    wrap->style.display         = "flex";
+    wrap->style.flexDirection   = "column";
+    wrap->style.backgroundColor = glint_color(255, 25, 25, 28);
+    wrap->style.borderRadius    = 8.f;
+    wrap->style.overflow        = "hidden";
+    mOwnRoot->mCanvas.addChild(wrap);
+
+    mPicker = new glint_colorpicker();
+    mPicker->style.width  = "100%";
+    mPicker->style.height = "100%";
+    mPicker->value = mInitialColor;
+    mPicker->onChange = [this](glint_color c) {
+      if (mOnChange) mOnChange(c);
+    };
+    wrap->addChild(mPicker);
+  }
+
+  void onCreated() override
+  {
+    _reposition(mAnchorRect);
+    hidePanel();
+  }
+
+  void afterRun() override
+  {
+    if (!mDestroyRequested && !mClosedFired) {
+      mClosedFired = true;
+      if (mOnClosed) mOnClosed();
+    }
+    delete this;
+  }
+
+private:
+  glint_color                       mInitialColor    = glint_color(255, 128, 128, 128);
+  RECT                         mAnchorRect      = { 100, 100, 114, 114 };
+  std::function<void(glint_color)>  mOnChange;
+  std::function<void()>        mOnClosed;
+  glint_colorpicker*           mPicker          = nullptr;
+  bool                         mClosedFired     = false;
+  bool                         mDestroyRequested = false;
+
+  void _reposition(RECT anchor)
+  {
+    const int W    = defaultWidth();
+    const int H    = defaultHeight();
+    const int kGap = 4;
+    const RECT wa  = glint_window_linux::screenWorkArea();
+
+    int y = anchor.bottom + kGap;
+    if (y + H > wa.bottom) y = anchor.top - kGap - H;
+    if (y < wa.top)        y = wa.top;
+
+    int x = anchor.left;
+    if (x + W > wa.right) x = wa.right - W;
+    if (x < wa.left)      x = wa.left;
+
+    setPanelFrameOrigin(x, y);
+  }
+};
+
+#else  // ── macOS implementation ─────────────────────────────────────────────────
 
 #include "../platform/glint_window.hpp"   // glint_window_mac + all components
 #include "glint_colorpicker.hpp"
@@ -303,13 +441,9 @@ public:
   }
 
   bool usePopupStyle() const override { return true; }
-  // Outside-click dismiss should hide (not destroy) the picker so it stays
-  // alive for fast reuse via reopen().  Matches Win32 WA_INACTIVE → hide()
-  // behavior and avoids leaving mPickerWindow as a dangling pointer.
   void onOutsideClick() override { hide(); }
   int  defaultWidth()  const override { return 240; }
   int  defaultHeight() const override { return 240; }
-  // Required by glint_window_base (used on Win32 only — ignored on macOS).
   const wchar_t* windowClassName() const override { return L"glint_color_picker"; }
   const wchar_t* windowTitle()     const override { return L""; }
 
@@ -347,9 +481,6 @@ protected:
     hidePanel();
   }
 
-  // Called after _closePanelAndCleanup() completes.
-  // Fires onClosed if the window auto-dismissed (user click outside) rather
-  // than being explicitly hide()'d or destroy()'d.
   void afterRun() override
   {
     if (!mDestroyRequested && !mClosedFired) {

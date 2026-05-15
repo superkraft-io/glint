@@ -268,6 +268,186 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Linux (X11) implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
+#elif defined(__linux__)
+
+#include "../platform/glint_window.hpp"   // glint_window_linux + all components
+#include "glint_datepicker.hpp"
+
+#include <functional>
+
+// =============================================================================
+// glint_datepicker_window  (Linux / X11)
+// =============================================================================
+class glint_datepicker_window : public glint_window_linux
+{
+public:
+  static glint_datepicker_window* open(
+    int  year, int month, int day,
+    RECT anchorScreenRect,
+    std::function<void(int,int,int)> onChange = nullptr,
+    std::function<void()>            onClosed = nullptr)
+  {
+    auto* w = new glint_datepicker_window();
+    w->mYear       = year;
+    w->mMonth      = month;
+    w->mDay        = day;
+    w->mAnchorRect = anchorScreenRect;
+    w->mOnChange   = std::move(onChange);
+    w->mOnClosed   = std::move(onClosed);
+    w->startThread();
+    return w;
+  }
+
+  void reopen(int  year, int month, int day,
+              RECT anchorScreenRect,
+              std::function<void(int,int,int)> onChange,
+              std::function<void()>            onClosed,
+              glint_element*                   docCanvas = nullptr)
+  {
+    mYear       = year;
+    mMonth      = month;
+    mDay        = day;
+    mAnchorRect = anchorScreenRect;
+    mOnChange   = std::move(onChange);
+    mOnClosed   = std::move(onClosed);
+    mClosedFired = false;
+
+    _registerActive(this, docCanvas);
+    _reposition(mAnchorRect);
+    if (mPicker) mPicker->setDate(mYear, mMonth, mDay);
+    requestRedraw();
+    showPanel();
+  }
+
+  void hide()
+  {
+    _unregisterActive(this);
+    if (!mClosedFired) {
+      mClosedFired = true;
+      if (mOnClosed) mOnClosed();
+    }
+    hidePanel();
+  }
+
+  bool isVisible() const { return !mSuppressAutoClose; }
+
+  void destroy()
+  {
+    mDestroyRequested = true;
+    stopThread();
+  }
+
+  bool usePopupStyle()   const override { return true; }
+  bool showOnCreate()    const override { return false; }
+  void onOutsideClick()  override       { hide(); }
+  int  defaultWidth()    const override { return (int)glint_datepicker::kW; }
+  int  defaultHeight()   const override { return (int)glint_datepicker::kH(); }
+  const wchar_t* windowClassName() const override { return L"glint_date_picker"; }
+  const wchar_t* windowTitle()     const override { return L""; }
+  SkColor clearColor() const override { return SkColorSetARGB(0, 30, 30, 30); }
+
+protected:
+  void buildUI() override
+  {
+    mOwnRoot->skipInspectMode = true;
+
+    auto* wrap = new glint_element();
+    wrap->style.width           = "100%";
+    wrap->style.height          = "100%";
+    wrap->style.backgroundColor = glint_color(255, 30, 30, 30);
+    wrap->style.borderRadius    = 8.f;
+    wrap->style.overflow        = "hidden";
+    mOwnRoot->mCanvas.addChild(wrap);
+
+    mPicker = new glint_datepicker();
+    mPicker->style.width  = "100%";
+    mPicker->style.height = "100%";
+    mPicker->setDate(mYear, mMonth, mDay);
+    mPicker->onChange = [this](int y, int m, int d)
+    {
+      if (mOnChange) mOnChange(y, m, d);
+      hide();
+    };
+    wrap->addChild(mPicker);
+  }
+
+  void onCreated() override
+  {
+    _reposition(mAnchorRect);
+    hidePanel();
+  }
+
+  void afterRun() override
+  {
+    if (!mDestroyRequested && !mClosedFired) {
+      mClosedFired = true;
+      if (mOnClosed) mOnClosed();
+    }
+    delete this;
+  }
+
+private:
+  static inline glint_datepicker_window* sActiveInstance  = nullptr;
+  static inline glint_element*           sDocCanvas       = nullptr;
+  static inline int                      sWheelListenerId = -1;
+
+  static void _registerActive(glint_datepicker_window* w, glint_element* docCanvas)
+  {
+    _unregisterActive(nullptr);
+    sActiveInstance = w;
+    sDocCanvas      = docCanvas;
+    if (docCanvas && sWheelListenerId < 0)
+    {
+      sWheelListenerId = docCanvas->addEventListener(
+        "wheel",
+        [](glint_event&) {
+          if (sActiveInstance) sActiveInstance->hide();
+        },
+        /*useCapture=*/true);
+    }
+  }
+
+  static void _unregisterActive(glint_datepicker_window* w)
+  {
+    if (w && w != sActiveInstance) return;
+    if (sDocCanvas && sWheelListenerId >= 0)
+    {
+      sDocCanvas->removeEventListener(sWheelListenerId);
+      sWheelListenerId = -1;
+    }
+    sActiveInstance = nullptr;
+    sDocCanvas      = nullptr;
+  }
+
+  int                              mYear = 2024, mMonth = 1, mDay = 1;
+  RECT                             mAnchorRect      = { 100, 100, 114, 114 };
+  std::function<void(int,int,int)> mOnChange;
+  std::function<void()>            mOnClosed;
+  glint_datepicker*                mPicker          = nullptr;
+  bool                             mClosedFired      = false;
+  bool                             mDestroyRequested = false;
+
+  void _reposition(RECT anchor)
+  {
+    const int W = defaultWidth(), H = defaultHeight(), kGap = 4;
+    const RECT wa = glint_window_linux::screenWorkArea();
+
+    int y = anchor.bottom + kGap;
+    if (y + H > wa.bottom) y = anchor.top - kGap - H;
+    if (y < wa.top)        y = wa.top;
+
+    int x = anchor.left;
+    if (x + W > wa.right)  x = wa.right - W;
+    if (x < wa.left)       x = wa.left;
+
+    setPanelFrameOrigin(x, y);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // macOS implementation
 // ─────────────────────────────────────────────────────────────────────────────
 

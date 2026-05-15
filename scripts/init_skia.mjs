@@ -50,6 +50,9 @@ Backends (default: cpu):
   dawn    Dawn / WebGPU (Graphite backend)
   metal   Metal (macOS / iOS only)
 
+Options:
+  --skip-sync  Skip 'python tools/git-sync-deps' (use if deps are already present)
+
 Output goes to: third_party/skia/
 Generates:       third_party/glint/glint_render_backend.h
 
@@ -69,7 +72,8 @@ function parseArgs(argv) {
     help: false,
     prebuilt: false,
     config: 'Release',
-    backend: 'cpu'
+    backend: 'cpu',
+    skipSync: false
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -107,6 +111,11 @@ function parseArgs(argv) {
       }
       options.backend = next.toLowerCase();
       index += 1;
+      continue;
+    }
+
+    if (arg === '--skip-sync' || arg === '-skip-sync') {
+      options.skipSync = true;
       continue;
     }
 
@@ -358,11 +367,12 @@ function buildGnArgs(configName, backend) {
 is_official_build = ${isDebug ? 'false' : 'true'}
 skia_use_system_libjpeg_turbo = false
 skia_use_system_libpng = false
+skia_use_system_libwebp = false
 skia_use_system_zlib = false
 skia_use_system_expat = false
 skia_use_system_icu = false
 skia_use_system_harfbuzz = false
-skia_use_libwebp_decode = false
+skia_use_libwebp_decode = true
 skia_use_libwebp_encode = false
 skia_use_xps = false
 skia_use_dng_sdk = false
@@ -382,7 +392,33 @@ target_cpu = "${arch}"`;
   }
 
   // macOS
-  return `${common}\ncc = "clang"\ncxx = "clang++"\nextra_cflags = [ "-stdlib=libc++" ]\nextra_ldflags = [ "-stdlib=libc++" ]`;
+  if (process.platform === 'darwin') {
+    return `${common}\ncc = "clang"\ncxx = "clang++"\nextra_cflags = [ "-stdlib=libc++" ]\nextra_ldflags = [ "-stdlib=libc++" ]`;
+  }
+
+  // Linux
+  return `${common}\ncc = "clang"\ncxx = "clang++"\nskia_use_freetype = true\nskia_use_system_freetype2 = false\nskia_use_fontconfig = true\nskia_use_system_fontconfig = true`;
+}
+
+function copyLinuxLibraries(outDir, configName, arch) {
+  const libDst = path.join(depsDir, 'linux', arch, configName);
+  ensureDirectory(libDst);
+
+  for (const libraryName of libraryNames) {
+    const srcLib = path.join(outDir, `lib${libraryName}.a`);
+    if (fs.existsSync(srcLib)) {
+      fs.copyFileSync(srcLib, path.join(libDst, `lib${libraryName}.a`));
+    }
+  }
+
+  if (configName === 'Release') {
+    const icuFile = path.join(outDir, 'icudtl.dat');
+    if (fs.existsSync(icuFile)) {
+      const binDst = path.join(depsDir, 'linux', 'bin');
+      ensureDirectory(binDst);
+      fs.copyFileSync(icuFile, path.join(binDst, 'icudtl.dat'));
+    }
+  }
 }
 
 function copyMacLibraries(outDir, configName, arch) {
@@ -460,8 +496,9 @@ function writeRenderBackendHeader(backend) {
 }
 
 const PREBUILT_URLS = {
-  win32: 'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-win.zip',
-  darwin: 'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-mac.zip'
+  win32:  'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-win.zip',
+  darwin: 'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-mac.zip',
+  linux:  'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-linux.zip'
 };
 
 function httpsGetFollowRedirects(url) {
@@ -495,7 +532,6 @@ async function downloadFile(url, destPath) {
 }
 
 async function extractZip(zipPath, destDir) {
-  // Use platform-native tools: PowerShell on Windows, unzip on macOS
   if (process.platform === 'win32') {
     const result = spawnSync('powershell', [
       '-NoProfile', '-NonInteractive', '-Command',
@@ -503,8 +539,28 @@ async function extractZip(zipPath, destDir) {
     ], { stdio: 'inherit' });
     if (result.status !== 0) fail('Failed to extract zip with PowerShell Expand-Archive.');
   } else {
-    const result = spawnSync('unzip', ['-o', zipPath, '-d', destDir], { stdio: 'inherit' });
-    if (result.status !== 0) fail('Failed to extract zip with unzip.');
+    // On Linux/macOS, zip files created on Windows store backslash path separators.
+    // unzip treats backslashes as filename characters (not separators), dumping everything flat.
+    // Use Python's zipfile module with explicit backslash→slash normalisation to handle both cases.
+    const pyScript = [
+      'import zipfile, os, sys',
+      'with zipfile.ZipFile(sys.argv[1]) as z:',
+      '    for m in z.namelist():',
+      '        p = m.replace("\\\\", "/").replace("\\\\\\\\", "/")',
+      '        t = os.path.join(sys.argv[2], p)',
+      '        if p.endswith("/"):',
+      '            os.makedirs(t, exist_ok=True)',
+      '        else:',
+      '            os.makedirs(os.path.dirname(t), exist_ok=True)',
+      '            data = z.read(m)',
+      '            open(t, "wb").write(data)',
+    ].join('\n');
+
+    const python = findCommand(['python3', 'python']);
+    if (!python) fail('python3 or python is required to extract the prebuilt zip on Linux/macOS. Install Python 3 and retry.');
+
+    const result = spawnSync(python.name, ['-c', pyScript, zipPath, destDir], { stdio: 'inherit' });
+    if (result.status !== 0) fail('Failed to extract zip with Python zipfile.');
   }
 }
 
@@ -562,8 +618,12 @@ function main() {
   // fails or is interrupted later in this script.
   writeRenderBackendHeader(options.backend);
 
-  if (process.platform !== 'win32' && process.platform !== 'darwin') {
-    fail(`init_skia.mjs supports Windows and macOS. Current platform: ${os.platform()}.`);
+  if (process.platform !== 'win32' && process.platform !== 'darwin' && process.platform !== 'linux') {
+    fail(`init_skia.mjs supports Windows, macOS, and Linux. Current platform: ${os.platform()}.`);
+  }
+
+  if (process.platform === 'linux' && (options.backend === 'd3d12' || options.backend === 'metal')) {
+    fail(`Backend '${options.backend}' is not supported on Linux. Use --backend opengl or --backend cpu.`);
   }
 
   if (process.platform === 'darwin' && (options.backend === 'd3d12' || options.backend === 'opengl')) {
@@ -625,26 +685,27 @@ function main() {
     console.log('Using existing vendored Skia source tree, skipping clone.');
   }
 
-  if (isGitCheckout(activeSkiaSrcDir)) {
+  if (isGitCheckout(activeSkiaSrcDir) && !options.skipSync) {
     console.log('Syncing Skia deps (python tools/git-sync-deps)...');
+    console.log('  (This downloads third-party deps from chromium.googlesource.com and may take several minutes.)');
+    console.log('  (Re-run with --skip-sync to skip this step if deps are already present.)');
     const syncResult = run(python.name, ['tools/git-sync-deps'], {
       cwd: activeSkiaSrcDir,
       env,
-      allowFailure: true,
-      captureOutput: true
+      allowFailure: true
     });
 
     if (syncResult.status !== 0) {
-      const syncOutput = `${syncResult.stdout || ''}\n${syncResult.stderr || ''}`;
-
       if (!hasReusableSkiaDeps(activeSkiaSrcDir)) {
         fail('Skia dependency sync failed and required local deps are still missing. Seed the checkout or retry when chromium.googlesource.com is reachable.');
       }
 
       console.warn('Warning: Skia dependency sync failed; continuing with existing local deps.');
-      if (syncOutput.includes('429')) {
-        console.warn('Warning: Detected HTTP 429 responses from chromium.googlesource.com during git-sync-deps.');
-      }
+    }
+  } else if (isGitCheckout(activeSkiaSrcDir) && options.skipSync) {
+    console.log('Skipping git-sync-deps (--skip-sync).');
+    if (!hasReusableSkiaDeps(activeSkiaSrcDir)) {
+      fail('--skip-sync was passed but required Skia deps are missing. Run without --skip-sync first.');
     }
   } else {
     console.log('Skipping git-sync-deps because the vendored Skia source tree is not a git checkout.');
@@ -654,28 +715,50 @@ function main() {
   const gnExecutable = resolveGnExecutable(activeSkiaSrcDir);
   const arch = resolveArch();
 
+  // On Linux, the repo lives on the Windows NTFS filesystem (mounted via
+  // WSL's 9P driver at /mnt/c/).  Heavy parallel writes to that path
+  // cause "IO failure on output stream" errors in clang/ninja.
+  // Build to the native Linux filesystem instead, then copy the .a files.
+  // Use /var/tmp (not /tmp) so partial builds survive a WSL restart.
+  const linuxNativeBuildBase = process.platform === 'linux'
+    ? '/var/tmp/skia-build-glint'
+    : null;
+
   for (const configName of configs) {
-    const outDir = process.platform === 'darwin'
-      ? path.join(tmpDir, 'build', arch, configName)
-      : path.join(tmpDir, 'build', 'x64', configName);
+    const outDir = process.platform === 'linux'
+      ? path.join(linuxNativeBuildBase, arch, configName)
+      : process.platform === 'darwin'
+        ? path.join(tmpDir, 'build', arch, configName)
+        : path.join(tmpDir, 'build', 'x64', configName);
     ensureDirectory(outDir);
 
     console.log(`Generating GN build files for ${configName}...`);
     run(gnExecutable, ['gen', outDir, `--args=${buildGnArgs(configName, options.backend)}`], { cwd: activeSkiaSrcDir, env });
 
     console.log(`Building Skia ${configName} with ninja...`);
-    run(ninja.command, ['-C', outDir], { env });
+    // On Linux (WSL) cap parallelism to reduce concurrent I/O.
+    // WSL2 kernel can produce transient I/O errors under very high
+    // parallel write load; -j4 keeps throughput reasonable while staying
+    // well below the failure threshold.
+    const ninjaJobArgs = process.platform === 'linux' ? ['-j4'] : [];
+    run(ninja.command, ['-C', outDir, ...ninjaJobArgs], { env });
 
     console.log(`Copying ${configName} libs...`);
     if (process.platform === 'darwin') {
       copyMacLibraries(outDir, configName, arch);
+    } else if (process.platform === 'linux') {
+      copyLinuxLibraries(outDir, configName, arch);
     } else {
       copyLibraries(outDir, configName);
     }
   }
 
   console.log('Cleaning up tmp build directory...');
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  if (linuxNativeBuildBase) {
+    fs.rmSync(linuxNativeBuildBase, { recursive: true, force: true });
+  } else {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 
   console.log('');
   console.log('Done! Built Skia is at:');

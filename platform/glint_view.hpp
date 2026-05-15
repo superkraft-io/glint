@@ -48,7 +48,24 @@
   }
 
 #elif defined(__linux__)
-  static_assert(false, "glint_view: Linux backend not yet implemented.");
+  #include "linux/glint_view_linux.hpp"
+  using glint_view = glint_view_linux;
+
+  inline std::unique_ptr<glint_view> createView(const glint_view_options& options = {})
+  {
+    return glint_view::create(options);
+  }
+
+  namespace glint {
+    using glint_backend      = ::glint_backend;
+    using glint_view         = ::glint_view;
+    using glint_view_options = ::glint_view_options;
+
+    inline std::unique_ptr<glint_view> createView(const glint_view_options& options = {})
+    {
+      return ::createView(options);
+    }
+  }
 
 #else
   static_assert(false, "glint_view: unsupported platform.");

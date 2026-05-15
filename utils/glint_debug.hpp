@@ -28,6 +28,10 @@
 #include <windows.h>
 #endif
 
+#if defined(__linux__)
+#include "include/ports/SkFontMgr_fontconfig.h"
+#endif
+
 #include "include/core/SkData.h"
 #include "include/core/SkFontArguments.h"
 #include "include/core/SkFontMgr.h"
@@ -350,10 +354,12 @@ namespace glint_font_registry
       auto* mgr = new sk_sp<SkFontMgr>();
 #ifdef SK_BUILD_FOR_WIN
       *mgr = SkFontMgr_New_DirectWrite();
-  #elif defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
-    *mgr = SkFontMgr_New_CoreText(nullptr);
+#elif defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
+      *mgr = SkFontMgr_New_CoreText(nullptr);
+#elif defined(__linux__)
+      *mgr = SkFontMgr_New_FontConfig(nullptr);
 #else
-    *mgr = SkFontMgr::RefEmpty();
+      *mgr = SkFontMgr::RefEmpty();
 #endif
       return mgr;
     }();

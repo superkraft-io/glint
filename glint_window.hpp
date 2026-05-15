@@ -33,10 +33,8 @@
   // glint_window is aliased to glint_window_mac inside glint_window_mac.hpp
 
 #elif defined(__linux__)
-  // TODO: #include "sk_ui_window_linux.hpp"
-  // using glint_window = sk_ui_window_linux;
-  static_assert(false, "glint_window: Linux backend not yet implemented. "
-                       "See glint_window_base.hpp for the virtual interface.");
+  #include "platform/linux/glint_window_linux.hpp"
+  using glint_window = glint_window_linux;
 
 #else
   static_assert(false, "glint_window: unsupported platform.");

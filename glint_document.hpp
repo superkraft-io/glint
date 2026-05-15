@@ -29,6 +29,8 @@
 #if defined(__APPLE__)
 #include "platform/glint_platform.hpp"
 class glint_window_mac;  // forward declaration for macWindow field
+#elif defined(__linux__)
+class glint_window_linux;  // forward declaration for linuxWindow field
 #endif
 #include "glint_css_parser/glint_css.hpp"
 #include "glint_css_parser/glint_css_dom_adapter.hpp"
@@ -309,7 +311,6 @@ public:
         mHotWatchedPaths.push_back({ path, watchPath, surl, mtime });
       }
     }
-
     return true;
   }
 
@@ -851,6 +852,10 @@ public:
   /** macOS window pointer. Stamped by glint_window_mac::_createPanelAndView().
    *  Used by gradient_editor and other components that need screen-coord conversion. */
   glint_window_mac* macWindow = nullptr;
+#elif defined(__linux__)
+  /** Linux window pointer. Stamped by glint_window_linux::initRoot().
+   *  Used by components that need screen-coord conversion. */
+  glint_window_linux* linuxWindow = nullptr;
 #endif
 
   /** Device pixel ratio (physical pixels / logical CSS pixels).
