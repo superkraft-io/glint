@@ -30,6 +30,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <commdlg.h>
+#include <shobjidl.h>
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
 
 #include "glint_renderer_backend_win32.hpp"
@@ -1533,6 +1535,163 @@ inline int showContextMenu(int screenX, int screenY,
     pt.x, pt.y, 0, owner ? owner : ::GetDesktopWindow(), nullptr));
   ::DestroyMenu(hMenu);
   return result;
+}
+
+inline std::wstring glintWideFromUtf8(const std::string& value)
+{
+  if (value.empty()) return {};
+  const int needed = ::MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+  if (needed <= 1) return {};
+  std::wstring wide(static_cast<size_t>(needed - 1), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, wide.data(), needed);
+  return wide;
+}
+
+inline std::string glintUtf8FromWide(const wchar_t* value)
+{
+  if (!value || !*value) return {};
+  const int needed = ::WideCharToMultiByte(CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
+  if (needed <= 1) return {};
+  std::string utf8(static_cast<size_t>(needed - 1), '\0');
+  ::WideCharToMultiByte(CP_UTF8, 0, value, -1, utf8.data(), needed, nullptr, nullptr);
+  return utf8;
+}
+
+inline std::wstring glintBuildDialogFilter(const std::vector<std::string>& extensions)
+{
+  std::wstring filter;
+  if (!extensions.empty()) {
+    filter += L"Supported Files";
+    filter.push_back(L'\0');
+    for (size_t i = 0; i < extensions.size(); ++i) {
+      std::string ext = extensions[i];
+      if (!ext.empty() && ext.front() != '.') ext.insert(ext.begin(), '.');
+      const std::wstring wideExt = glintWideFromUtf8(ext);
+      filter += L"*";
+      filter += wideExt;
+      if (i + 1 < extensions.size()) filter.push_back(L';');
+    }
+    filter.push_back(L'\0');
+  }
+  filter += L"All Files (*.*)";
+  filter.push_back(L'\0');
+  filter += L"*.*";
+  filter.push_back(L'\0');
+  filter.push_back(L'\0');
+  return filter;
+}
+
+inline std::string showOpenFileDialog(const std::vector<std::string>& extensions,
+                                      const std::string& title,
+                                      bool /*allowDirectories*/)
+{
+  wchar_t path[MAX_PATH] = {};
+  const std::wstring filter = glintBuildDialogFilter(extensions);
+  const std::wstring wideTitle = glintWideFromUtf8(title);
+
+  OPENFILENAMEW ofn = {};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = ::GetForegroundWindow();
+  ofn.lpstrFilter = filter.c_str();
+  ofn.lpstrFile = path;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrTitle = wideTitle.empty() ? nullptr : wideTitle.c_str();
+  ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+  return ::GetOpenFileNameW(&ofn) ? glintUtf8FromWide(path) : std::string{};
+}
+
+inline std::string showSaveFileDialog(const std::vector<std::string>& extensions,
+                                      const std::string& defaultExtension,
+                                      const std::string& title,
+                                      const std::string& suggestedPath)
+{
+  wchar_t path[MAX_PATH] = {};
+  const std::wstring filter = glintBuildDialogFilter(extensions);
+  const std::wstring wideTitle = glintWideFromUtf8(title);
+  const std::wstring wideDefaultExt = glintWideFromUtf8(defaultExtension);
+  const std::wstring wideSuggestedPath = glintWideFromUtf8(suggestedPath);
+  std::wstring initialDir;
+  if (!wideSuggestedPath.empty()) {
+    std::filesystem::path fsPath(wideSuggestedPath);
+    initialDir = fsPath.parent_path().wstring();
+    const std::wstring fileName = fsPath.filename().wstring();
+    if (!fileName.empty())
+      wcsncpy_s(path, fileName.c_str(), _TRUNCATE);
+  }
+
+  OPENFILENAMEW ofn = {};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = ::GetForegroundWindow();
+  ofn.lpstrFilter = filter.c_str();
+  ofn.lpstrFile = path;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrDefExt = wideDefaultExt.empty() ? nullptr : wideDefaultExt.c_str();
+  ofn.lpstrTitle = wideTitle.empty() ? nullptr : wideTitle.c_str();
+  ofn.lpstrInitialDir = initialDir.empty() ? nullptr : initialDir.c_str();
+  ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
+
+  return ::GetSaveFileNameW(&ofn) ? glintUtf8FromWide(path) : std::string{};
+}
+
+inline std::string showOpenFolderDialog(const std::string& title)
+{
+  std::string result;
+  IFileOpenDialog* dialog = nullptr;
+  if (FAILED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&dialog))) || !dialog)
+    return result;
+
+  DWORD options = 0;
+  dialog->GetOptions(&options);
+  dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+  const std::wstring wideTitle = glintWideFromUtf8(title);
+  if (!wideTitle.empty()) dialog->SetTitle(wideTitle.c_str());
+
+  if (SUCCEEDED(dialog->Show(::GetForegroundWindow()))) {
+    IShellItem* item = nullptr;
+    if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+      PWSTR widePath = nullptr;
+      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &widePath)) && widePath) {
+        result = glintUtf8FromWide(widePath);
+        ::CoTaskMemFree(widePath);
+      }
+      item->Release();
+    }
+  }
+
+  dialog->Release();
+  return result;
+}
+
+inline void showAlertDialog(const std::string& title, const std::string& message)
+{
+  const std::wstring wideTitle = glintWideFromUtf8(title);
+  const std::wstring wideMessage = glintWideFromUtf8(message);
+  ::MessageBoxW(nullptr,
+                wideMessage.c_str(),
+                wideTitle.c_str(),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+}
+
+inline confirm_dialog_result showConfirmDialog(const std::string& title,
+                                               const std::string& message,
+                                               const std::string& /*primaryButton*/,
+                                               const std::string& /*secondaryButton*/,
+                                               const std::string& /*cancelButton*/)
+{
+  const std::wstring wideTitle = glintWideFromUtf8(title);
+  const std::wstring wideMessage = glintWideFromUtf8(message);
+  const int result = ::MessageBoxW(nullptr,
+                                   wideMessage.c_str(),
+                                   wideTitle.c_str(),
+                                   MB_ICONWARNING | MB_YESNOCANCEL | MB_DEFBUTTON1 |
+                                   MB_SETFOREGROUND | MB_TOPMOST);
+  if (result == IDYES)
+    return confirm_dialog_result::primary;
+  if (result == IDNO)
+    return confirm_dialog_result::secondary;
+  return confirm_dialog_result::cancel;
 }
 
 } // namespace glint_platform

@@ -76,10 +76,32 @@ sk_mouse_mod glint_buttons_from_event(NSEvent* event)
   return mod;
 }
 
+glint_input_phase glint_phase_from_event_phase(NSEventPhase phase)
+{
+  if (phase & NSEventPhaseMayBegin) return glint_input_phase::may_begin;
+  if (phase & NSEventPhaseBegan)     return glint_input_phase::began;
+  if (phase & NSEventPhaseChanged)   return glint_input_phase::changed;
+  if (phase & NSEventPhaseEnded)     return glint_input_phase::ended;
+  if (phase & NSEventPhaseCancelled) return glint_input_phase::cancelled;
+  return glint_input_phase::none;
+}
+
 int glint_virtual_key_from_event(NSEvent* event)
 {
   switch ([event keyCode])
   {
+    case 122: return 0x70;  // F1
+    case 120: return 0x71;  // F2
+    case  99: return 0x72;  // F3
+    case 118: return 0x73;  // F4
+    case  96: return 0x74;  // F5
+    case  97: return 0x75;  // F6
+    case  98: return 0x76;  // F7
+    case 100: return 0x77;  // F8
+    case 101: return 0x78;  // F9
+    case 109: return 0x79;  // F10
+    case 103: return 0x7A;  // F11
+    case 111: return 0x7B;  // F12
     case 123: return 0x25;  // left
     case 124: return 0x27;  // right
     case 125: return 0x28;  // down
@@ -361,8 +383,89 @@ bool glint_should_schedule_redraw(glint_document* doc, bool redrawRequested)
       static_cast<float>(pt.y),
       static_cast<float>([event scrollingDeltaX]),
       static_cast<float>([event scrollingDeltaY]),
-      glint_modifiers_from_event(event));
+      glint_modifiers_from_event(event),
+      [event hasPreciseScrollingDeltas],
+      glint_phase_from_event_phase([event phase]),
+      glint_phase_from_event_phase([event momentumPhase]));
   }
+}
+
+- (void) beginGestureWithEvent:(NSEvent*) event
+{
+  if (!cppView) return;
+  const NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+  cppView->_handleGesture(static_cast<float>(pt.x),
+                          static_cast<float>(pt.y),
+                          glint_gesture_kind::none,
+                          glint_input_phase::began,
+                          glint_modifiers_from_event(event));
+}
+
+- (void) endGestureWithEvent:(NSEvent*) event
+{
+  if (!cppView) return;
+  const NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+  cppView->_handleGesture(static_cast<float>(pt.x),
+                          static_cast<float>(pt.y),
+                          glint_gesture_kind::none,
+                          glint_input_phase::ended,
+                          glint_modifiers_from_event(event));
+}
+
+- (void) magnifyWithEvent:(NSEvent*) event
+{
+  if (!cppView) return;
+  const NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+  cppView->_handleGesture(static_cast<float>(pt.x),
+                          static_cast<float>(pt.y),
+                          glint_gesture_kind::pinch,
+                          glint_phase_from_event_phase([event phase]),
+                          glint_modifiers_from_event(event),
+                          0.f,
+                          0.f,
+                          static_cast<float>([event magnification]),
+                          0.f,
+                          [event momentumPhase] != NSEventPhaseNone,
+                          [event hasPreciseScrollingDeltas]);
+}
+
+- (void) rotateWithEvent:(NSEvent*) event
+{
+  if (!cppView) return;
+  const NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+  cppView->_handleGesture(static_cast<float>(pt.x),
+                          static_cast<float>(pt.y),
+                          glint_gesture_kind::rotate,
+                          glint_phase_from_event_phase([event phase]),
+                          glint_modifiers_from_event(event),
+                          0.f,
+                          0.f,
+                          0.f,
+                          static_cast<float>([event rotation]));
+}
+
+- (void) swipeWithEvent:(NSEvent*) event
+{
+  if (!cppView) return;
+  const NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+  cppView->_handleGesture(static_cast<float>(pt.x),
+                          static_cast<float>(pt.y),
+                          glint_gesture_kind::swipe,
+                          glint_input_phase::changed,
+                          glint_modifiers_from_event(event),
+                          static_cast<float>([event deltaX]),
+                          static_cast<float>([event deltaY]));
+}
+
+- (void) smartMagnifyWithEvent:(NSEvent*) event
+{
+  if (!cppView) return;
+  const NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+  cppView->_handleGesture(static_cast<float>(pt.x),
+                          static_cast<float>(pt.y),
+                          glint_gesture_kind::smart_zoom,
+                          glint_input_phase::changed,
+                          glint_modifiers_from_event(event));
 }
 
 - (void) keyDown:(NSEvent*) event
@@ -723,12 +826,28 @@ void glint_view_mac::_handleMouseLeave()
 }
 
 void glint_view_mac::_handleScrollWheel(float x, float y, float dx, float dy,
-                                        const sk_mouse_mod& mod)
+                                        const sk_mouse_mod& mod,
+                                        bool hasPreciseDeltas,
+                                        glint_input_phase phase,
+                                        glint_input_phase momentumPhase)
 {
   if (!mDocument) return;
   // macOS scrollingDeltaY is positive-up (opposite of DOM deltaY convention).
   // Negate so positive deltaY == scroll down, matching Chrome/DOM behaviour.
-  mDocument->OnMouseWheel(x, y, dx, -dy, mod);
+  mDocument->OnMouseWheel(x, y, dx, -dy, mod, hasPreciseDeltas, phase, momentumPhase);
+  requestRedraw();
+}
+
+void glint_view_mac::_handleGesture(float x, float y, glint_gesture_kind kind,
+                                    glint_input_phase phase, const sk_mouse_mod& mod,
+                                    float deltaX, float deltaY,
+                                    float magnification, float rotation,
+                                    bool isInertial, bool hasPreciseDeltas)
+{
+  if (!mDocument) return;
+  mDocument->OnGesture(x, y, kind, phase, mod,
+                       deltaX, deltaY, magnification, rotation,
+                       isInertial, hasPreciseDeltas);
   requestRedraw();
 }
 
