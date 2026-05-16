@@ -1138,9 +1138,10 @@ public:
 
     node->mInspectorRemoved = true;
 
-    if (mHoveredNode   && hasAncestor(mHoveredNode,   node)) mHoveredNode   = nullptr;
-    if (mMouseDownNode && hasAncestor(mMouseDownNode, node)) mMouseDownNode = nullptr;
-    if (mLastClickNode && hasAncestor(mLastClickNode, node)) mLastClickNode = nullptr;
+    if (mHoveredNode       && hasAncestor(mHoveredNode,       node)) mHoveredNode       = nullptr;
+    if (mMouseDownNode     && hasAncestor(mMouseDownNode,     node)) mMouseDownNode     = nullptr;
+    if (mLastClickNode     && hasAncestor(mLastClickNode,     node)) mLastClickNode     = nullptr;
+    if (mActiveGestureNode && hasAncestor(mActiveGestureNode, node)) mActiveGestureNode = nullptr;
     if (mFocusedNode   && hasAncestor(mFocusedNode,   node)) SetFocus(nullptr);
     if (mGlobalAnchor.comp && hasAncestor(mGlobalAnchor.comp, node)) { mGlobalAnchor = {}; mGlobalSelActive = false; }
     if (mGlobalFocus.comp  && hasAncestor(mGlobalFocus.comp,  node)) { mGlobalFocus  = {}; mGlobalSelActive = false; }
@@ -1205,10 +1206,11 @@ public:
       return false;
     };
 
-    if (mHoveredNode   && hasAncestor(mHoveredNode,   node)) mHoveredNode   = nullptr;
-    if (mMouseDownNode && hasAncestor(mMouseDownNode,  node)) mMouseDownNode = nullptr;
-    if (mFocusedNode   && hasAncestor(mFocusedNode,    node)) mFocusedNode   = nullptr;
-    if (mLastClickNode && hasAncestor(mLastClickNode,  node)) mLastClickNode = nullptr;
+    if (mHoveredNode       && hasAncestor(mHoveredNode,       node)) mHoveredNode       = nullptr;
+    if (mMouseDownNode     && hasAncestor(mMouseDownNode,     node)) mMouseDownNode     = nullptr;
+    if (mFocusedNode       && hasAncestor(mFocusedNode,       node)) mFocusedNode       = nullptr;
+    if (mLastClickNode     && hasAncestor(mLastClickNode,     node)) mLastClickNode     = nullptr;
+    if (mActiveGestureNode && hasAncestor(mActiveGestureNode, node)) mActiveGestureNode = nullptr;
     if (mGlobalAnchor.comp == node) { mGlobalAnchor = {}; mGlobalSelActive = false; }
     if (mGlobalFocus.comp  == node) { mGlobalFocus  = {}; mGlobalSelActive = false; }
   }
@@ -1994,7 +1996,10 @@ public:
    * @param deltaX  horizontal scroll in pixels (positive = scroll right)
    * @param deltaY  vertical   scroll in pixels (positive = scroll down)
    */
-  void OnMouseWheel(float x, float y, float deltaX, float deltaY, const glint_mouse_mod& mod)
+  void OnMouseWheel(float x, float y, float deltaX, float deltaY, const glint_mouse_mod& mod,
+                    bool hasPreciseDeltas = false,
+                    glint_input_phase phase = glint_input_phase::none,
+                    glint_input_phase momentumPhase = glint_input_phase::none)
   {
     mPointerInWindow = true;
     mPointerX = x;
@@ -2014,9 +2019,14 @@ public:
     we.deltaX    = deltaX;
     we.deltaY    = deltaY;
     we.deltaMode = 0;   // DOM_DELTA_PIXEL
+    we.hasPreciseDeltas = hasPreciseDeltas;
+    we.isMomentum = momentumPhase != glint_input_phase::none;
+    we.phase = phase;
+    we.momentumPhase = momentumPhase;
     we.shiftKey  = mod.S;
     we.ctrlKey   = mod.C;
     we.altKey    = mod.A;
+    we.metaKey   = mod.M;
     if (hit) hit->dispatchDOMEvent(we);
 
     if (we.defaultPrevented)
@@ -2072,6 +2082,53 @@ public:
 
       node = node->mParent;
     }
+
+    setDirty(false);
+  }
+
+  void OnGesture(float x, float y, glint_gesture_kind kind,
+                 glint_input_phase phase, const glint_mouse_mod& mod,
+                 float deltaX = 0.f, float deltaY = 0.f,
+                 float magnification = 0.f, float rotation = 0.f,
+                 bool isInertial = false, bool hasPreciseDeltas = false)
+  {
+    mPointerInWindow = true;
+    mPointerX = x;
+    mPointerY = y;
+    mPointerMod = mod;
+
+    const bool beginsLifecycle =
+      phase == glint_input_phase::may_begin || phase == glint_input_phase::began;
+    if (beginsLifecycle || !mActiveGestureNode)
+      mActiveGestureNode = hitTest(x, y);
+
+    glint_element* hit = mActiveGestureNode ? mActiveGestureNode : hitTest(x, y);
+
+    glint_gesture_event ge;
+    ge.type       = "gesture";
+    ge.bubbles    = true;
+    ge.cancelable = true;
+    ge.clientX    = x;
+    ge.clientY    = y;
+    ge.shiftKey   = mod.S;
+    ge.ctrlKey    = mod.C;
+    ge.altKey     = mod.A;
+    ge.metaKey    = mod.M;
+    ge.kind       = kind;
+    ge.phase      = phase;
+    ge.deltaX     = deltaX;
+    ge.deltaY     = deltaY;
+    ge.magnification = magnification;
+    ge.scale      = 1.f + magnification;
+    if (ge.scale < 0.f)
+      ge.scale = 0.f;
+    ge.rotation   = rotation;
+    ge.isInertial = isInertial;
+    ge.hasPreciseDeltas = hasPreciseDeltas;
+    if (hit) hit->dispatchDOMEvent(ge);
+
+    if (phase == glint_input_phase::ended || phase == glint_input_phase::cancelled)
+      mActiveGestureNode = nullptr;
 
     setDirty(false);
   }
@@ -2926,9 +2983,10 @@ private:
   }
 
   // ── Mouse + focus state ───────────────────────────────────────────────────────────
-  glint_element* mHoveredNode    = nullptr;
-  glint_element* mMouseDownNode  = nullptr;
-  glint_element* mFocusedNode    = nullptr;  // currently focused (keyboard) node
+  glint_element* mHoveredNode      = nullptr;
+  glint_element* mMouseDownNode    = nullptr;
+  glint_element* mFocusedNode      = nullptr;  // currently focused (keyboard) node
+  glint_element* mActiveGestureNode = nullptr;
   bool             mFocusViaKeyboard = false;  // true only for Tab/Shift+Tab focus (:focus-visible)
   bool             mPointerInWindow = false;
   float            mPointerX = 0.f;

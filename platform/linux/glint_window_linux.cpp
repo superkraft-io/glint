@@ -1448,4 +1448,48 @@ int showContextMenu(int /*screenX*/, int /*screenY*/,
   return 0;
 }
 
+std::string showOpenFileDialog(const std::vector<std::string>& /*extensions*/,
+                               const std::string& /*title*/,
+                               bool /*allowDirectories*/)
+{
+  return {};
+}
+
+std::string showSaveFileDialog(const std::vector<std::string>& /*extensions*/,
+                               const std::string& /*defaultExtension*/,
+                               const std::string& /*title*/,
+                               const std::string& /*suggestedPath*/)
+{
+  return {};
+}
+
+std::string showOpenFolderDialog(const std::string& /*title*/)
+{
+  return {};
+}
+
+} // namespace glint_platform
+
+namespace glint_platform {
+
+void showAlertDialog(const std::string& title, const std::string& message)
+{
+  (void)title;
+  (void)message;
+}
+
+confirm_dialog_result showConfirmDialog(const std::string& title,
+                                        const std::string& message,
+                                        const std::string& primaryButton,
+                                        const std::string& secondaryButton,
+                                        const std::string& cancelButton)
+{
+  (void)title;
+  (void)message;
+  (void)primaryButton;
+  (void)secondaryButton;
+  (void)cancelButton;
+  return confirm_dialog_result::cancel;
+}
+
 } // namespace glint_platform

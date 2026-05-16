@@ -23,6 +23,25 @@
 // Forward declaration — glint_element is defined in glint_element.hpp.
 class glint_element;
 
+enum class glint_input_phase
+{
+    none = 0,
+    may_begin,
+    began,
+    changed,
+    ended,
+    cancelled,
+};
+
+enum class glint_gesture_kind
+{
+    none = 0,
+    pinch,
+    rotate,
+    swipe,
+    smart_zoom,
+};
+
 // ── glint_event ───────────────────────────────────────────────────────────────
 // Mirrors the DOM Event interface.
 
@@ -113,6 +132,28 @@ public:
     float deltaY    = 0.f;   // vertical scroll distance   (pixels, positive = down)
     float deltaZ    = 0.f;   // z-axis scroll (rarely used)
     int   deltaMode = 0;     // 0=pixel (DOM_DELTA_PIXEL), 1=line, 2=page
+    bool  hasPreciseDeltas = false;
+    bool  isMomentum       = false;
+    glint_input_phase phase         = glint_input_phase::none;
+    glint_input_phase momentumPhase = glint_input_phase::none;
+};
+
+// ── glint_gesture_event ──────────────────────────────────────────────────────
+// DOM-like trackpad gesture payload for platform-native gestures such as
+// pinch, rotate, swipe, and smart zoom.
+
+class glint_gesture_event : public glint_mouse_event
+{
+public:
+    glint_gesture_kind kind = glint_gesture_kind::none;
+    glint_input_phase  phase = glint_input_phase::none;
+    float deltaX        = 0.f;
+    float deltaY        = 0.f;
+    float magnification = 0.f;
+    float scale         = 1.f;
+    float rotation      = 0.f;
+    bool  isInertial    = false;
+    bool  hasPreciseDeltas = false;
 };
 
 // ── glint_* aliases ───────────────────────────────────────────────────────────────

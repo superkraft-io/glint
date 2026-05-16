@@ -162,8 +162,17 @@ public:
                       bool shift, bool ctrl, bool alt, bool cmd,
                       bool leftDown, bool rightDown);
   void routeMouseLeave();
-  void routeMouseWheel(float x, float y, float delta,
-                       bool shift, bool ctrl, bool alt, bool cmd);
+  void routeMouseWheel(float x, float y, float deltaX, float deltaY,
+                       bool shift, bool ctrl, bool alt, bool cmd,
+                       bool hasPreciseDeltas = false,
+                       glint_input_phase phase = glint_input_phase::none,
+                       glint_input_phase momentumPhase = glint_input_phase::none);
+  void routeGesture(float x, float y, glint_gesture_kind kind,
+                    glint_input_phase phase,
+                    bool shift, bool ctrl, bool alt, bool cmd,
+                    float deltaX = 0.f, float deltaY = 0.f,
+                    float magnification = 0.f, float rotation = 0.f,
+                    bool isInertial = false, bool hasPreciseDeltas = false);
   void routeKeyDown(const glint_key_press& kp);
   void routeKeyUp  (int vk);
 

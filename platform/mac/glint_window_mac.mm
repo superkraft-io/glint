@@ -67,10 +67,32 @@ static sk_mouse_mod modifiersFromFlags(NSEventModifierFlags flags,
   return m;
 }
 
+static glint_input_phase phaseFromNSEventPhase(NSEventPhase phase)
+{
+  if (phase & NSEventPhaseMayBegin) return glint_input_phase::may_begin;
+  if (phase & NSEventPhaseBegan)     return glint_input_phase::began;
+  if (phase & NSEventPhaseChanged)   return glint_input_phase::changed;
+  if (phase & NSEventPhaseEnded)     return glint_input_phase::ended;
+  if (phase & NSEventPhaseCancelled) return glint_input_phase::cancelled;
+  return glint_input_phase::none;
+}
+
 static int virtualKeyFromNSEvent(NSEvent* event)
 {
   switch ([event keyCode])
   {
+    case 122: return 0x70;  // F1
+    case 120: return 0x71;  // F2
+    case  99: return 0x72;  // F3
+    case 118: return 0x73;  // F4
+    case  96: return 0x74;  // F5
+    case  97: return 0x75;  // F6
+    case  98: return 0x76;  // F7
+    case 100: return 0x77;  // F8
+    case 101: return 0x78;  // F9
+    case 109: return 0x79;  // F10
+    case 103: return 0x7A;  // F11
+    case 111: return 0x7B;  // F12
     case 123: return 0x25;  // Left
     case 124: return 0x27;  // Right
     case 125: return 0x28;  // Down
@@ -356,7 +378,107 @@ static CVReturn GlintWindowMacDisplayLinkCB(CVDisplayLinkRef,
   NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
   const NSEventModifierFlags f = [e modifierFlags];
   _cpp->routeMouseWheel((float)p.x, (float)p.y,
+    (float)([e scrollingDeltaX]),
     (float)([e scrollingDeltaY]),
+    (f & NSEventModifierFlagShift) != 0,
+    (f & NSEventModifierFlagControl) != 0,
+    (f & NSEventModifierFlagOption) != 0,
+    (f & NSEventModifierFlagCommand) != 0,
+    [e hasPreciseScrollingDeltas],
+    phaseFromNSEventPhase([e phase]),
+    phaseFromNSEventPhase([e momentumPhase]));
+}
+
+- (void)beginGestureWithEvent:(NSEvent*)e
+{
+  if (!_cpp) return;
+  NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
+  const NSEventModifierFlags f = [e modifierFlags];
+  _cpp->routeGesture((float)p.x, (float)p.y,
+    glint_gesture_kind::none,
+    glint_input_phase::began,
+    (f & NSEventModifierFlagShift) != 0,
+    (f & NSEventModifierFlagControl) != 0,
+    (f & NSEventModifierFlagOption) != 0,
+    (f & NSEventModifierFlagCommand) != 0);
+}
+
+- (void)endGestureWithEvent:(NSEvent*)e
+{
+  if (!_cpp) return;
+  NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
+  const NSEventModifierFlags f = [e modifierFlags];
+  _cpp->routeGesture((float)p.x, (float)p.y,
+    glint_gesture_kind::none,
+    glint_input_phase::ended,
+    (f & NSEventModifierFlagShift) != 0,
+    (f & NSEventModifierFlagControl) != 0,
+    (f & NSEventModifierFlagOption) != 0,
+    (f & NSEventModifierFlagCommand) != 0);
+}
+
+- (void)magnifyWithEvent:(NSEvent*)e
+{
+  if (!_cpp) return;
+  NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
+  const NSEventModifierFlags f = [e modifierFlags];
+  _cpp->routeGesture((float)p.x, (float)p.y,
+    glint_gesture_kind::pinch,
+    phaseFromNSEventPhase([e phase]),
+    (f & NSEventModifierFlagShift) != 0,
+    (f & NSEventModifierFlagControl) != 0,
+    (f & NSEventModifierFlagOption) != 0,
+    (f & NSEventModifierFlagCommand) != 0,
+    0.f,
+    0.f,
+    (float)([e magnification]),
+    0.f,
+    [e momentumPhase] != NSEventPhaseNone,
+    [e hasPreciseScrollingDeltas]);
+}
+
+- (void)rotateWithEvent:(NSEvent*)e
+{
+  if (!_cpp) return;
+  NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
+  const NSEventModifierFlags f = [e modifierFlags];
+  _cpp->routeGesture((float)p.x, (float)p.y,
+    glint_gesture_kind::rotate,
+    phaseFromNSEventPhase([e phase]),
+    (f & NSEventModifierFlagShift) != 0,
+    (f & NSEventModifierFlagControl) != 0,
+    (f & NSEventModifierFlagOption) != 0,
+    (f & NSEventModifierFlagCommand) != 0,
+    0.f,
+    0.f,
+    0.f,
+    (float)([e rotation]));
+}
+
+- (void)swipeWithEvent:(NSEvent*)e
+{
+  if (!_cpp) return;
+  NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
+  const NSEventModifierFlags f = [e modifierFlags];
+  _cpp->routeGesture((float)p.x, (float)p.y,
+    glint_gesture_kind::swipe,
+    glint_input_phase::changed,
+    (f & NSEventModifierFlagShift) != 0,
+    (f & NSEventModifierFlagControl) != 0,
+    (f & NSEventModifierFlagOption) != 0,
+    (f & NSEventModifierFlagCommand) != 0,
+    (float)([e deltaX]),
+    (float)([e deltaY]));
+}
+
+- (void)smartMagnifyWithEvent:(NSEvent*)e
+{
+  if (!_cpp) return;
+  NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
+  const NSEventModifierFlags f = [e modifierFlags];
+  _cpp->routeGesture((float)p.x, (float)p.y,
+    glint_gesture_kind::smart_zoom,
+    glint_input_phase::changed,
     (f & NSEventModifierFlagShift) != 0,
     (f & NSEventModifierFlagControl) != 0,
     (f & NSEventModifierFlagOption) != 0,
@@ -679,8 +801,11 @@ void glint_window_mac::routeMouseLeave()
   requestRedraw();
 }
 
-void glint_window_mac::routeMouseWheel(float x, float y, float delta,
-                                       bool shift, bool ctrl, bool alt, bool cmd)
+void glint_window_mac::routeMouseWheel(float x, float y, float deltaX, float deltaY,
+                                       bool shift, bool ctrl, bool alt, bool cmd,
+                                       bool hasPreciseDeltas,
+                                       glint_input_phase phase,
+                                       glint_input_phase momentumPhase)
 {
   if (!mOwnRoot) return;
   const bool c = ctrl || cmd;
@@ -688,7 +813,25 @@ void glint_window_mac::routeMouseWheel(float x, float y, float delta,
   m.S = shift; m.C = c; m.A = alt; m.M = cmd;
   // macOS scrollingDeltaY is positive-up (opposite of DOM deltaY convention).
   // Negate so positive deltaY == scroll down, matching Chrome/DOM behaviour.
-  mOwnRoot->OnMouseWheel(x, y, 0.f, -delta, m);
+  mOwnRoot->OnMouseWheel(x, y, deltaX, -deltaY, m,
+                         hasPreciseDeltas, phase, momentumPhase);
+  requestRedraw();
+}
+
+void glint_window_mac::routeGesture(float x, float y, glint_gesture_kind kind,
+                                    glint_input_phase phase,
+                                    bool shift, bool ctrl, bool alt, bool cmd,
+                                    float deltaX, float deltaY,
+                                    float magnification, float rotation,
+                                    bool isInertial, bool hasPreciseDeltas)
+{
+  if (!mOwnRoot) return;
+  const bool c = ctrl || cmd;
+  sk_mouse_mod m = {};
+  m.S = shift; m.C = c; m.A = alt; m.M = cmd;
+  mOwnRoot->OnGesture(x, y, kind, phase, m,
+                      deltaX, deltaY, magnification, rotation,
+                      isInertial, hasPreciseDeltas);
   requestRedraw();
 }
 
@@ -1105,6 +1248,200 @@ void glint_window_mac::hidePanel()
 @end
 
 namespace glint_platform {
+
+static NSString* _glintNSStringFromUtf8(const std::string& utf8)
+{
+  return utf8.empty() ? nil : [NSString stringWithUTF8String:utf8.c_str()];
+}
+
+static NSArray<NSString*>* _glintAllowedFileTypes(const std::vector<std::string>& extensions)
+{
+  if (extensions.empty()) return nil;
+
+  NSMutableArray<NSString*>* types = [NSMutableArray arrayWithCapacity:extensions.size()];
+  for (const std::string& ext : extensions) {
+    if (ext.empty()) continue;
+    std::string normalized = ext;
+    if (!normalized.empty() && normalized.front() == '.')
+      normalized.erase(normalized.begin());
+    NSString* nsExt = _glintNSStringFromUtf8(normalized);
+    if (nsExt && [nsExt length] > 0)
+      [types addObject:nsExt];
+  }
+  return [types count] > 0 ? types : nil;
+}
+
+static std::string _glintRunOpenPanel(bool chooseFiles,
+                                      bool chooseDirectories,
+                                      const std::vector<std::string>& extensions,
+                                      const std::string& title)
+{
+  __block std::string result;
+  auto run = ^{
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    [panel setCanChooseFiles:chooseFiles ? YES : NO];
+    [panel setCanChooseDirectories:chooseDirectories ? YES : NO];
+    [panel setAllowsMultipleSelection:NO];
+    [panel setCanCreateDirectories:chooseDirectories ? YES : NO];
+    if (NSString* nsTitle = _glintNSStringFromUtf8(title))
+      [panel setTitle:nsTitle];
+    if (NSArray<NSString*>* fileTypes = _glintAllowedFileTypes(extensions))
+      [panel setAllowedFileTypes:fileTypes];
+
+    if ([panel runModal] != NSModalResponseOK) return;
+    NSString* path = [[panel URL] path];
+    if (!path) return;
+    const char* utf8 = [path UTF8String];
+    if (utf8) result = utf8;
+  };
+
+  if ([NSThread isMainThread]) run();
+  else dispatch_sync(dispatch_get_main_queue(), run);
+  return result;
+}
+
+std::string showOpenFileDialog(const std::vector<std::string>& extensions,
+                               const std::string& title,
+                               bool allowDirectories)
+{
+  return _glintRunOpenPanel(true, allowDirectories, extensions, title);
+}
+
+std::string showSaveFileDialog(const std::vector<std::string>& extensions,
+                               const std::string& defaultExtension,
+                               const std::string& title,
+                               const std::string& suggestedPath)
+{
+  __block std::string result;
+  auto run = ^{
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    [panel setCanCreateDirectories:YES];
+    [panel setAllowsOtherFileTypes:YES];
+    [panel setCanSelectHiddenExtension:YES];
+    [panel setExtensionHidden:NO];
+    if (NSString* nsTitle = _glintNSStringFromUtf8(title))
+      [panel setTitle:nsTitle];
+    if (!suggestedPath.empty()) {
+      std::filesystem::path fsPath(suggestedPath);
+      if (NSString* dir = _glintNSStringFromUtf8(fsPath.parent_path().string())) {
+        NSURL* dirURL = [NSURL fileURLWithPath:dir isDirectory:YES];
+        if (dirURL)
+          [panel setDirectoryURL:dirURL];
+      }
+      if (NSString* fileName = _glintNSStringFromUtf8(fsPath.filename().string())) {
+        if ([fileName length] > 0)
+          [panel setNameFieldStringValue:fileName];
+      }
+    }
+    if (!defaultExtension.empty()) {
+      std::string normalized = defaultExtension;
+      if (!normalized.empty() && normalized.front() == '.')
+        normalized.erase(normalized.begin());
+      if (NSString* ext = _glintNSStringFromUtf8(normalized))
+        if ([[panel nameFieldStringValue] length] == 0)
+        [panel setNameFieldStringValue:[@"Untitled." stringByAppendingString:ext]];
+    }
+
+    if ([panel runModal] != NSModalResponseOK) return;
+    NSString* path = [[panel URL] path];
+    if (!path) return;
+    std::string chosenPath;
+    if (const char* utf8 = [path UTF8String])
+      chosenPath = utf8;
+
+    if (!chosenPath.empty() && !defaultExtension.empty()) {
+      std::string normalized = defaultExtension;
+      if (!normalized.empty() && normalized.front() == '.')
+        normalized.erase(normalized.begin());
+
+      std::filesystem::path fsPath(chosenPath);
+      std::string currentExt = fsPath.extension().string();
+      std::transform(currentExt.begin(), currentExt.end(), currentExt.begin(),
+                     [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+      const std::string wantedExt = "." + normalized;
+      bool hasAllowedExt = false;
+      for (const std::string& ext : extensions) {
+        std::string normalizedExt = ext;
+        if (!normalizedExt.empty() && normalizedExt.front() != '.')
+          normalizedExt.insert(normalizedExt.begin(), '.');
+        std::transform(normalizedExt.begin(), normalizedExt.end(), normalizedExt.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (currentExt == normalizedExt) {
+          hasAllowedExt = true;
+          break;
+        }
+      }
+
+      if (currentExt.empty() || !hasAllowedExt) {
+        fsPath.replace_extension(wantedExt);
+        chosenPath = fsPath.string();
+      }
+    }
+
+    result = std::move(chosenPath);
+  };
+
+  if ([NSThread isMainThread]) run();
+  else dispatch_sync(dispatch_get_main_queue(), run);
+  return result;
+}
+
+std::string showOpenFolderDialog(const std::string& title)
+{
+  return _glintRunOpenPanel(false, true, {}, title);
+}
+
+void showAlertDialog(const std::string& title, const std::string& message)
+{
+  auto run = ^{
+    NSAlert* alert = [[NSAlert alloc] init];
+    if (NSString* nsTitle = _glintNSStringFromUtf8(title))
+      [alert setMessageText:nsTitle];
+    if (NSString* nsMessage = _glintNSStringFromUtf8(message))
+      [alert setInformativeText:nsMessage];
+    [alert addButtonWithTitle:@"OK"];
+    [alert runModal];
+  };
+
+  if ([NSThread isMainThread]) run();
+  else dispatch_sync(dispatch_get_main_queue(), run);
+}
+
+confirm_dialog_result showConfirmDialog(const std::string& title,
+                                        const std::string& message,
+                                        const std::string& primaryButton,
+                                        const std::string& secondaryButton,
+                                        const std::string& cancelButton)
+{
+  __block confirm_dialog_result result = confirm_dialog_result::cancel;
+  auto run = ^{
+    NSAlert* alert = [[NSAlert alloc] init];
+    [alert setAlertStyle:NSAlertStyleWarning];
+    if (NSString* nsTitle = _glintNSStringFromUtf8(title))
+      [alert setMessageText:nsTitle];
+    if (NSString* nsMessage = _glintNSStringFromUtf8(message))
+      [alert setInformativeText:nsMessage];
+
+    NSString* primary = _glintNSStringFromUtf8(primaryButton);
+    NSString* secondary = _glintNSStringFromUtf8(secondaryButton);
+    NSString* cancel = _glintNSStringFromUtf8(cancelButton);
+    [alert addButtonWithTitle:primary ? primary : @"OK"];
+    [alert addButtonWithTitle:secondary ? secondary : @"No"];
+    [alert addButtonWithTitle:cancel ? cancel : @"Cancel"];
+
+    const NSModalResponse response = [alert runModal];
+    if (response == NSAlertFirstButtonReturn)
+      result = confirm_dialog_result::primary;
+    else if (response == NSAlertSecondButtonReturn)
+      result = confirm_dialog_result::secondary;
+    else
+      result = confirm_dialog_result::cancel;
+  };
+
+  if ([NSThread isMainThread]) run();
+  else dispatch_sync(dispatch_get_main_queue(), run);
+  return result;
+}
 
 void setClipboardText(const std::string& utf8)
 {

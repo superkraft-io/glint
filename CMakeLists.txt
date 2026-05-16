@@ -309,6 +309,7 @@ if(APPLE)
   target_link_libraries(glint_host_mac INTERFACE
     "-framework Metal"
     "-framework MetalKit"
+    "-framework ImageIO"
     "-framework QuartzCore"
     "-framework CoreGraphics"
     "-framework CoreText"

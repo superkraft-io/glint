@@ -13,6 +13,12 @@
 
 namespace glint_platform {
 
+enum class confirm_dialog_result {
+  cancel = 0,
+  primary = 1,
+  secondary = 2,
+};
+
 #if defined(__APPLE__) || defined(_WIN32) || defined(__linux__)
   /** Copy UTF-8 text to the system clipboard. */
   void        setClipboardText(const std::string& utf8);
@@ -33,6 +39,30 @@ namespace glint_platform {
                       const std::vector<std::pair<int, std::string>>& items,
                       const std::vector<int>& disabledIds = {},
                       const std::vector<int>& checkedIds  = {});
+
+  /** Show a synchronous native open-file dialog filtered by extension. */
+  std::string showOpenFileDialog(const std::vector<std::string>& extensions = {},
+                                 const std::string& title = {},
+                                 bool allowDirectories = false);
+
+  /** Show a synchronous native save-file dialog filtered by extension. */
+  std::string showSaveFileDialog(const std::vector<std::string>& extensions = {},
+                                 const std::string& defaultExtension = {},
+                                 const std::string& title = {},
+                                 const std::string& suggestedPath = {});
+
+  /** Show a synchronous native folder picker dialog. */
+  std::string showOpenFolderDialog(const std::string& title = {});
+
+  /** Show a synchronous native alert dialog with a title and message. */
+  void showAlertDialog(const std::string& title, const std::string& message);
+
+  /** Show a synchronous native confirmation dialog with up to three actions. */
+  confirm_dialog_result showConfirmDialog(const std::string& title,
+                                          const std::string& message,
+                                          const std::string& primaryButton,
+                                          const std::string& secondaryButton,
+                                          const std::string& cancelButton);
 #endif
 
 } // namespace glint_platform

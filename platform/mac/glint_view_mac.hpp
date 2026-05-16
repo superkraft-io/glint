@@ -56,7 +56,15 @@ public:
   void _handleMouseUp(float x, float y, const glint_mouse_mod& mod);
   void _handleMouseMove(float x, float y, const glint_mouse_mod& mod);
   void _handleMouseLeave();
-  void _handleScrollWheel(float x, float y, float dx, float dy, const glint_mouse_mod& mod);
+  void _handleScrollWheel(float x, float y, float dx, float dy, const glint_mouse_mod& mod,
+                          bool hasPreciseDeltas = false,
+                          glint_input_phase phase = glint_input_phase::none,
+                          glint_input_phase momentumPhase = glint_input_phase::none);
+  void _handleGesture(float x, float y, glint_gesture_kind kind,
+                      glint_input_phase phase, const glint_mouse_mod& mod,
+                      float deltaX = 0.f, float deltaY = 0.f,
+                      float magnification = 0.f, float rotation = 0.f,
+                      bool isInertial = false, bool hasPreciseDeltas = false);
   void _handleKeyDown(const glint_key_press& kp);
   void _handleKeyUp(const glint_key_press& kp);
   void _handleAnimationTimer();
