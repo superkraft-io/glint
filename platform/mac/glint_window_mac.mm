@@ -1271,6 +1271,25 @@ static NSArray<NSString*>* _glintAllowedFileTypes(const std::vector<std::string>
   return [types count] > 0 ? types : nil;
 }
 
+static NSWindow* _glintDialogAnchorWindow()
+{
+  NSWindow* window = [NSApp keyWindow];
+  if (!window)
+    window = [NSApp mainWindow];
+  if (!window) {
+    NSEvent* event = [NSApp currentEvent];
+    window = event ? [event window] : nil;
+  }
+  return window;
+}
+
+static void _glintPrepareForModalDialog()
+{
+  [NSApp activateIgnoringOtherApps:YES];
+  if (NSWindow* window = _glintDialogAnchorWindow())
+    [window makeKeyAndOrderFront:nil];
+}
+
 static std::string _glintRunOpenPanel(bool chooseFiles,
                                       bool chooseDirectories,
                                       const std::vector<std::string>& extensions,
@@ -1278,6 +1297,8 @@ static std::string _glintRunOpenPanel(bool chooseFiles,
 {
   __block std::string result;
   auto run = ^{
+    _glintPrepareForModalDialog();
+
     NSOpenPanel* panel = [NSOpenPanel openPanel];
     [panel setCanChooseFiles:chooseFiles ? YES : NO];
     [panel setCanChooseDirectories:chooseDirectories ? YES : NO];
@@ -1314,6 +1335,8 @@ std::string showSaveFileDialog(const std::vector<std::string>& extensions,
 {
   __block std::string result;
   auto run = ^{
+    _glintPrepareForModalDialog();
+
     NSSavePanel* panel = [NSSavePanel savePanel];
     [panel setCanCreateDirectories:YES];
     [panel setAllowsOtherFileTypes:YES];
@@ -1394,6 +1417,8 @@ std::string showOpenFolderDialog(const std::string& title)
 void showAlertDialog(const std::string& title, const std::string& message)
 {
   auto run = ^{
+    _glintPrepareForModalDialog();
+
     NSAlert* alert = [[NSAlert alloc] init];
     if (NSString* nsTitle = _glintNSStringFromUtf8(title))
       [alert setMessageText:nsTitle];
