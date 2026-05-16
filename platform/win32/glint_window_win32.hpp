@@ -30,6 +30,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <commdlg.h>
+#include <shobjidl.h>
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
 
 #include "glint_renderer_backend_win32.hpp"
