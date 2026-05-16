@@ -22,6 +22,7 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
+#include "glint_cursor_mac_shared.hpp"
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -65,6 +66,9 @@ enum GlintCoreCursorType : int32_t {
 // ---------------------------------------------------------------------------
 static inline NSCursor* glint_css_to_nscursor(const std::string& css)
 {
+    if (void* custom = glint_mac_cursor::findCustomCursor(css))
+        return (NSCursor*) custom;
+
     // --- Public NSCursor API ---
     if (css == "pointer")                         return [NSCursor pointingHandCursor];
     if (css == "text")                            return [NSCursor IBeamCursor];
