@@ -7,6 +7,9 @@
 
 #include "glint_apple_platform.hpp"
 #include "glint_view_base.hpp"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 
 #if defined(_WIN32)
   #include "win32/glint_view_win32.hpp"
@@ -28,7 +31,7 @@
     }
   }
 
-#elif GLINT_PLATFORM_MAC
+#elif defined(__APPLE__) && !TARGET_OS_IPHONE
   #include "mac/glint_view_mac.hpp"
   using glint_view = glint_view_mac;
 
@@ -48,7 +51,7 @@
     }
   }
 
-#elif GLINT_PLATFORM_IOS
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
   #include "ios/glint_view_ios.hpp"
   using glint_view = glint_view_ios;
 

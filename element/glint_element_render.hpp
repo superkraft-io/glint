@@ -200,7 +200,6 @@ public:
         bool shouldCache = false;
 
         tf = glint_font_registry::getTypefaceByAxes(family, weight, style);
-        // Axis lookup failed (unregistered family) — try legacy weight-only lookup.
         if (tf)
         {
           shouldCache = true;
@@ -212,7 +211,6 @@ public:
             shouldCache = true;
         }
 
-        // Still unresolved: ask the platform font manager for an installed system face.
         if (!tf)
         {
           tf = glint_font_registry::getSystemTypefaceByAxes(family, weight, style);
@@ -224,9 +222,6 @@ public:
           }
         }
 
-        // Only cache concrete matches. Startup can request text before deferred
-        // @font-face registration completes; caching a substituted system face
-        // like Helvetica would pin the fallback even after the real family loads.
         if (shouldCache)
           sTfCache.emplace(std::move(key), tf);
       }

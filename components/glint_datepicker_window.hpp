@@ -1,5 +1,14 @@
 #pragma once
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE && !defined(GLINT_RECT_STRUCT_DEFINED)
+#define GLINT_RECT_STRUCT_DEFINED
+struct RECT { int left = 0, top = 0, right = 0, bottom = 0; };
+#endif
+
 /**
  * glint_datepicker_window.hpp
  * A standalone native popup window hosting a single glint_datepicker calendar.
@@ -453,12 +462,11 @@ private:
 // macOS implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
-#elif GLINT_PLATFORM_IOS
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
 
-#include "glint_datepicker.hpp"
-
-#include <functional>
-
+// ── iOS stub implementation ────────────────────────────────────────────────
+// iOS cannot host desktop popup windows. Keep a no-op API surface so shared
+// components compile and run without linking macOS window symbols.
 class glint_datepicker_window
 {
 public:
@@ -470,8 +478,12 @@ public:
     std::function<void(int,int,int)> = nullptr,
     std::function<void()> = nullptr)
   {
-    return new glint_datepicker_window();
+    static glint_datepicker_window sInstance;
+    return &sInstance;
   }
+
+  static void _registerActive(glint_datepicker_window*, glint_element*) {}
+  static void _unregisterActive(glint_datepicker_window*) {}
 
   void reopen(int,
               int,
@@ -483,11 +495,9 @@ public:
   {
   }
 
-  bool isVisible() const { return false; }
-
   void hide() {}
-
-  void destroy() { delete this; }
+  void destroy() {}
+  bool isVisible() const { return false; }
 };
 
 #else

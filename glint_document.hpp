@@ -2976,9 +2976,25 @@ private:
         if (!fontReq.handled || fontReq.statusCode != 200 || !fontReq.responseData)
           continue; // try next src candidate
 
+        std::string variantFontID = fontFamily;
+        {
+          std::string sourceName;
+          if (!fontReq.pathname.empty())
+            sourceName = std::filesystem::path(fontReq.pathname).stem().string();
+          else
+            sourceName = std::filesystem::path(fontUrl).stem().string();
+
+          if (!sourceName.empty())
+          {
+            variantFontID = fontFamily + "::" + sourceName
+                          + "@" + std::to_string(fontWeightDescriptor)
+                          + "@" + fontStyleDescriptor;
+          }
+        }
+
         // ── Register with the graphics font cache (glint_text / DrawText path) ──
         if (pG)
-          pG->LoadFont(graphicsFontId.c_str(),
+          pG->LoadFont(variantFontID.c_str(),
                        const_cast<void*>(fontReq.responseData->data()),
                        static_cast<int>(fontReq.responseData->size()));
 
@@ -2996,14 +3012,18 @@ private:
             glint_font_registry::registerTypeface(fontFamily, tf);
             glint_font_registry::loadedFonts().insert(fontFamily);
 
+            // Concrete graphics/font ID for this specific @font-face variant.
+            glint_font_registry::registerTypeface(variantFontID, tf);
+            glint_font_registry::loadedFonts().insert(variantFontID);
+
             // Legacy weight key: "Kanit@100" → for getTypefaceWeighted().
             glint_font_registry::registerTypeface(weightedKey, tf);
             glint_font_registry::loadedFonts().insert(weightedKey);
 
             // Three-axis key: "Kanit@100@italic" → for getTypefaceByAxes().
-            // fontId is the concrete variant loaded into the graphics backend.
+            // fontId = concrete per-variant graphics font ID.
             glint_font_registry::registerTypefaceAxes(
-              fontFamily, fontWeightDescriptor, fontStyleDescriptor, tf, graphicsFontId);
+              fontFamily, fontWeightDescriptor, fontStyleDescriptor, tf, variantFontID);
           }
         }
 

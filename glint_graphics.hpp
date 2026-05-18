@@ -17,6 +17,7 @@
 #include <memory>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -455,8 +456,39 @@ public:
 	void SetWindow(void* windowHandle) { mWindowHandle = windowHandle; }
 	void SetSize(int width, int height) { mWidth = width; mHeight = height; }
 
-	bool LoadFont(const char* /*fontID*/, const char* /*fileNameOrResID*/) { return false; }
-	bool LoadFont(const char* /*fontID*/, void* /*data*/, int /*size*/) { return false; }
+	bool LoadFont(const char* fontID, const char* fileNameOrResID)
+	{
+		if (!fontID || !fontID[0] || !fileNameOrResID || !fileNameOrResID[0])
+			return false;
+
+		auto mgr = makeFontMgr();
+		if (!mgr) return false;
+
+		auto data = SkData::MakeFromFileName(fileNameOrResID);
+		if (!data) return false;
+		auto tf = mgr->makeFromData(std::move(data));
+		if (!tf) return false;
+
+		mTypefaces[fontID] = std::move(tf);
+		return true;
+	}
+
+	bool LoadFont(const char* fontID, void* data, int size)
+	{
+		if (!fontID || !fontID[0] || !data || size <= 0)
+			return false;
+
+		auto mgr = makeFontMgr();
+		if (!mgr) return false;
+
+		auto copied = SkData::MakeWithCopy(data, static_cast<size_t>(size));
+		if (!copied) return false;
+		auto tf = mgr->makeFromData(std::move(copied));
+		if (!tf) return false;
+
+		mTypefaces[fontID] = std::move(tf);
+		return true;
+	}
 
 	glint_bitmap LoadBitmap(const char* fileNameOrPath, int numFrames = 1)
 	{
@@ -653,21 +685,16 @@ public:
 	{
 		if (auto* canvas = static_cast<SkCanvas*>(mDrawContext))
 		{
-			sk_sp<SkFontMgr> mgr;
-#if defined(SK_BUILD_FOR_WIN)
-			mgr = SkFontMgr_New_DirectWrite();
-#elif defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
-			mgr = SkFontMgr_New_CoreText(nullptr);
-#else
-			mgr = SkFontMgr::RefEmpty();
-#endif
+			sk_sp<SkFontMgr> mgr = makeFontMgr();
 			sk_sp<SkTypeface> typeface;
 			if (!text.mFont.empty())
 			{
-				typeface = glint_font_registry::getTypeface(text.mFont.c_str());
-				if (!typeface && mgr)
-					typeface = mgr->legacyMakeTypeface(text.mFont.c_str(), SkFontStyle::Normal());
+				auto it = mTypefaces.find(text.mFont);
+				if (it != mTypefaces.end())
+					typeface = it->second;
 			}
+			if (!typeface && mgr && !text.mFont.empty())
+				typeface = mgr->legacyMakeTypeface(text.mFont.c_str(), SkFontStyle::Normal());
 			SkFont font(typeface, text.mSize > 0.f ? text.mSize : 12.f);
 			font.setSubpixel(true);
 			font.setEdging(SkFont::Edging::kSubpixelAntiAlias);
@@ -748,10 +775,22 @@ public:
 	}
 
 private:
+	static sk_sp<SkFontMgr> makeFontMgr()
+	{
+#if defined(SK_BUILD_FOR_WIN)
+		return SkFontMgr_New_DirectWrite();
+#elif defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
+		return SkFontMgr_New_CoreText(nullptr);
+#else
+		return SkFontMgr::RefEmpty();
+#endif
+	}
+
 	void* mDrawContext = nullptr;
 	void* mWindowHandle = nullptr;
 	int mWidth = 0;
 	int mHeight = 0;
+	std::unordered_map<std::string, sk_sp<SkTypeface>> mTypefaces;
 	SkPath mPath;
 };
 

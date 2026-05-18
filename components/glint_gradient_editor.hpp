@@ -758,9 +758,9 @@ private:
 
     void _showOrUpdateFloatingPicker()
     {
-    #if GLINT_PLATFORM_IOS || (!defined(_WIN32) && !defined(OS_WIN) && !GLINT_PLATFORM_MAC)
+#if !defined(_WIN32) && !defined(OS_WIN) && (!defined(__APPLE__) || TARGET_OS_IPHONE)
         return;
-    #elif GLINT_PLATFORM_MAC
+#elif defined(__APPLE__) && !TARGET_OS_IPHONE
         const int idx = mSelectedStop;
         if (idx < 0 || idx >= (int)stops.size()) return;
         if (!mRoot || !mRoot->macWindow) return;

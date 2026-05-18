@@ -304,12 +304,12 @@ private:
     return (mRoot && mRoot->linuxWindow)
       ? mRoot->linuxWindow->contentRectToScreen(cl, ct, bW, bH)
       : RECT{};
-#elif GLINT_PLATFORM_IOS
-    return RECT{};
-#else
+#elif defined(__APPLE__) && !TARGET_OS_IPHONE
     return (mRoot && mRoot->macWindow)
       ? mRoot->macWindow->contentRectToScreen(cl, ct, bW, bH)
       : RECT{};
+#else
+    return RECT{};
 #endif
   }
 
