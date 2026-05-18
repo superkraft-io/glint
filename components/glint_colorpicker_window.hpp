@@ -1,14 +1,5 @@
 #pragma once
 
-#if defined(__APPLE__)
-#include <TargetConditionals.h>
-#endif
-
-#if defined(__APPLE__) && TARGET_OS_IPHONE && !defined(GLINT_RECT_STRUCT_DEFINED)
-#define GLINT_RECT_STRUCT_DEFINED
-struct RECT { int left = 0, top = 0, right = 0, bottom = 0; };
-#endif
-
 /**
  * glint_colorpicker_window.hpp
  * A standalone Win32 popup window hosting a single glint_colorpicker.
