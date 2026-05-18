@@ -16,6 +16,7 @@
 
 #include "glint_datepicker_window.hpp"
 #include "../default_style.hpp"
+#include "../platform/glint_apple_platform.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -80,12 +81,14 @@ public:
     _buildChildren();
 
     // Pre-warm the shared popup window on first construction.
+#if !GLINT_PLATFORM_IOS
     if (!_sharedWindow())
     {
       RECT dummy{};
       _sharedWindow() = glint_datepicker_window::open(
         mYear, mMonth, mDay, dummy, nullptr, nullptr);
     }
+#endif
   }
 
   void setDate(int year, int month, int day)
@@ -301,6 +304,8 @@ private:
     return (mRoot && mRoot->linuxWindow)
       ? mRoot->linuxWindow->contentRectToScreen(cl, ct, bW, bH)
       : RECT{};
+#elif GLINT_PLATFORM_IOS
+    return RECT{};
 #else
     return (mRoot && mRoot->macWindow)
       ? mRoot->macWindow->contentRectToScreen(cl, ct, bW, bH)
@@ -310,6 +315,10 @@ private:
 
   void _openCalendar()
   {
+#if GLINT_PLATFORM_IOS
+    return;
+#endif
+
     mCalendarOpen = true;
     const RECT anchor = _anchorScreenRect();
 
@@ -328,6 +337,11 @@ private:
 
   void _closeCalendar()
   {
+#if GLINT_PLATFORM_IOS
+    mCalendarOpen = false;
+    return;
+#endif
+
     if (!mCalendarOpen) return;
     mCalendarOpen = false;
     _sharedWindow()->hide();

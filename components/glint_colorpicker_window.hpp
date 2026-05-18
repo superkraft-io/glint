@@ -22,6 +22,8 @@
  *   w->destroy();   // async; afterRun() deletes *this
  */
 
+#include "../platform/glint_apple_platform.hpp"
+
 #if defined(_WIN32) || defined(OS_WIN)
 
 #include "../glint_window.hpp"   // glint_window_win32 + all components
@@ -370,6 +372,36 @@ private:
 
     setPanelFrameOrigin(x, y);
   }
+};
+
+#elif GLINT_PLATFORM_IOS
+
+#include "glint_colorpicker.hpp"
+
+#include <functional>
+
+class glint_colorpicker_window
+{
+public:
+  static glint_colorpicker_window* open(
+    glint_color,
+    RECT,
+    std::function<void(glint_color)> = nullptr,
+    std::function<void()> = nullptr)
+  {
+    return new glint_colorpicker_window();
+  }
+
+  void reopen(glint_color,
+              RECT,
+              std::function<void(glint_color)>,
+              std::function<void()>)
+  {
+  }
+
+  void hide() {}
+
+  void destroy() { delete this; }
 };
 
 #else  // ── macOS implementation ─────────────────────────────────────────────────

@@ -23,6 +23,8 @@
  * there is not enough space underneath.
  */
 
+#include "../platform/glint_apple_platform.hpp"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Windows implementation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -450,6 +452,43 @@ private:
 // ─────────────────────────────────────────────────────────────────────────────
 // macOS implementation
 // ─────────────────────────────────────────────────────────────────────────────
+
+#elif GLINT_PLATFORM_IOS
+
+#include "glint_datepicker.hpp"
+
+#include <functional>
+
+class glint_datepicker_window
+{
+public:
+  static glint_datepicker_window* open(
+    int,
+    int,
+    int,
+    RECT,
+    std::function<void(int,int,int)> = nullptr,
+    std::function<void()> = nullptr)
+  {
+    return new glint_datepicker_window();
+  }
+
+  void reopen(int,
+              int,
+              int,
+              RECT,
+              std::function<void(int,int,int)>,
+              std::function<void()>,
+              glint_element* = nullptr)
+  {
+  }
+
+  bool isVisible() const { return false; }
+
+  void hide() {}
+
+  void destroy() { delete this; }
+};
 
 #else
 

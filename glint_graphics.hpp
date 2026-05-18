@@ -38,6 +38,10 @@
 #include "include/core/SkBlendMode.h"
 #include "include/core/SkPath.h"
 #include "include/core/SkPathEffect.h"
+
+namespace glint_font_registry {
+sk_sp<SkTypeface> getTypeface(const char* fontID);
+}
 #include "include/effects/SkDashPathEffect.h"
 #include "include/core/SkRect.h"
 #include "include/core/SkStream.h"
@@ -658,7 +662,12 @@ public:
 			mgr = SkFontMgr::RefEmpty();
 #endif
 			sk_sp<SkTypeface> typeface;
-			if (mgr && !text.mFont.empty()) typeface = mgr->legacyMakeTypeface(text.mFont.c_str(), SkFontStyle::Normal());
+			if (!text.mFont.empty())
+			{
+				typeface = glint_font_registry::getTypeface(text.mFont.c_str());
+				if (!typeface && mgr)
+					typeface = mgr->legacyMakeTypeface(text.mFont.c_str(), SkFontStyle::Normal());
+			}
 			SkFont font(typeface, text.mSize > 0.f ? text.mSize : 12.f);
 			font.setSubpixel(true);
 			font.setEdging(SkFont::Edging::kSubpixelAntiAlias);

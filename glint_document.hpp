@@ -2843,6 +2843,67 @@ private:
     if (!onRequest) return;
     glint_canvas* pG = mCanvas.mpG;
 
+    auto extractFontUrls = [](const GlintCssDeclaration& decl) {
+      std::vector<std::string> urls;
+
+      const auto pushUrl = [&urls](std::string value) {
+        auto isWs = [](unsigned char ch) { return std::isspace(ch) != 0; };
+        while (!value.empty() && isWs((unsigned char) value.front())) value.erase(value.begin());
+        while (!value.empty() && isWs((unsigned char) value.back())) value.pop_back();
+        if (value.size() >= 2)
+        {
+          const char first = value.front();
+          const char last  = value.back();
+          if ((first == '"' && last == '"') || (first == '\'' && last == '\''))
+            value = value.substr(1, value.size() - 2);
+        }
+        if (!value.empty())
+          urls.push_back(std::move(value));
+      };
+
+      for (std::size_t i = 0; i < decl.valueTokens.size(); ++i)
+      {
+        const auto& tok = decl.valueTokens[i];
+        if (tok.type == GlintCssTokenType::URL)
+        {
+          pushUrl(tok.value);
+          continue;
+        }
+        if (tok.type == GlintCssTokenType::FUNCTION && tok.value == "url")
+        {
+          std::size_t j = i + 1;
+          while (j < decl.valueTokens.size() && decl.valueTokens[j].type == GlintCssTokenType::WHITESPACE) ++j;
+          if (j < decl.valueTokens.size() && decl.valueTokens[j].type == GlintCssTokenType::STRING)
+            pushUrl(decl.valueTokens[j].value);
+        }
+      }
+
+      if (!urls.empty())
+        return urls;
+
+      const std::string& raw = decl.value;
+      std::size_t pos = 0;
+      while (pos < raw.size())
+      {
+        std::size_t urlPos = raw.find("url", pos);
+        if (urlPos == std::string::npos)
+          break;
+
+        std::size_t openPos = raw.find('(', urlPos + 3);
+        if (openPos == std::string::npos)
+          break;
+
+        std::size_t closePos = raw.find(')', openPos + 1);
+        if (closePos == std::string::npos)
+          break;
+
+        pushUrl(raw.substr(openPos + 1, closePos - openPos - 1));
+        pos = closePos + 1;
+      }
+
+      return urls;
+    };
+
     for (const auto& rule : sheet.rules)
     {
       if (rule.kind != GlintCssStylesheet::Rule::Kind::AT) continue;
@@ -2891,28 +2952,19 @@ private:
       // Skip if this exact variant is already registered.
       if (glint_font_registry::isLoaded(axisKey)) continue;
 
-      // Iterate src token stream — the CSS tokenizer produces two forms:
-      //   Unquoted  url(/a/b.ttf)   → URL token,  .value = "/a/b.ttf"
-      //   Quoted    url("/a/b.ttf") → FUNCTION("url") + STRING + CLOSE_PAREN
-      const auto& toks = srcDecl->valueTokens;
-      for (std::size_t i = 0; i < toks.size(); ++i)
+      const std::vector<std::string> fontUrls = extractFontUrls(*srcDecl);
+      for (const std::string& fontUrl : fontUrls)
       {
-        std::string fontUrl;
-
-        if (toks[i].type == GlintCssTokenType::URL)
-        {
-          fontUrl = toks[i].value;
-        }
-        else if (toks[i].type == GlintCssTokenType::FUNCTION &&
-                 toks[i].value == "url")
-        {
-          std::size_t j = i + 1;
-          while (j < toks.size() && toks[j].type == GlintCssTokenType::WHITESPACE) ++j;
-          if (j < toks.size() && toks[j].type == GlintCssTokenType::STRING)
-            fontUrl = toks[j].value;
-        }
-
         if (fontUrl.empty()) continue;
+
+        std::string graphicsFontId = fontFamily;
+        const std::filesystem::path fontPath(fontUrl);
+        if (fontPath.has_stem())
+        {
+          const std::string stem = fontPath.stem().string();
+          if (!stem.empty())
+            graphicsFontId = stem;
+        }
 
         glint_resource_request fontReq;
         fontReq.url    = fontUrl;
@@ -2926,7 +2978,7 @@ private:
 
         // ── Register with the graphics font cache (glint_text / DrawText path) ──
         if (pG)
-          pG->LoadFont(fontFamily.c_str(),
+          pG->LoadFont(graphicsFontId.c_str(),
                        const_cast<void*>(fontReq.responseData->data()),
                        static_cast<int>(fontReq.responseData->size()));
 
@@ -2937,6 +2989,9 @@ private:
           auto tf = mgr->makeFromData(fontReq.responseData);
           if (tf)
           {
+            glint_font_registry::registerTypeface(graphicsFontId, tf);
+            glint_font_registry::loadedFonts().insert(graphicsFontId);
+
             // Register under the exact font-family name used by CSS text nodes.
             glint_font_registry::registerTypeface(fontFamily, tf);
             glint_font_registry::loadedFonts().insert(fontFamily);
@@ -2946,9 +3001,9 @@ private:
             glint_font_registry::loadedFonts().insert(weightedKey);
 
             // Three-axis key: "Kanit@100@italic" → for getTypefaceByAxes().
-            // fontId = fontFamily (the name passed to pG->LoadFont above).
+            // fontId is the concrete variant loaded into the graphics backend.
             glint_font_registry::registerTypefaceAxes(
-              fontFamily, fontWeightDescriptor, fontStyleDescriptor, tf, fontFamily);
+              fontFamily, fontWeightDescriptor, fontStyleDescriptor, tf, graphicsFontId);
           }
         }
 

@@ -28,6 +28,7 @@
 #include "../glint_element.hpp"
 #include "../default_style.hpp"
 #include "../glint_document.hpp"       // needed for mRoot->hwnd (screen-space conversion)
+#include "../platform/glint_apple_platform.hpp"
 #include "glint_colorpicker_window.hpp"   // standalone popup color picker window
 #include "glint_dial.hpp"          // glint_dial — circular angle dial
 
@@ -757,9 +758,9 @@ private:
 
     void _showOrUpdateFloatingPicker()
     {
-#if !defined(_WIN32) && !defined(OS_WIN) && !defined(__APPLE__)
+    #if GLINT_PLATFORM_IOS || (!defined(_WIN32) && !defined(OS_WIN) && !GLINT_PLATFORM_MAC)
         return;
-#elif defined(__APPLE__)
+    #elif GLINT_PLATFORM_MAC
         const int idx = mSelectedStop;
         if (idx < 0 || idx >= (int)stops.size()) return;
         if (!mRoot || !mRoot->macWindow) return;

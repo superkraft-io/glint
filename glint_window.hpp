@@ -22,20 +22,4 @@
  *   Linux   — not yet implemented
  */
 
-#include "platform/glint_window_base.hpp"
-
-#if defined(_WIN32)
-  #include "platform/win32/glint_window_win32.hpp"
-  using glint_window = glint_window_win32;
-
-#elif defined(__APPLE__)
-  #include "platform/mac/glint_window_mac.hpp"
-  // glint_window is aliased to glint_window_mac inside glint_window_mac.hpp
-
-#elif defined(__linux__)
-  #include "platform/linux/glint_window_linux.hpp"
-  using glint_window = glint_window_linux;
-
-#else
-  static_assert(false, "glint_window: unsupported platform.");
-#endif
+#include "platform/glint_window.hpp"
