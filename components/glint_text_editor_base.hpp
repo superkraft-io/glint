@@ -97,6 +97,52 @@ public:
   /** Returns the current text-cursor byte index (always on a codepoint boundary). */
   int getCursorPos() const { return mCursorPos; }
 
+  bool hasSelection() const
+  {
+    return mSelStart != -1 && mSelStart != mSelEnd;
+  }
+
+  bool canCopySelection() const
+  {
+    return hasSelection();
+  }
+
+  bool canCutSelection() const
+  {
+    return !readonly && hasSelection();
+  }
+
+  bool canPasteFromClipboard() const
+  {
+    return !readonly && !getClipboard().empty();
+  }
+
+  bool canSelectAllText() const
+  {
+    return !mText.empty() && (!hasSelection() || std::min(mSelStart, mSelEnd) != 0
+                              || std::max(mSelStart, mSelEnd) != static_cast<int>(mText.size()));
+  }
+
+  void copySelection()
+  {
+    copy();
+  }
+
+  void cutSelection()
+  {
+    if (!readonly) cut();
+  }
+
+  void pasteFromClipboard()
+  {
+    if (!readonly) paste();
+  }
+
+  void selectAllText()
+  {
+    selectAll();
+  }
+
   void setValue(const std::string& s)
   {
     setValueInternal(s, true);

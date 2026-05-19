@@ -104,6 +104,7 @@ class glint_textarea : public glint_text_editor_base
 public:
   // ── Public fields ──────────────────────────────────────────────────────────
   std::string placeholder;
+  std::string inputmode;
   float       lineHeight = 1.5f;   // multiplier applied to fontSize
 
   // ── Construction ──────────────────────────────────────────────────────────

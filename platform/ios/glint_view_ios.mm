@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -98,6 +99,55 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
   return false;
 }
 
+bool glint_inputmode_is_none(std::string_view inputmode)
+{
+  return inputmode == "none";
+}
+
+int glint_keyboard_type_from_inputmode(std::string_view inputmode)
+{
+  if (inputmode == "decimal") return UIKeyboardTypeDecimalPad;
+  if (inputmode == "numeric") return UIKeyboardTypeNumberPad;
+  if (inputmode == "tel")     return UIKeyboardTypePhonePad;
+  if (inputmode == "search")  return UIKeyboardTypeWebSearch;
+  if (inputmode == "email")   return UIKeyboardTypeEmailAddress;
+  if (inputmode == "url")     return UIKeyboardTypeURL;
+  return UIKeyboardTypeDefault;
+}
+
+int glint_keyboard_type_for_input(const glint_text_input& input)
+{
+  if (!input.inputmode.empty())
+    return glint_keyboard_type_from_inputmode(input.inputmode);
+
+  if (input.type == "email")  return UIKeyboardTypeEmailAddress;
+  if (input.type == "number") return UIKeyboardTypeDecimalPad;
+  if (input.type == "search") return UIKeyboardTypeWebSearch;
+  if (input.type == "tel")    return UIKeyboardTypePhonePad;
+  if (input.type == "url")    return UIKeyboardTypeURL;
+  return UIKeyboardTypeDefault;
+}
+
+int glint_keyboard_type_for_textarea(const glint_textarea& textarea)
+{
+  if (!textarea.inputmode.empty())
+    return glint_keyboard_type_from_inputmode(textarea.inputmode);
+  return UIKeyboardTypeDefault;
+}
+
+glint_text_editor_base* glint_focused_text_editor(glint_document* doc)
+{
+  if (!doc)
+    return nullptr;
+
+  return dynamic_cast<glint_text_editor_base*>(doc->getFocusedNode());
+}
+
+const glint_text_editor_base* glint_focused_text_editor(const glint_document* doc)
+{
+  return glint_focused_text_editor(const_cast<glint_document*>(doc));
+}
+
 } // namespace
 
 @class GlintKeyboardProxyField;
@@ -109,14 +159,17 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
   UIPinchGestureRecognizer* pinchRecognizer;
   UIRotationGestureRecognizer* rotationRecognizer;
   UIPanGestureRecognizer* twoFingerPanRecognizer;
+  UILongPressGestureRecognizer* editMenuRecognizer;
   GlintKeyboardProxyField* keyboardProxyField;
   int lastKeyboardType;
   int lastReturnKeyType;
   BOOL lastSecureEntry;
   BOOL lastWantedKeyboard;
+  BOOL lastSuppressesSoftwareKeyboard;
 }
 - (instancetype)initWithView:(glint_view_ios*)view frame:(CGRect)frame;
 - (void)displayLinkFired:(CADisplayLink*)displayLink;
+- (void)handleEditMenuLongPress:(UILongPressGestureRecognizer*)recognizer;
 - (void)syncKeyboardFocus;
 @end
 
@@ -137,6 +190,58 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
 - (BOOL)hasText
 {
   return cppView ? cppView->_focusedNodeHasText() : NO;
+}
+
+- (UIView*)inputView
+{
+  if (!cppView || !cppView->_focusedSuppressesSoftwareKeyboard())
+    return nil;
+
+  static UIView* emptyInputView = nil;
+  if (!emptyInputView)
+    emptyInputView = [[UIView alloc] initWithFrame:CGRectZero];
+  return emptyInputView;
+}
+
+- (BOOL)canPerformAction:(SEL)action withSender:(id)sender
+{
+  (void)sender;
+  if (!cppView)
+    return NO;
+
+  if (action == @selector(cut:))       return cppView->_focusedCanCut() ? YES : NO;
+  if (action == @selector(copy:))      return cppView->_focusedCanCopy() ? YES : NO;
+  if (action == @selector(paste:))     return cppView->_focusedCanPaste() ? YES : NO;
+  if (action == @selector(selectAll:)) return cppView->_focusedCanSelectAll() ? YES : NO;
+  return NO;
+}
+
+- (void)cut:(id)sender
+{
+  (void)sender;
+  if (cppView)
+    cppView->_focusedCut();
+}
+
+- (void)copy:(id)sender
+{
+  (void)sender;
+  if (cppView)
+    cppView->_focusedCopy();
+}
+
+- (void)paste:(id)sender
+{
+  (void)sender;
+  if (cppView)
+    cppView->_focusedPaste();
+}
+
+- (void)selectAll:(id)sender
+{
+  (void)sender;
+  if (cppView)
+    cppView->_focusedSelectAll();
 }
 
 - (void)insertText:(NSString*)text
@@ -257,6 +362,11 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
     twoFingerPanRecognizer.delegate = self;
     [self addGestureRecognizer:twoFingerPanRecognizer];
 
+    editMenuRecognizer = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleEditMenuLongPress:)];
+    editMenuRecognizer.minimumPressDuration = 0.4;
+    editMenuRecognizer.delegate = self;
+    [self addGestureRecognizer:editMenuRecognizer];
+
     keyboardProxyField = [[GlintKeyboardProxyField alloc] initWithFrame:CGRectMake(0.0, 0.0, 1.0, 1.0)];
     keyboardProxyField->cppView = view;
     keyboardProxyField.alpha = 1.0;
@@ -267,6 +377,7 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
     lastReturnKeyType = UIReturnKeyDefault;
     lastSecureEntry = NO;
     lastWantedKeyboard = NO;
+    lastSuppressesSoftwareKeyboard = NO;
   }
   return self;
 }
@@ -278,6 +389,7 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
   [pinchRecognizer release];
   [rotationRecognizer release];
   [twoFingerPanRecognizer release];
+  [editMenuRecognizer release];
   [super dealloc];
 }
 
@@ -289,6 +401,52 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
 - (BOOL)hasText
 {
   return cppView ? cppView->_focusedNodeHasText() : NO;
+}
+
+- (UIView*)inputView
+{
+  return [keyboardProxyField inputView];
+}
+
+- (BOOL)canPerformAction:(SEL)action withSender:(id)sender
+{
+  (void)sender;
+  if (!cppView)
+    return NO;
+
+  if (action == @selector(cut:))       return cppView->_focusedCanCut() ? YES : NO;
+  if (action == @selector(copy:))      return cppView->_focusedCanCopy() ? YES : NO;
+  if (action == @selector(paste:))     return cppView->_focusedCanPaste() ? YES : NO;
+  if (action == @selector(selectAll:)) return cppView->_focusedCanSelectAll() ? YES : NO;
+  return NO;
+}
+
+- (void)cut:(id)sender
+{
+  (void)sender;
+  if (cppView)
+    cppView->_focusedCut();
+}
+
+- (void)copy:(id)sender
+{
+  (void)sender;
+  if (cppView)
+    cppView->_focusedCopy();
+}
+
+- (void)paste:(id)sender
+{
+  (void)sender;
+  if (cppView)
+    cppView->_focusedPaste();
+}
+
+- (void)selectAll:(id)sender
+{
+  (void)sender;
+  if (cppView)
+    cppView->_focusedSelectAll();
 }
 
 - (void)insertText:(NSString*)text
@@ -472,6 +630,31 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
     cppView->_handleDisplayLink();
 }
 
+- (void)handleEditMenuLongPress:(UILongPressGestureRecognizer*)recognizer
+{
+  if (!cppView || recognizer.state != UIGestureRecognizerStateBegan)
+    return;
+
+  if (!cppView->_focusedNodeWantsKeyboard())
+    return;
+
+  if (![keyboardProxyField isFirstResponder])
+    [keyboardProxyField becomeFirstResponder];
+
+  const bool hasActions = cppView->_focusedCanCut() || cppView->_focusedCanCopy()
+                       || cppView->_focusedCanPaste() || cppView->_focusedCanSelectAll();
+  if (!hasActions)
+    return;
+
+  const CGPoint pt = [recognizer locationInView:self];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  UIMenuController* menu = [UIMenuController sharedMenuController];
+  [menu setTargetRect:CGRectMake(pt.x, pt.y, 1.0, 1.0) inView:self];
+  [menu setMenuVisible:YES animated:YES];
+#pragma clang diagnostic pop
+}
+
 - (void)syncKeyboardFocus
 {
   if (!cppView)
@@ -482,10 +665,12 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
   const int keyboardType = cppView->_focusedKeyboardType();
   const int returnKeyType = cppView->_focusedReturnKeyType();
   const BOOL secureEntry = cppView->_focusedSecureEntry() ? YES : NO;
+  const BOOL suppressesSoftwareKeyboard = cppView->_focusedSuppressesSoftwareKeyboard() ? YES : NO;
   const BOOL traitsChanged = lastWantedKeyboard != wantsKeyboard
                           || lastKeyboardType != keyboardType
                           || lastReturnKeyType != returnKeyType
-                          || lastSecureEntry != secureEntry;
+                          || lastSecureEntry != secureEntry
+                          || lastSuppressesSoftwareKeyboard != suppressesSoftwareKeyboard;
 
   if (wantsKeyboard)
   {
@@ -509,6 +694,7 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
   lastKeyboardType = keyboardType;
   lastReturnKeyType = returnKeyType;
   lastSecureEntry = secureEntry;
+  lastSuppressesSoftwareKeyboard = suppressesSoftwareKeyboard;
 }
 
 @end
@@ -702,19 +888,23 @@ bool glint_view_ios::_focusedNodeWantsKeyboard() const
   return typeName && (std::strcmp(typeName, "text-input") == 0 || std::strcmp(typeName, "textarea") == 0);
 }
 
-bool glint_view_ios::_focusedNodeHasText() const
+bool glint_view_ios::_focusedSuppressesSoftwareKeyboard() const
 {
   if (!mDocument)
     return false;
 
   const glint_element* focused = mDocument->getFocusedNode();
-  if (!focused)
-    return false;
-
   if (const auto* input = dynamic_cast<const glint_text_input*>(focused))
-    return !input->getValue().empty();
+    return glint_inputmode_is_none(input->inputmode);
   if (const auto* textarea = dynamic_cast<const glint_textarea*>(focused))
-    return !textarea->getValue().empty();
+    return glint_inputmode_is_none(textarea->inputmode);
+  return false;
+}
+
+bool glint_view_ios::_focusedNodeHasText() const
+{
+  if (const auto* editor = glint_focused_text_editor(mDocument.get()))
+    return !editor->getValue().empty();
   return false;
 }
 
@@ -725,10 +915,9 @@ int glint_view_ios::_focusedKeyboardType() const
 
   const glint_element* focused = mDocument->getFocusedNode();
   if (const auto* input = dynamic_cast<const glint_text_input*>(focused))
-  {
-    if (input->type == "number") return UIKeyboardTypeDecimalPad;
-    if (input->type == "email")  return UIKeyboardTypeEmailAddress;
-  }
+    return glint_keyboard_type_for_input(*input);
+  if (const auto* textarea = dynamic_cast<const glint_textarea*>(focused))
+    return glint_keyboard_type_for_textarea(*textarea);
 
   return UIKeyboardTypeDefault;
 }
@@ -749,6 +938,78 @@ bool glint_view_ios::_focusedSecureEntry() const
   const glint_element* focused = mDocument->getFocusedNode();
   if (const auto* input = dynamic_cast<const glint_text_input*>(focused))
     return input->type == "password";
+  return false;
+}
+
+bool glint_view_ios::_focusedCanCut() const
+{
+  if (const auto* editor = glint_focused_text_editor(mDocument.get()))
+    return editor->canCutSelection();
+  return false;
+}
+
+bool glint_view_ios::_focusedCanCopy() const
+{
+  if (const auto* editor = glint_focused_text_editor(mDocument.get()))
+    return editor->canCopySelection();
+  return false;
+}
+
+bool glint_view_ios::_focusedCanPaste() const
+{
+  if (const auto* editor = glint_focused_text_editor(mDocument.get()))
+    return editor->canPasteFromClipboard();
+  return false;
+}
+
+bool glint_view_ios::_focusedCanSelectAll() const
+{
+  if (const auto* editor = glint_focused_text_editor(mDocument.get()))
+    return editor->canSelectAllText();
+  return false;
+}
+
+bool glint_view_ios::_focusedCut()
+{
+  if (auto* editor = glint_focused_text_editor(mDocument.get()))
+  {
+    editor->cutSelection();
+    requestRedraw();
+    return true;
+  }
+  return false;
+}
+
+bool glint_view_ios::_focusedCopy()
+{
+  if (auto* editor = glint_focused_text_editor(mDocument.get()))
+  {
+    editor->copySelection();
+    requestRedraw();
+    return true;
+  }
+  return false;
+}
+
+bool glint_view_ios::_focusedPaste()
+{
+  if (auto* editor = glint_focused_text_editor(mDocument.get()))
+  {
+    editor->pasteFromClipboard();
+    requestRedraw();
+    return true;
+  }
+  return false;
+}
+
+bool glint_view_ios::_focusedSelectAll()
+{
+  if (auto* editor = glint_focused_text_editor(mDocument.get()))
+  {
+    editor->selectAllText();
+    requestRedraw();
+    return true;
+  }
   return false;
 }
 

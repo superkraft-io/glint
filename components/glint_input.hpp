@@ -58,6 +58,9 @@ public:
   /** Input type: "text" | "number" | "password" | "email" */
   std::string type = "text";
 
+  /** Virtual keyboard hint only; does not change validation semantics. */
+  std::string inputmode;
+
   /** Placeholder text shown when the field is empty and unfocused. */
   std::string placeholder;
 
@@ -744,6 +747,9 @@ public:
   /** Input type: "text" | "number" | "password" | "email" | "range" | "checkbox" | "radio" */
   std::string type        = "text";
 
+  /** Virtual keyboard hint only; does not change validation semantics. */
+  std::string inputmode;
+
   /** Placeholder text shown when the field is empty and unfocused. */
   std::string placeholder;
 
@@ -869,6 +875,7 @@ public:
   std::string getAttribute(const std::string& name, bool& found) const override
   {
     if (name == "type") { found = true; return type.empty() ? "text" : type; }
+    if (name == "inputmode") { found = true; return inputmode; }
     return glint_element::getAttribute(name, found);
   }
 
@@ -1017,6 +1024,7 @@ private:
     if (mTextInput)
     {
       mTextInput->type        = type;
+      mTextInput->inputmode   = inputmode;
       mTextInput->min         = min;
       mTextInput->max         = max;
       mTextInput->placeholder = placeholder;
