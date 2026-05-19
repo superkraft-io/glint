@@ -72,6 +72,32 @@ bool glint_should_schedule_redraw(glint_document* doc, bool redrawRequested)
   return std::chrono::steady_clock::now() >= focused->nextPeriodicRedrawTime();
 }
 
+bool glint_node_wants_keyboard(const glint_element* node)
+{
+  const char* typeName = node ? node->typeName() : nullptr;
+  return typeName && (std::strcmp(typeName, "text-input") == 0 || std::strcmp(typeName, "textarea") == 0);
+}
+
+bool glint_hit_targets_keyboard(const glint_element* hit)
+{
+  for (const glint_element* node = hit; node; node = node->mParent)
+  {
+    if (glint_node_wants_keyboard(node))
+      return true;
+  }
+  return false;
+}
+
+bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_element* focused)
+{
+  for (const glint_element* node = hit; node; node = node->mParent)
+  {
+    if (node == focused || glint_node_wants_keyboard(node))
+      return true;
+  }
+  return false;
+}
+
 } // namespace
 
 @class GlintKeyboardProxyField;
@@ -480,6 +506,8 @@ bool glint_should_schedule_redraw(glint_document* doc, bool redrawRequested)
   else if (proxyResponder)
   {
     [keyboardProxyField resignFirstResponder];
+    [self endEditing:YES];
+    [self.window endEditing:YES];
   }
 
   lastWantedKeyboard = wantsKeyboard ? YES : NO;
@@ -775,6 +803,15 @@ void glint_view_ios::_handleTouchDown(float x, float y)
   if (!mDocument)
     return;
 
+  const glint_element* hit = mDocument->mCanvas.HitTest(x, y);
+  mLastTouchTargetWantsKeyboard = glint_hit_targets_keyboard(hit);
+
+  if (const glint_element* focused = mDocument->getFocusedNode(); glint_node_wants_keyboard(focused))
+  {
+    if (!glint_hit_keeps_keyboard_focus(hit, focused))
+      mDocument->SetFocus(nullptr);
+  }
+
   mPrevX = x;
   mPrevY = y;
   mDocument->OnMouseDown(x, y, glint_touch_mod(true));
@@ -801,6 +838,8 @@ void glint_view_ios::_handleTouchUp(float x, float y)
     return;
 
   mDocument->OnMouseUp(x, y, glint_touch_mod(false));
+  if (!mLastTouchTargetWantsKeyboard && _focusedNodeWantsKeyboard())
+    mDocument->SetFocus(nullptr);
   _syncKeyboardFocus();
   requestRedraw();
 }
@@ -811,6 +850,8 @@ void glint_view_ios::_handleTouchCancel()
     return;
 
   mDocument->OnMouseOut();
+  if (!mLastTouchTargetWantsKeyboard && _focusedNodeWantsKeyboard())
+    mDocument->SetFocus(nullptr);
   _syncKeyboardFocus();
   requestRedraw();
 }

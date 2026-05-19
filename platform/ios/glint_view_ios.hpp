@@ -86,4 +86,5 @@ private:
   void* mActiveTouch = nullptr;    // UITouch* (weak identity only)
   std::atomic<bool> mFramePending{false};
   bool mRedrawRequested = false;
+  bool mLastTouchTargetWantsKeyboard = false;
 };
