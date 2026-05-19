@@ -120,7 +120,7 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
 - (void)syncKeyboardFocus;
 @end
 
-@interface GlintKeyboardProxyField : UITextField
+@interface GlintKeyboardProxyField : UIView <UIKeyInput, UITextInputTraits>
 {
 @public
   glint_view_ios* cppView;
@@ -136,7 +136,7 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
 
 - (BOOL)hasText
 {
-  return cppView ? cppView->_focusedNodeHasText() : [super hasText];
+  return cppView ? cppView->_focusedNodeHasText() : NO;
 }
 
 - (void)insertText:(NSString*)text
@@ -261,11 +261,6 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
     keyboardProxyField->cppView = view;
     keyboardProxyField.alpha = 1.0;
     keyboardProxyField.backgroundColor = UIColor.clearColor;
-    keyboardProxyField.textColor = UIColor.clearColor;
-    keyboardProxyField.tintColor = UIColor.clearColor;
-    keyboardProxyField.borderStyle = UITextBorderStyleNone;
-    keyboardProxyField.autocorrectionType = UITextAutocorrectionTypeNo;
-    keyboardProxyField.spellCheckingType = UITextSpellCheckingTypeNo;
     [self addSubview:keyboardProxyField];
 
     lastKeyboardType = UIKeyboardTypeDefault;
@@ -743,9 +738,6 @@ int glint_view_ios::_focusedReturnKeyType() const
   if (!mDocument)
     return UIReturnKeyDefault;
 
-  const glint_element* focused = mDocument->getFocusedNode();
-  if (focused && std::strcmp(focused->typeName(), "text-input") == 0)
-    return UIReturnKeyDone;
   return UIReturnKeyDefault;
 }
 
