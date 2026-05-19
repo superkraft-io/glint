@@ -74,6 +74,8 @@ bool glint_should_schedule_redraw(glint_document* doc, bool redrawRequested)
 
 } // namespace
 
+@class GlintKeyboardProxyField;
+
 @interface GlintIOSView : UIView <UIGestureRecognizerDelegate, UIKeyInput, UITextInputTraits>
 {
 @public
@@ -81,9 +83,120 @@ bool glint_should_schedule_redraw(glint_document* doc, bool redrawRequested)
   UIPinchGestureRecognizer* pinchRecognizer;
   UIRotationGestureRecognizer* rotationRecognizer;
   UIPanGestureRecognizer* twoFingerPanRecognizer;
+  GlintKeyboardProxyField* keyboardProxyField;
+  int lastKeyboardType;
+  int lastReturnKeyType;
+  BOOL lastSecureEntry;
+  BOOL lastWantedKeyboard;
 }
 - (instancetype)initWithView:(glint_view_ios*)view frame:(CGRect)frame;
 - (void)displayLinkFired:(CADisplayLink*)displayLink;
+- (void)syncKeyboardFocus;
+@end
+
+@interface GlintKeyboardProxyField : UITextField
+{
+@public
+  glint_view_ios* cppView;
+}
+@end
+
+@implementation GlintKeyboardProxyField
+
+- (BOOL)canBecomeFirstResponder
+{
+  return YES;
+}
+
+- (BOOL)hasText
+{
+  return cppView ? cppView->_focusedNodeHasText() : [super hasText];
+}
+
+- (void)insertText:(NSString*)text
+{
+  if (!cppView || text == nil || text.length == 0)
+    return;
+
+  if ([text isEqualToString:@"\n"] || [text isEqualToString:@"\r"])
+  {
+    cppView->_handleReturnKey();
+    return;
+  }
+
+  NSData* utf8data = [text dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO];
+  if (!utf8data || utf8data.length == 0)
+    return;
+
+  const NSUInteger length = std::min<NSUInteger>(utf8data.length, 32u);
+  std::string utf8((const char*) utf8data.bytes, length);
+  cppView->_handleTextInsert(utf8);
+}
+
+- (void)deleteBackward
+{
+  if (cppView)
+    cppView->_handleBackspace();
+}
+
+- (UIKeyboardType)keyboardType
+{
+  return cppView ? (UIKeyboardType) cppView->_focusedKeyboardType() : UIKeyboardTypeDefault;
+}
+
+- (UIReturnKeyType)returnKeyType
+{
+  return cppView ? (UIReturnKeyType) cppView->_focusedReturnKeyType() : UIReturnKeyDefault;
+}
+
+- (BOOL)isSecureTextEntry
+{
+  return cppView ? cppView->_focusedSecureEntry() : NO;
+}
+
+- (UITextAutocapitalizationType)autocapitalizationType
+{
+  if (!cppView)
+    return UITextAutocapitalizationTypeSentences;
+
+  const int keyboardType = cppView->_focusedKeyboardType();
+  if (keyboardType == UIKeyboardTypeEmailAddress || keyboardType == UIKeyboardTypeDecimalPad || cppView->_focusedSecureEntry())
+    return UITextAutocapitalizationTypeNone;
+  return UITextAutocapitalizationTypeSentences;
+}
+
+- (UITextAutocorrectionType)autocorrectionType
+{
+  if (cppView)
+  {
+    const int keyboardType = cppView->_focusedKeyboardType();
+    if (keyboardType == UIKeyboardTypeEmailAddress || keyboardType == UIKeyboardTypeDecimalPad || cppView->_focusedSecureEntry())
+      return UITextAutocorrectionTypeNo;
+  }
+  return UITextAutocorrectionTypeDefault;
+}
+
+- (UITextSpellCheckingType)spellCheckingType
+{
+  if (cppView)
+  {
+    const int keyboardType = cppView->_focusedKeyboardType();
+    if (keyboardType == UIKeyboardTypeEmailAddress || keyboardType == UIKeyboardTypeDecimalPad || cppView->_focusedSecureEntry())
+      return UITextSpellCheckingTypeNo;
+  }
+  return UITextSpellCheckingTypeDefault;
+}
+
+- (UIKeyboardAppearance)keyboardAppearance
+{
+  return UIKeyboardAppearanceDark;
+}
+
+- (BOOL)enablesReturnKeyAutomatically
+{
+  return NO;
+}
+
 @end
 
 @implementation GlintIOSView
@@ -117,12 +230,30 @@ bool glint_should_schedule_redraw(glint_document* doc, bool redrawRequested)
     twoFingerPanRecognizer.maximumNumberOfTouches = 2;
     twoFingerPanRecognizer.delegate = self;
     [self addGestureRecognizer:twoFingerPanRecognizer];
+
+    keyboardProxyField = [[GlintKeyboardProxyField alloc] initWithFrame:CGRectMake(0.0, 0.0, 1.0, 1.0)];
+    keyboardProxyField->cppView = view;
+    keyboardProxyField.alpha = 1.0;
+    keyboardProxyField.backgroundColor = UIColor.clearColor;
+    keyboardProxyField.textColor = UIColor.clearColor;
+    keyboardProxyField.tintColor = UIColor.clearColor;
+    keyboardProxyField.borderStyle = UITextBorderStyleNone;
+    keyboardProxyField.autocorrectionType = UITextAutocorrectionTypeNo;
+    keyboardProxyField.spellCheckingType = UITextSpellCheckingTypeNo;
+    [self addSubview:keyboardProxyField];
+
+    lastKeyboardType = UIKeyboardTypeDefault;
+    lastReturnKeyType = UIReturnKeyDefault;
+    lastSecureEntry = NO;
+    lastWantedKeyboard = NO;
   }
   return self;
 }
 
 - (void)dealloc
 {
+  keyboardProxyField->cppView = nullptr;
+  [keyboardProxyField release];
   [pinchRecognizer release];
   [rotationRecognizer release];
   [twoFingerPanRecognizer release];
@@ -320,6 +451,43 @@ bool glint_should_schedule_redraw(glint_document* doc, bool redrawRequested)
     cppView->_handleDisplayLink();
 }
 
+- (void)syncKeyboardFocus
+{
+  if (!cppView)
+    return;
+
+  const bool wantsKeyboard = cppView->_focusedNodeWantsKeyboard();
+  const bool proxyResponder = [keyboardProxyField isFirstResponder];
+  const int keyboardType = cppView->_focusedKeyboardType();
+  const int returnKeyType = cppView->_focusedReturnKeyType();
+  const BOOL secureEntry = cppView->_focusedSecureEntry() ? YES : NO;
+  const BOOL traitsChanged = lastWantedKeyboard != wantsKeyboard
+                          || lastKeyboardType != keyboardType
+                          || lastReturnKeyType != returnKeyType
+                          || lastSecureEntry != secureEntry;
+
+  if (wantsKeyboard)
+  {
+    if (!self.window)
+      return;
+
+    if (!proxyResponder)
+      [keyboardProxyField becomeFirstResponder];
+    else if (traitsChanged)
+      [keyboardProxyField reloadInputViews];
+
+  }
+  else if (proxyResponder)
+  {
+    [keyboardProxyField resignFirstResponder];
+  }
+
+  lastWantedKeyboard = wantsKeyboard ? YES : NO;
+  lastKeyboardType = keyboardType;
+  lastReturnKeyType = returnKeyType;
+  lastSecureEntry = secureEntry;
+}
+
 @end
 
 bool glint_view_ios::open()
@@ -493,17 +661,9 @@ void glint_view_ios::_syncKeyboardFocus()
     return;
 
   GlintIOSView* view = (__bridge GlintIOSView*) mViewHandle;
-  [view reloadInputViews];
-
-  if (_focusedNodeWantsKeyboard())
-  {
-    if (![view isFirstResponder])
-      [view becomeFirstResponder];
-  }
-  else if ([view isFirstResponder])
-  {
-    [view resignFirstResponder];
-  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [view syncKeyboardFocus];
+  });
 }
 
 bool glint_view_ios::_focusedNodeWantsKeyboard() const
