@@ -64,6 +64,12 @@ public:
   /** Virtual keyboard return-key label hint only. */
   std::string enterkeyhint;
 
+  /** Maximum number of Unicode codepoints allowed, or -1 when unlimited. */
+  int maxlength = -1;
+
+  /** Minimum number of Unicode codepoints required, or -1 when unlimited. */
+  int minlength = -1;
+
   /** Placeholder text shown when the field is empty and unfocused. */
   std::string placeholder;
 
@@ -99,6 +105,12 @@ public:
   }
 
   const char* typeName() const override { return "text-input"; }
+
+protected:
+  int maxTextLength() const override { return maxlength; }
+  int minTextLength() const override { return minlength; }
+
+public:
 
   bool wantsPeriodicRedraw() const override { return mFocused; }
 
@@ -681,7 +693,7 @@ private:
     }
 
     // ── Caret ───────────────────────────────────────────────────────────────
-    if (mFocused && caretVisible() && (dispSelSt == -1 || dispSelSt == dispSelEnd))
+    if (mFocused && !readonly && !disabled && caretVisible() && (dispSelSt == -1 || dispSelSt == dispSelEnd))
     {
       const float cx       = baseX + charXOffset(disp, dispCursor, fs);
       const float caretTop = textY - fs * 0.9f;   // near cap-height
@@ -758,6 +770,12 @@ public:
 
   /** Placeholder text shown when the field is empty and unfocused. */
   std::string placeholder;
+
+  /** Maximum number of Unicode codepoints allowed, or -1 when unlimited. */
+  int maxlength = -1;
+
+  /** Minimum number of Unicode codepoints required, or -1 when unlimited. */
+  int minlength = -1;
 
   /** Minimum value.  For "range": lower bound of the slider. */
   float min  = std::numeric_limits<float>::lowest();
@@ -849,6 +867,12 @@ public:
     if (mSlider)    { try { mSlider->SetValue(std::stof(v)); } catch (...) {} }
   }
 
+  bool satisfiesMinLength() const
+  {
+    if (mTextInput) return mTextInput->satisfiesMinTextLength();
+    return true;
+  }
+
   /** Returns the current value as a float (convenience for type "range"). */
   float getFloatValue() const
   {
@@ -883,6 +907,8 @@ public:
     if (name == "type") { found = true; return type.empty() ? "text" : type; }
     if (name == "inputmode") { found = true; return inputmode; }
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
+    if (name == "maxlength") { found = true; return maxlength >= 0 ? std::to_string(maxlength) : std::string(); }
+    if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
     return glint_element::getAttribute(name, found);
   }
 
@@ -910,6 +936,12 @@ public:
 
   void onFocusGained() override
   {
+    if (disabled)
+    {
+      mFocusPending = false;
+      return;
+    }
+
     if (mTextInput && mRoot)
     {
       mRoot->SetFocus(mTextInput);   // delegate already exists — forward immediately
@@ -943,6 +975,8 @@ private:
   float              mInitialFloatValue = 0.f;
   std::string        mPendingValue;
   bool               mFocusPending = false;   // true when shell was focused before delegate existed
+  float              mEnabledOpacity = 1.f;
+  bool               mDisabledOpacityApplied = false;
 
   void _buildDelegate()
   {
@@ -1036,11 +1070,32 @@ private:
 
   void _syncDelegateProps()
   {
+    if (disabled)
+    {
+      if (!mDisabledOpacityApplied)
+      {
+        mEnabledOpacity = style.opacity;
+        mDisabledOpacityApplied = true;
+      }
+      style.opacity = mEnabledOpacity * 0.5f;
+
+      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == this))
+        mRoot->SetFocus(nullptr);
+    }
+    else if (mDisabledOpacityApplied)
+    {
+      style.opacity = mEnabledOpacity;
+      mDisabledOpacityApplied = false;
+    }
+
     if (mTextInput)
     {
+      mTextInput->mAcceptsFocus = !disabled;
       mTextInput->type        = type;
       mTextInput->inputmode   = inputmode;
       mTextInput->enterkeyhint = enterkeyhint;
+      mTextInput->maxlength   = maxlength;
+      mTextInput->minlength   = minlength;
       mTextInput->min         = min;
       mTextInput->max         = max;
       mTextInput->placeholder = placeholder;

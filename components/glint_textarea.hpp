@@ -106,6 +106,8 @@ public:
   std::string placeholder;
   std::string inputmode;
   std::string enterkeyhint;
+  int         maxlength = -1;
+  int         minlength = -1;
   float       lineHeight = 1.5f;   // multiplier applied to fontSize
 
   // ── Construction ──────────────────────────────────────────────────────────
@@ -137,9 +139,49 @@ public:
 
   const char* typeName() const override { return "textarea"; }
 
+  std::string getAttribute(const std::string& name, bool& found) const override
+  {
+    if (name == "inputmode") { found = true; return inputmode; }
+    if (name == "enterkeyhint") { found = true; return enterkeyhint; }
+    if (name == "maxlength") { found = true; return maxlength >= 0 ? std::to_string(maxlength) : std::string(); }
+    if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
+    return glint_text_editor_base::getAttribute(name, found);
+  }
+
+  void onFocusGained() override
+  {
+    if (disabled)
+      return;
+    glint_text_editor_base::onFocusGained();
+  }
+
+protected:
+  int maxTextLength() const override { return maxlength; }
+  int minTextLength() const override { return minlength; }
+
+public:
+
   // ── Layout: report real content height so the scrollbar is shown/hidden ──
   void Layout(glint_canvas* g) override
   {
+    mAcceptsFocus = !disabled;
+    if (disabled)
+    {
+      if (!mDisabledOpacityApplied)
+      {
+        mEnabledOpacity = style.opacity;
+        mDisabledOpacityApplied = true;
+      }
+      style.opacity = mEnabledOpacity * 0.5f;
+      if (mRoot && mRoot->getFocusedNode() == this)
+        mRoot->SetFocus(nullptr);
+    }
+    else if (mDisabledOpacityApplied)
+    {
+      style.opacity = mEnabledOpacity;
+      mDisabledOpacityApplied = false;
+    }
+
     // The base Layout() measures no children → sets mScrollHeight=0 → clamps
     // mScrollTop to 0 inside _clampScroll().  Save the scroll position first
     // and restore it after we've set the real content height.
@@ -431,7 +473,7 @@ public:
         canvas->drawString(line.c_str(), content.L, textY, font, tp);
 
       // ── Caret ─────────────────────────────────────────────────────────────
-      if (mFocused && caretVisible() && (mSelStart == -1 || mSelStart == mSelEnd))
+      if (mFocused && !readonly && !disabled && caretVisible() && (mSelStart == -1 || mSelStart == mSelEnd))
       {
         if (li == cursorLine)
         {
@@ -454,6 +496,8 @@ public:
 private:
   int             mDragStartPos  = 0;
   glint_element*  mResizeHandle  = nullptr;
+  float           mEnabledOpacity = 1.f;
+  bool            mDisabledOpacityApplied = false;
 
   float _fontSize() const
   {

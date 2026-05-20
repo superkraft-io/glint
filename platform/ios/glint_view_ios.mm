@@ -1038,7 +1038,9 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
     keyboardProxyField.textColor = UIColor.clearColor;
     [self addSubview:keyboardProxyField];
 
-    keyboardSearchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0.0, 0.0, 1.0, 1.0)];
+    // Keep the search responder in the hierarchy for keyboard traits, but park
+    // it well outside the visible viewport so UIKit does not paint its chrome.
+    keyboardSearchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(-1000.0, -1000.0, 1.0, 1.0)];
     keyboardSearchBar.alpha = 1.0;
     keyboardSearchBar.backgroundColor = UIColor.clearColor;
     keyboardSearchBar.barTintColor = UIColor.clearColor;
@@ -1675,6 +1677,12 @@ bool glint_view_ios::_focusedNodeWantsKeyboard() const
   const glint_element* focused = mDocument->getFocusedNode();
   if (!focused)
     return false;
+
+  if (const auto* input = dynamic_cast<const glint_text_input*>(focused))
+    return !input->readonly && !input->disabled;
+
+  if (const auto* textarea = dynamic_cast<const glint_textarea*>(focused))
+    return !textarea->readonly && !textarea->disabled;
 
   const char* typeName = focused->typeName();
   return typeName && (std::strcmp(typeName, "text-input") == 0 || std::strcmp(typeName, "textarea") == 0);
