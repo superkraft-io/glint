@@ -108,6 +108,7 @@ public:
   std::string enterkeyhint;
   int         maxlength = -1;
   int         minlength = -1;
+  bool        required = false;
   float       lineHeight = 1.5f;   // multiplier applied to fontSize
 
   // ── Construction ──────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ public:
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
     if (name == "maxlength") { found = true; return maxlength >= 0 ? std::to_string(maxlength) : std::string(); }
     if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
+    if (name == "required") { found = true; return required ? "true" : std::string(); }
     return glint_text_editor_base::getAttribute(name, found);
   }
 
@@ -158,6 +160,7 @@ public:
 protected:
   int maxTextLength() const override { return maxlength; }
   int minTextLength() const override { return minlength; }
+  bool isRequiredTextValue() const override { return required; }
 
 public:
 

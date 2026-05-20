@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <regex>
 #include <string>
 #include <utility>
 
@@ -185,12 +186,46 @@ private:
   /** Minimum number of Unicode codepoints required, or -1 when unlimited. */
   virtual int minTextLength() const { return -1; }
 
+  /** Whether an empty value is invalid for this text editor. */
+  virtual bool isRequiredTextValue() const { return false; }
+
+  /** Regex pattern used for validity checks, or empty when unset. */
+  virtual std::string validationPattern() const { return {}; }
+
+  bool satisfiesRequiredTextValue() const
+  {
+    if (disabled || !isRequiredTextValue()) return true;
+    return !mText.empty();
+  }
+
   bool satisfiesMinTextLength() const
   {
     const int minLength = minTextLength();
     if (minLength < 0) return true;
     if (mText.empty()) return true;
     return codepointCount(mText) >= minLength;
+  }
+
+  bool satisfiesPatternConstraint() const
+  {
+    if (disabled || mText.empty()) return true;
+
+    const std::string pattern = validationPattern();
+    if (pattern.empty()) return true;
+
+    try
+    {
+      return std::regex_match(mText, std::regex(pattern, std::regex::ECMAScript));
+    }
+    catch (const std::regex_error&)
+    {
+      return true;
+    }
+  }
+
+  bool satisfiesTextConstraints() const
+  {
+    return satisfiesRequiredTextValue() && satisfiesMinTextLength() && satisfiesPatternConstraint();
   }
 
   // ── Construction ────────────────────────────────────────────────────────────
@@ -327,6 +362,9 @@ protected:
    * glint_input overrides this for the "number" type.
    */
   virtual bool filterChar(const std::string& /*utf8char*/) { return true; }
+
+  /** Subclass hook for validating a pending insertion against the current state. */
+  virtual bool allowsTextInsertion(const std::string& /*utf8text*/) const { return true; }
 
   // ── Blur helper ────────────────────────────────────────────────────────────
 
@@ -508,8 +546,10 @@ protected:
       if (limited.empty()) return;
     }
 
+    if (!allowsTextInsertion(limited)) return;
+
     pushUndo();
-  if (hasSelection()) deleteSelection(false);   // replace selection if any
+    if (hasSelection()) deleteSelection(false);   // replace selection if any
     mText.insert(static_cast<size_t>(mCursorPos), limited);
     mCursorPos += static_cast<int>(limited.size());
     mSelStart = mSelEnd = -1;

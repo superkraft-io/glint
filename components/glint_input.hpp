@@ -70,6 +70,12 @@ public:
   /** Minimum number of Unicode codepoints required, or -1 when unlimited. */
   int minlength = -1;
 
+  /** When true, an empty value is invalid. */
+  bool required = false;
+
+  /** Regex pattern used for validity checks, matching HTML pattern semantics. */
+  std::string pattern;
+
   /** Placeholder text shown when the field is empty and unfocused. */
   std::string placeholder;
 
@@ -109,6 +115,8 @@ public:
 protected:
   int maxTextLength() const override { return maxlength; }
   int minTextLength() const override { return minlength; }
+  bool isRequiredTextValue() const override { return required; }
+  std::string validationPattern() const override { return pattern; }
 
 public:
 
@@ -396,24 +404,58 @@ protected:
 
   /**
    * Number type character filter.
-   * Accepts digits, one '.', and a leading '-'.
-   * All other printable characters are rejected.
+   * Accepts only numeric editing states for direct typing.
    */
   bool filterChar(const std::string& s) override
   {
     if (type != "number") return true;
-    if (s.size() != 1)    return true;   // multi-byte UTF-8: not a number char
+    return allowsTextInsertion(s);
+  }
 
-    const char c = s[0];
-    const bool isDigit = (c >= '0' && c <= '9');
-    const bool isDot   = (c == '.' && mText.find('.') == std::string::npos);
-    const bool isMinus = (c == '-' && mCursorPos == 0
-                          && mText.find('-') == std::string::npos);
-    return (isDigit || isDot || isMinus);
+  bool allowsTextInsertion(const std::string& s) const override
+  {
+    if (type != "number") return true;
+
+    const int replaceLo = hasSelection() ? std::min(mSelStart, mSelEnd) : mCursorPos;
+    const int replaceHi = hasSelection() ? std::max(mSelStart, mSelEnd) : mCursorPos;
+
+    std::string candidate = mText;
+    candidate.replace(static_cast<size_t>(replaceLo),
+                      static_cast<size_t>(replaceHi - replaceLo),
+                      s);
+
+    return _isValidNumberEditState(candidate);
   }
 
 private:
   // ── Helpers ────────────────────────────────────────────────────────────────
+
+  static bool _isValidNumberEditState(const std::string& value)
+  {
+    if (value.empty()) return true;
+
+    size_t index = 0;
+    if (value[0] == '-')
+    {
+      index = 1;
+      if (index == value.size()) return true;
+    }
+
+    bool seenDot = false;
+    for (; index < value.size(); ++index)
+    {
+      const unsigned char c = static_cast<unsigned char>(value[index]);
+      if (c >= '0' && c <= '9') continue;
+      if (c == '.' && !seenDot)
+      {
+        seenDot = true;
+        continue;
+      }
+      return false;
+    }
+
+    return true;
+  }
 
   // When acting as a delegate, text should render inside the *parent's* content
   // area (respecting the parent's padding) rather than the delegate's own rect.
@@ -777,6 +819,12 @@ public:
   /** Minimum number of Unicode codepoints required, or -1 when unlimited. */
   int minlength = -1;
 
+  /** When true, an empty value is invalid. */
+  bool required = false;
+
+  /** Regex pattern used for validity checks on text-like inputs. */
+  std::string pattern;
+
   /** Minimum value.  For "range": lower bound of the slider. */
   float min  = std::numeric_limits<float>::lowest();
 
@@ -873,6 +921,27 @@ public:
     return true;
   }
 
+  bool satisfiesRequired() const
+  {
+    if (disabled || !required) return true;
+    if (mTextInput) return mTextInput->satisfiesRequiredTextValue();
+    if (mCheckbox) return mCheckbox->checked;
+    if (mRadio) return checked;
+    return true;
+  }
+
+  bool satisfiesPattern() const
+  {
+    if (mTextInput) return mTextInput->satisfiesPatternConstraint();
+    return true;
+  }
+
+  bool satisfiesConstraints() const
+  {
+    if (mTextInput) return mTextInput->satisfiesTextConstraints();
+    return satisfiesRequired();
+  }
+
   /** Returns the current value as a float (convenience for type "range"). */
   float getFloatValue() const
   {
@@ -909,6 +978,8 @@ public:
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
     if (name == "maxlength") { found = true; return maxlength >= 0 ? std::to_string(maxlength) : std::string(); }
     if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
+    if (name == "required") { found = true; return required ? "true" : std::string(); }
+    if (name == "pattern") { found = true; return pattern; }
     return glint_element::getAttribute(name, found);
   }
 
@@ -1096,6 +1167,8 @@ private:
       mTextInput->enterkeyhint = enterkeyhint;
       mTextInput->maxlength   = maxlength;
       mTextInput->minlength   = minlength;
+      mTextInput->required    = required;
+      mTextInput->pattern     = pattern;
       mTextInput->min         = min;
       mTextInput->max         = max;
       mTextInput->placeholder = placeholder;
