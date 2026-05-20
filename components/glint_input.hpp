@@ -85,6 +85,9 @@ public:
   /** Maximum value (number type only). */
   float max = std::numeric_limits<float>::max();
 
+  /** Step used for number validity and arrow-key increments (0 = ignore). */
+  float step = 0.f;
+
   /**
    * Called when the user presses Enter.
    * The current text value is passed as the argument.
@@ -122,6 +125,53 @@ public:
 
   bool wantsPeriodicRedraw() const override { return mFocused; }
 
+  bool hasParsableNumberValue() const
+  {
+    if (type != "number" || mText.empty()) return true;
+    double parsed = 0.0;
+    return _tryParseCommittedNumberValue(mText, parsed);
+  }
+
+  bool satisfiesMinNumberValue() const
+  {
+    if (type != "number" || mText.empty()) return true;
+    double parsed = 0.0;
+    if (!_tryParseCommittedNumberValue(mText, parsed)) return true;
+    if (min == std::numeric_limits<float>::lowest()) return true;
+    return parsed >= static_cast<double>(min);
+  }
+
+  bool satisfiesMaxNumberValue() const
+  {
+    if (type != "number" || mText.empty()) return true;
+    double parsed = 0.0;
+    if (!_tryParseCommittedNumberValue(mText, parsed)) return true;
+    if (max == std::numeric_limits<float>::max()) return true;
+    return parsed <= static_cast<double>(max);
+  }
+
+  bool satisfiesStepNumberValue() const
+  {
+    if (type != "number" || mText.empty() || step <= 0.f) return true;
+    double parsed = 0.0;
+    if (!_tryParseCommittedNumberValue(mText, parsed)) return true;
+
+    const double stepValue = static_cast<double>(step);
+    const double base = (min != std::numeric_limits<float>::lowest()) ? static_cast<double>(min) : 0.0;
+    const double remainder = std::fmod(parsed - base, stepValue);
+    const double tolerance = std::max(1e-6, std::abs(stepValue) * 1e-6);
+    return std::abs(remainder) <= tolerance || std::abs(remainder - stepValue) <= tolerance;
+  }
+
+  bool satisfiesNumberConstraints() const
+  {
+    return satisfiesRequiredTextValue()
+        && hasParsableNumberValue()
+        && satisfiesMinNumberValue()
+        && satisfiesMaxNumberValue()
+        && satisfiesStepNumberValue();
+  }
+
   std::chrono::steady_clock::time_point nextPeriodicRedrawTime() const override
   {
     return nextCaretToggleTime();
@@ -154,9 +204,6 @@ public:
   void onFocusLost() override
   {
     glint_text_editor_base::onFocusLost();
-    // Clamp number value on blur.
-    if (type == "number" && !mText.empty())
-      _clampNumber();
     mScrollOffsetX = 0.f;   // reset scroll when focus leaves
     // Reset click-count state so the next focus session starts fresh.
     mClickCount     = 0;
@@ -576,7 +623,8 @@ private:
   {
     float v = 0.f;
     try { v = mText.empty() ? 0.f : std::stof(mText); } catch (...) {}
-    v = std::max(min, std::min(max, v + delta));
+    const float increment = (step > 0.f ? step : 1.f) * delta;
+    v = std::max(min, std::min(max, v + increment));
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%g", v);
     pushUndo();
@@ -665,6 +713,19 @@ private:
       }
     }
     catch (...) {}   // non-numeric string: leave as-is
+  }
+  static bool _tryParseCommittedNumberValue(const std::string& value, double& parsed)
+  {
+    try
+    {
+      size_t consumed = 0;
+      parsed = std::stod(value, &consumed);
+      return consumed == value.size() && std::isfinite(parsed);
+    }
+    catch (...)
+    {
+      return false;
+    }
   }
 
   void _drawToSkia(SkCanvas* canvas)
@@ -936,9 +997,37 @@ public:
     return true;
   }
 
+  bool hasValidNumberValue() const
+  {
+    if (mTextInput) return mTextInput->hasParsableNumberValue();
+    return true;
+  }
+
+  bool satisfiesMinValue() const
+  {
+    if (mTextInput) return mTextInput->satisfiesMinNumberValue();
+    return true;
+  }
+
+  bool satisfiesMaxValue() const
+  {
+    if (mTextInput) return mTextInput->satisfiesMaxNumberValue();
+    return true;
+  }
+
+  bool satisfiesStepValue() const
+  {
+    if (mTextInput) return mTextInput->satisfiesStepNumberValue();
+    return true;
+  }
+
   bool satisfiesConstraints() const
   {
-    if (mTextInput) return mTextInput->satisfiesTextConstraints();
+    if (mTextInput)
+    {
+      if (type == "number") return mTextInput->satisfiesNumberConstraints();
+      return mTextInput->satisfiesTextConstraints();
+    }
     return satisfiesRequired();
   }
 
@@ -980,6 +1069,9 @@ public:
     if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
     if (name == "required") { found = true; return required ? "true" : std::string(); }
     if (name == "pattern") { found = true; return pattern; }
+    if (name == "min") { found = true; return min != std::numeric_limits<float>::lowest() ? std::to_string(min) : std::string(); }
+    if (name == "max") { found = true; return max != std::numeric_limits<float>::max() ? std::to_string(max) : std::string(); }
+    if (name == "step") { found = true; return step > 0.f ? std::to_string(step) : std::string(); }
     return glint_element::getAttribute(name, found);
   }
 
@@ -1171,6 +1263,7 @@ private:
       mTextInput->pattern     = pattern;
       mTextInput->min         = min;
       mTextInput->max         = max;
+      mTextInput->step        = step;
       mTextInput->placeholder = placeholder;
       mTextInput->readonly    = readonly;
       mTextInput->disabled    = disabled;
