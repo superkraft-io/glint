@@ -30,14 +30,17 @@
 
 #include "glint_text_editor_base.hpp"
 #include "../default_style.hpp"
+#include "../render/glint_resource_request.hpp"
 #include "glint_slider.hpp"
 #include "glint_checkbox.hpp"
 #include "glint_radio.hpp"
 
 #include <cmath>
+#include <cctype>
 #include <limits>
 #include <string>
 #include <functional>
+#include <regex>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
@@ -72,6 +75,9 @@ public:
 
   /** When true, an empty value is invalid. */
   bool required = false;
+
+  /** When true, email inputs accept comma-separated addresses. */
+  bool multiple = false;
 
   /** Regex pattern used for validity checks, matching HTML pattern semantics. */
   std::string pattern;
@@ -170,6 +176,82 @@ public:
         && satisfiesMinNumberValue()
         && satisfiesMaxNumberValue()
         && satisfiesStepNumberValue();
+  }
+
+  bool satisfiesEmailValue() const
+  {
+    if (type != "email" || mText.empty()) return true;
+
+    static const std::regex kEmailPattern(
+      R"(^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$)",
+      std::regex::ECMAScript);
+
+    auto trimAsciiWhitespace = [](std::string_view value) {
+      size_t start = 0;
+      size_t end = value.size();
+      while (start < end && std::isspace(static_cast<unsigned char>(value[start]))) ++start;
+      while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) --end;
+      return std::string(value.substr(start, end - start));
+    };
+
+    if (!multiple) return std::regex_match(trimAsciiWhitespace(mText), kEmailPattern);
+
+    size_t start = 0;
+    while (start <= mText.size())
+    {
+      const size_t comma = mText.find(',', start);
+      const size_t end = (comma == std::string::npos) ? mText.size() : comma;
+      const std::string token = trimAsciiWhitespace(std::string_view(mText).substr(start, end - start));
+      if (token.empty() || !std::regex_match(token, kEmailPattern)) return false;
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
+
+    return true;
+  }
+
+  bool satisfiesUrlValue() const
+  {
+    if (type != "url" || mText.empty()) return true;
+
+    auto trimAsciiWhitespace = [](std::string_view value) {
+      size_t start = 0;
+      size_t end = value.size();
+      while (start < end && std::isspace(static_cast<unsigned char>(value[start]))) ++start;
+      while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) --end;
+      return std::string(value.substr(start, end - start));
+    };
+
+    const std::string trimmed = trimAsciiWhitespace(mText);
+    if (trimmed.empty()) return true;
+
+    for (char ch : trimmed)
+      if (std::isspace(static_cast<unsigned char>(ch))) return false;
+
+    static const std::regex kAbsoluteUrlPattern(
+      R"(^[A-Za-z][A-Za-z0-9+.-]*:.+$)",
+      std::regex::ECMAScript);
+    if (!std::regex_match(trimmed, kAbsoluteUrlPattern)) return false;
+
+    const size_t colonPos = trimmed.find(':');
+    const std::string scheme = trimmed.substr(0, colonPos);
+    const std::string suffix = trimmed.substr(colonPos + 1);
+
+    if (suffix.rfind("/", 0) == 0 && suffix.rfind("//", 0) != 0 && scheme != "file")
+    {
+      if (suffix.size() == 1) return false;
+      const char next = suffix[1];
+      if (next == '?' || next == '#') return false;
+      return true;
+    }
+
+    if (trimmed.find("://") == std::string::npos) return true;
+
+    glint_resource_request req;
+    req.url = trimmed;
+    req.parseUrl();
+    if (req.scheme == "file") return !req.pathname.empty();
+    return !req.scheme.empty() && !req.host.empty();
   }
 
   std::chrono::steady_clock::time_point nextPeriodicRedrawTime() const override
@@ -883,6 +965,9 @@ public:
   /** When true, an empty value is invalid. */
   bool required = false;
 
+  /** When true, email inputs accept comma-separated addresses. */
+  bool multiple = false;
+
   /** Regex pattern used for validity checks on text-like inputs. */
   std::string pattern;
 
@@ -1003,6 +1088,18 @@ public:
     return true;
   }
 
+  bool satisfiesEmailValue() const
+  {
+    if (mTextInput) return mTextInput->satisfiesEmailValue();
+    return true;
+  }
+
+  bool satisfiesUrlValue() const
+  {
+    if (mTextInput) return mTextInput->satisfiesUrlValue();
+    return true;
+  }
+
   bool satisfiesMinValue() const
   {
     if (mTextInput) return mTextInput->satisfiesMinNumberValue();
@@ -1026,6 +1123,8 @@ public:
     if (mTextInput)
     {
       if (type == "number") return mTextInput->satisfiesNumberConstraints();
+      if (type == "email") return mTextInput->satisfiesTextConstraints() && mTextInput->satisfiesEmailValue();
+      if (type == "url") return mTextInput->satisfiesTextConstraints() && mTextInput->satisfiesUrlValue();
       return mTextInput->satisfiesTextConstraints();
     }
     return satisfiesRequired();
@@ -1068,6 +1167,7 @@ public:
     if (name == "maxlength") { found = true; return maxlength >= 0 ? std::to_string(maxlength) : std::string(); }
     if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
     if (name == "required") { found = true; return required ? "true" : std::string(); }
+    if (name == "multiple") { found = true; return multiple ? "true" : std::string(); }
     if (name == "pattern") { found = true; return pattern; }
     if (name == "min") { found = true; return min != std::numeric_limits<float>::lowest() ? std::to_string(min) : std::string(); }
     if (name == "max") { found = true; return max != std::numeric_limits<float>::max() ? std::to_string(max) : std::string(); }
@@ -1260,6 +1360,7 @@ private:
       mTextInput->maxlength   = maxlength;
       mTextInput->minlength   = minlength;
       mTextInput->required    = required;
+      mTextInput->multiple    = multiple;
       mTextInput->pattern     = pattern;
       mTextInput->min         = min;
       mTextInput->max         = max;
