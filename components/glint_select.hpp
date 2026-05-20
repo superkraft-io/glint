@@ -294,7 +294,10 @@ protected:
     for (int i = 0; i < static_cast<int>(options.size()); ++i)
       items.push_back({i + 1, options[i]});
     const std::vector<int> disabled;
-    const int result = glint_platform::showContextMenu(0, 0, items, disabled);
+    const int selectedId = (selectedIndex >= 0 && selectedIndex < static_cast<int>(options.size()))
+      ? selectedIndex + 1
+      : 0;
+    const int result = glint_platform::showSelectMenu(0, 0, items, selectedId, disabled);
     if (result >= 1 && result - 1 < static_cast<int>(options.size()))
     {
       selectedIndex = result - 1;

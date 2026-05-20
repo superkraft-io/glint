@@ -1562,6 +1562,17 @@ int showContextMenu(int screenX, int screenY,
   return selected;
 }
 
+int showSelectMenu(int screenX, int screenY,
+                   const std::vector<std::pair<int, std::string>>& items,
+                   int selectedId,
+                   const std::vector<int>& disabledIds)
+{
+  const std::vector<int> checkedIds = selectedId > 0
+    ? std::vector<int>{selectedId}
+    : std::vector<int>{};
+  return showContextMenu(screenX, screenY, items, disabledIds, checkedIds);
+}
+
 } // namespace glint_platform
 
 // =============================================================================

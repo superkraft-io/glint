@@ -25,6 +25,9 @@
 
 namespace {
 
+UIView* glint_last_interaction_view = nil;
+CGPoint glint_last_interaction_point = CGPointZero;
+
 UIView* glint_resolve_parent_view(void* parent)
 {
   id candidate = (id) parent;
@@ -211,10 +214,108 @@ void glint_set_keyboard_cpp_view(id object, glint_view_ios* cppView)
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+UIWindow* glint_active_window()
+{
+  UIApplication* app = UIApplication.sharedApplication;
+  if (@available(iOS 13.0, *))
+  {
+    for (UIScene* scene in app.connectedScenes)
+    {
+      if (![scene isKindOfClass:[UIWindowScene class]])
+        continue;
+      if (scene.activationState != UISceneActivationStateForegroundActive)
+        continue;
+
+      UIWindowScene* windowScene = (UIWindowScene*) scene;
+      for (UIWindow* window in windowScene.windows)
+      {
+        if (window.isKeyWindow)
+          return window;
+      }
+      for (UIWindow* window in windowScene.windows)
+      {
+        if (!window.hidden)
+          return window;
+      }
+    }
+  }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  if (app.keyWindow)
+    return app.keyWindow;
+  for (UIWindow* window in app.windows)
+  {
+    if (!window.hidden)
+      return window;
+  }
+#pragma clang diagnostic pop
+  return nil;
+}
+
+UIViewController* glint_top_view_controller(UIViewController* controller)
+{
+  UIViewController* current = controller;
+  while (current)
+  {
+    if ([current isKindOfClass:[UINavigationController class]])
+    {
+      UIViewController* visible = ((UINavigationController*) current).visibleViewController;
+      if (visible && visible != current)
+      {
+        current = visible;
+        continue;
+      }
+    }
+
+    if ([current isKindOfClass:[UITabBarController class]])
+    {
+      UIViewController* selected = ((UITabBarController*) current).selectedViewController;
+      if (selected && selected != current)
+      {
+        current = selected;
+        continue;
+      }
+    }
+
+    UIViewController* presented = current.presentedViewController;
+    if (!presented || presented == current)
+      break;
+    current = presented;
+  }
+
+  return current;
+}
+
+NSString* glint_nsstring_from_utf8(const std::string& utf8)
+{
+  NSString* str = [NSString stringWithUTF8String:utf8.c_str()];
+  return str ? str : @"";
+}
+
+void glint_set_last_interaction(UIView* view, CGPoint point)
+{
+  glint_last_interaction_view = view;
+  glint_last_interaction_point = point;
+}
+
+CGRect glint_centered_source_rect(UIView* sourceView)
+{
+  return CGRectMake(CGRectGetMidX(sourceView.bounds),
+                    CGRectGetMidY(sourceView.bounds),
+                    1.0,
+                    1.0);
+}
+
 } // namespace
 
 @class GlintKeyboardProxyField;
 @class GlintKeyboardSearchField;
+@class GlintIOSMenuTracker;
+@class GlintIOSMenuItem;
+@class GlintIOSMenuListController;
+@class GlintIOSSelectPickerCoordinator;
+@class GlintIOSSelectMenuControl;
 
 @interface GlintIOSView : UIView <UIGestureRecognizerDelegate, UIKeyInput, UITextInputTraits>
 {
@@ -247,6 +348,73 @@ void glint_set_keyboard_cpp_view(id object, glint_view_ios* cppView)
 @end
 
 @interface GlintKeyboardSearchField : UISearchTextField
+@end
+
+@interface GlintIOSMenuTracker : NSObject
+{
+@public
+  int selectedId;
+  BOOL finished;
+}
+@end
+
+@interface GlintIOSMenuItem : NSObject
+{
+@public
+  int itemId;
+  NSString* title;
+  BOOL enabled;
+  BOOL checked;
+  BOOL separator;
+}
++ (instancetype)itemWithId:(int)itemId
+                     title:(NSString*)title
+                   enabled:(BOOL)enabled
+                   checked:(BOOL)checked
+                 separator:(BOOL)separator;
+@end
+
+@interface GlintIOSMenuListController : UITableViewController <UIPopoverPresentationControllerDelegate>
+{
+@public
+  GlintIOSMenuTracker* tracker;
+  NSArray<GlintIOSMenuItem*>* menuItems;
+}
+- (instancetype)initWithItems:(NSArray<GlintIOSMenuItem*>*)items
+                      tracker:(GlintIOSMenuTracker*)menuTracker;
+- (void)close:(id)sender;
+@end
+
+@interface GlintIOSSelectPickerCoordinator : NSObject
+{
+@public
+  GlintIOSMenuTracker* tracker;
+  NSArray<GlintIOSMenuItem*>* menuItems;
+  UIView* hostView;
+  GlintIOSSelectMenuControl* menuControl;
+  CGPoint sourcePoint;
+  BOOL menuTriggered;
+}
+- (instancetype)initWithItems:(NSArray<GlintIOSMenuItem*>*)items
+                   selectedId:(int)selectedId
+                      tracker:(GlintIOSMenuTracker*)menuTracker;
+- (void)presentInView:(UIView*)view sourcePoint:(CGPoint)point;
+- (BOOL)isAwaitingDismissal;
+- (UIMenu*)buildMenu;
+- (void)menuDidDisplay;
+- (void)menuDidDismiss;
+- (void)failIfMenuDidNotAppear;
+@end
+
+@interface GlintIOSSelectMenuControl : UIControl
+{
+@public
+  GlintIOSSelectPickerCoordinator* owner;
+  CGPoint attachmentPoint;
+}
+- (instancetype)initWithFrame:(CGRect)frame
+                        owner:(GlintIOSSelectPickerCoordinator*)menuOwner
+              attachmentPoint:(CGPoint)point;
 @end
 
 @implementation GlintKeyboardProxyField
@@ -337,6 +505,358 @@ void glint_set_keyboard_cpp_view(id object, glint_view_ios* cppView)
 {
   if (cppView)
     cppView->_handleBackspace();
+}
+
+@end
+
+@implementation GlintIOSMenuTracker
+
+@end
+
+@implementation GlintIOSMenuItem
+
++ (instancetype)itemWithId:(int)itemIdValue
+                     title:(NSString*)titleValue
+                   enabled:(BOOL)enabledValue
+                   checked:(BOOL)checkedValue
+                 separator:(BOOL)separatorValue
+{
+  GlintIOSMenuItem* item = [[[self alloc] init] autorelease];
+  item->itemId = itemIdValue;
+  item->title = [titleValue copy];
+  item->enabled = enabledValue;
+  item->checked = checkedValue;
+  item->separator = separatorValue;
+  return item;
+}
+
+- (void)dealloc
+{
+  [title release];
+  [super dealloc];
+}
+
+@end
+
+@implementation GlintIOSMenuListController
+
+- (instancetype)initWithItems:(NSArray<GlintIOSMenuItem*>*)items
+                      tracker:(GlintIOSMenuTracker*)menuTracker
+{
+  if (!(self = [super initWithStyle:UITableViewStylePlain]))
+    return nil;
+
+  menuItems = [items copy];
+  tracker = [menuTracker retain];
+  self.title = @"Options";
+  return self;
+}
+
+- (void)dealloc
+{
+  [menuItems release];
+  [tracker release];
+  [super dealloc];
+}
+
+- (void)viewDidLoad
+{
+  [super viewDidLoad];
+  self.navigationItem.rightBarButtonItem = [[[UIBarButtonItem alloc]
+    initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                         target:self
+                         action:@selector(close:)] autorelease];
+  self.tableView.tableFooterView = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
+}
+
+- (void)viewDidDisappear:(BOOL)animated
+{
+  [super viewDidDisappear:animated];
+  if (!tracker->finished)
+    tracker->finished = YES;
+}
+
+- (void)viewDidLayoutSubviews
+{
+  [super viewDidLayoutSubviews];
+  CGFloat preferredHeight = 1.0f;
+  for (GlintIOSMenuItem* item in menuItems)
+    preferredHeight += item->separator ? 12.0f : 50.0f;
+  preferredHeight = std::min<CGFloat>(std::max<CGFloat>(preferredHeight, 80.0f), 420.0f);
+  self.preferredContentSize = CGSizeMake(320.0f, preferredHeight);
+}
+
+- (void)close:(id)sender
+{
+  (void)sender;
+  tracker->finished = YES;
+  [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller
+{
+  (void)controller;
+  return UIModalPresentationNone;
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller
+                                                             traitCollection:(UITraitCollection*)traitCollection
+{
+  (void)controller;
+  (void)traitCollection;
+  return UIModalPresentationNone;
+}
+
+- (NSInteger)tableView:(UITableView*)tableView numberOfRowsInSection:(NSInteger)section
+{
+  (void)tableView;
+  (void)section;
+  return (NSInteger)menuItems.count;
+}
+
+- (CGFloat)tableView:(UITableView*)tableView heightForRowAtIndexPath:(NSIndexPath*)indexPath
+{
+  (void)tableView;
+  GlintIOSMenuItem* item = [menuItems objectAtIndex:(NSUInteger)indexPath.row];
+  return item->separator ? 12.0f : 50.0f;
+}
+
+- (NSIndexPath*)tableView:(UITableView*)tableView willSelectRowAtIndexPath:(NSIndexPath*)indexPath
+{
+  (void)tableView;
+  GlintIOSMenuItem* item = [menuItems objectAtIndex:(NSUInteger)indexPath.row];
+  return (item->separator || !item->enabled) ? nil : indexPath;
+}
+
+- (UITableViewCell*)tableView:(UITableView*)tableView cellForRowAtIndexPath:(NSIndexPath*)indexPath
+{
+  GlintIOSMenuItem* item = [menuItems objectAtIndex:(NSUInteger)indexPath.row];
+  if (item->separator)
+  {
+    static NSString* separatorReuseId = @"GlintIOSMenuSeparatorCell";
+    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:separatorReuseId];
+    if (!cell)
+    {
+      cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:separatorReuseId] autorelease];
+      UIView* line = [[[UIView alloc] initWithFrame:CGRectMake(16.0f, 5.5f, 288.0f, 1.0f)] autorelease];
+      line.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+      line.backgroundColor = [UIColor colorWithWhite:0.85f alpha:1.0f];
+      [cell.contentView addSubview:line];
+    }
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.userInteractionEnabled = NO;
+    cell.backgroundColor = [UIColor clearColor];
+    cell.contentView.backgroundColor = [UIColor clearColor];
+    return cell;
+  }
+
+  static NSString* itemReuseId = @"GlintIOSMenuItemCell";
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:itemReuseId];
+  if (!cell)
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:itemReuseId] autorelease];
+
+  cell.textLabel.text = item->title;
+  cell.textLabel.enabled = item->enabled;
+  cell.textLabel.textColor = item->enabled
+    ? [UIColor colorWithWhite:0.05f alpha:1.0f]
+    : [UIColor colorWithWhite:0.05f alpha:0.35f];
+  cell.accessoryType = item->checked ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+  cell.selectionStyle = item->enabled ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+  cell.userInteractionEnabled = item->enabled;
+  return cell;
+}
+
+- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath
+{
+  [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  GlintIOSMenuItem* item = [menuItems objectAtIndex:(NSUInteger)indexPath.row];
+  if (item->separator || !item->enabled)
+    return;
+
+  tracker->selectedId = item->itemId;
+  tracker->finished = YES;
+  [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+}
+
+@end
+
+@implementation GlintIOSSelectMenuControl
+
+- (instancetype)initWithFrame:(CGRect)frame
+                        owner:(GlintIOSSelectPickerCoordinator*)menuOwner
+              attachmentPoint:(CGPoint)point
+{
+  if (!(self = [super initWithFrame:frame]))
+    return nil;
+
+  owner = menuOwner;
+  attachmentPoint = point;
+  self.alpha = 0.01f;
+  self.opaque = NO;
+  self.backgroundColor = [UIColor clearColor];
+  self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  self.contextMenuInteractionEnabled = YES;
+  self.showsMenuAsPrimaryAction = YES;
+  return self;
+}
+
+- (CGPoint)menuAttachmentPointForConfiguration:(UIContextMenuConfiguration*)configuration
+{
+  (void)configuration;
+  return attachmentPoint;
+}
+
+- (UIContextMenuConfiguration*)contextMenuInteraction:(UIContextMenuInteraction*)interaction
+                      configurationForMenuAtLocation:(CGPoint)location
+{
+  (void)interaction;
+  (void)location;
+
+  UIContextMenuConfiguration* configuration = [UIContextMenuConfiguration configurationWithIdentifier:nil
+                                                                                       previewProvider:nil
+                                                                                        actionProvider:^UIMenu*(NSArray<UIMenuElement*>* suggestedActions) {
+    (void)suggestedActions;
+    return [owner buildMenu];
+  }];
+
+  if (@available(iOS 16.0, *))
+    configuration.preferredMenuElementOrder = UIContextMenuConfigurationElementOrderFixed;
+
+  return configuration;
+}
+
+- (void)contextMenuInteraction:(UIContextMenuInteraction*)interaction
+willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
+                       animator:(id<UIContextMenuInteractionAnimating>)animator
+{
+  [super contextMenuInteraction:interaction willDisplayMenuForConfiguration:configuration animator:animator];
+  [owner menuDidDisplay];
+}
+
+- (void)contextMenuInteraction:(UIContextMenuInteraction*)interaction
+       willEndForConfiguration:(UIContextMenuConfiguration*)configuration
+                       animator:(id<UIContextMenuInteractionAnimating>)animator
+{
+  [super contextMenuInteraction:interaction willEndForConfiguration:configuration animator:animator];
+  [animator addCompletion:^{
+    [owner menuDidDismiss];
+  }];
+}
+
+@end
+
+@implementation GlintIOSSelectPickerCoordinator
+
+- (instancetype)initWithItems:(NSArray<GlintIOSMenuItem*>*)items
+                   selectedId:(int)selectedId
+                      tracker:(GlintIOSMenuTracker*)menuTracker
+{
+  if (!(self = [super init]))
+    return nil;
+
+  menuItems = [items copy];
+  tracker = [menuTracker retain];
+  hostView = nil;
+  menuControl = nil;
+  sourcePoint = CGPointZero;
+  menuTriggered = NO;
+
+  for (NSUInteger index = 0; index < menuItems.count; ++index)
+    [menuItems objectAtIndex:index]->checked = ([menuItems objectAtIndex:index]->itemId == selectedId);
+
+  return self;
+}
+
+- (void)dealloc
+{
+  [menuControl removeFromSuperview];
+  [menuControl release];
+  [hostView release];
+  [menuItems release];
+  [tracker release];
+  [super dealloc];
+}
+
+- (void)presentInView:(UIView*)view sourcePoint:(CGPoint)point
+{
+  if (!view)
+  {
+    tracker->finished = YES;
+    return;
+  }
+
+  if (@available(iOS 17.4, *))
+  {
+    hostView = [view retain];
+    sourcePoint = point;
+    menuTriggered = NO;
+
+    menuControl = [[GlintIOSSelectMenuControl alloc] initWithFrame:hostView.bounds
+                                                             owner:self
+                                                   attachmentPoint:sourcePoint];
+    [hostView addSubview:menuControl];
+    [menuControl performPrimaryAction];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self failIfMenuDidNotAppear];
+    });
+    return;
+  }
+
+  tracker->finished = YES;
+}
+
+- (UIMenu*)buildMenu
+{
+  NSMutableArray<UIMenuElement*>* actions = [NSMutableArray arrayWithCapacity:menuItems.count];
+  for (GlintIOSMenuItem* item in menuItems)
+  {
+    UIMenuElementAttributes attributes = item->enabled ? 0 : UIMenuElementAttributesDisabled;
+    UIAction* action = [UIAction actionWithTitle:item->title image:nil identifier:nil handler:^(__kindof UIAction* selectedAction) {
+      (void)selectedAction;
+      tracker->selectedId = item->itemId;
+    }];
+    action.attributes = attributes;
+    action.state = item->checked ? UIMenuElementStateOn : UIMenuElementStateOff;
+    [actions addObject:action];
+  }
+  UIMenu* menu = [UIMenu menuWithTitle:@""
+                                 image:nil
+                            identifier:nil
+                               options:0
+                              children:actions];
+  if (@available(iOS 16.0, *))
+    menu.preferredElementSize = UIMenuElementSizeLarge;
+  return menu;
+}
+
+- (void)menuDidDisplay
+{
+  menuTriggered = YES;
+}
+
+- (void)menuDidDismiss
+{
+  [menuControl removeFromSuperview];
+  [menuControl release];
+  menuControl = nil;
+
+  [hostView release];
+  hostView = nil;
+
+  tracker->finished = YES;
+}
+
+- (void)failIfMenuDidNotAppear
+{
+  if (menuTriggered || !menuControl)
+    return;
+
+  [self menuDidDismiss];
+}
+
+- (BOOL)isAwaitingDismissal
+{
+  return menuControl != nil;
 }
 
 @end
@@ -1241,6 +1761,9 @@ void glint_view_ios::_handleTouchDown(float x, float y)
   if (!mDocument)
     return;
 
+  if (mViewHandle)
+    glint_set_last_interaction((__bridge UIView*) mViewHandle, CGPointMake(x, y));
+
   const glint_element* hit = mDocument->mCanvas.HitTest(x, y);
   mLastTouchTargetWantsKeyboard = glint_hit_targets_keyboard(hit);
 
@@ -1262,6 +1785,9 @@ void glint_view_ios::_handleTouchMove(float x, float y)
   if (!mDocument)
     return;
 
+  if (mViewHandle)
+    glint_set_last_interaction((__bridge UIView*) mViewHandle, CGPointMake(x, y));
+
   const float dx = x - mPrevX;
   const float dy = y - mPrevY;
   mPrevX = x;
@@ -1274,6 +1800,9 @@ void glint_view_ios::_handleTouchUp(float x, float y)
 {
   if (!mDocument)
     return;
+
+  if (mViewHandle)
+    glint_set_last_interaction((__bridge UIView*) mViewHandle, CGPointMake(x, y));
 
   mDocument->OnMouseUp(x, y, glint_touch_mod(false));
   if (!mLastTouchTargetWantsKeyboard && _focusedNodeWantsKeyboard())
@@ -1389,11 +1918,199 @@ std::string getClipboardText()
 
 int showContextMenu(int,
                     int,
-                    const std::vector<std::pair<int, std::string>>&,
-                    const std::vector<int>&,
-                    const std::vector<int>&)
+                    const std::vector<std::pair<int, std::string>>& items,
+                    const std::vector<int>& disabledIds,
+                    const std::vector<int>& checkedIds)
 {
-  return 0;
+  __block int result = 0;
+
+  void (^run)(void) = ^{
+    UIWindow* window = glint_active_window();
+    UIViewController* presenter = glint_top_view_controller(window.rootViewController);
+    UIView* sourceView = presenter.view ?: window;
+    if (!presenter || !sourceView)
+      return;
+
+    NSMutableArray<GlintIOSMenuItem*>* nativeItems = [NSMutableArray arrayWithCapacity:items.size()];
+    for (const auto& item : items)
+    {
+      const bool separator = item.first == 0 && item.second == "-";
+      const bool disabled = !separator && std::find(disabledIds.begin(), disabledIds.end(), item.first) != disabledIds.end();
+      const bool checked = !separator && std::find(checkedIds.begin(), checkedIds.end(), item.first) != checkedIds.end();
+      [nativeItems addObject:[GlintIOSMenuItem itemWithId:item.first
+                                                    title:(separator ? @"" : glint_nsstring_from_utf8(item.second))
+                                                  enabled:separator ? NO : !disabled
+                                                  checked:checked
+                                                separator:separator]];
+    }
+
+    GlintIOSMenuTracker* tracker = [[GlintIOSMenuTracker alloc] init];
+    tracker->selectedId = 0;
+    tracker->finished = NO;
+
+    GlintIOSMenuListController* listController = [[GlintIOSMenuListController alloc] initWithItems:nativeItems tracker:tracker];
+    UINavigationController* navigationController = [[UINavigationController alloc] initWithRootViewController:listController];
+    navigationController.preferredContentSize = listController.preferredContentSize;
+
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
+    {
+      navigationController.modalPresentationStyle = UIModalPresentationPopover;
+      UIPopoverPresentationController* popover = navigationController.popoverPresentationController;
+      popover.sourceView = sourceView;
+      popover.sourceRect = glint_centered_source_rect(sourceView);
+      popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+    }
+    else
+    {
+      navigationController.modalPresentationStyle = UIModalPresentationPageSheet;
+      if (@available(iOS 15.0, *))
+      {
+        UISheetPresentationController* sheet = navigationController.sheetPresentationController;
+        if (sheet)
+        {
+          sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent,
+                            UISheetPresentationControllerDetent.largeDetent];
+          sheet.prefersGrabberVisible = YES;
+        }
+      }
+    }
+
+    [presenter presentViewController:navigationController animated:YES completion:nil];
+
+    while (!tracker->finished)
+    {
+      @autoreleasepool
+      {
+        NSDate* until = [NSDate dateWithTimeIntervalSinceNow:0.01];
+        [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+        [[NSRunLoop mainRunLoop] runMode:UITrackingRunLoopMode beforeDate:until];
+      }
+    }
+
+    result = tracker->selectedId;
+    [navigationController release];
+    [listController release];
+    [tracker release];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+int showSelectMenu(int,
+                   int,
+                   const std::vector<std::pair<int, std::string>>& items,
+                   int selectedId,
+                   const std::vector<int>& disabledIds)
+{
+  __block int result = 0;
+
+  void (^run)(void) = ^{
+    UIWindow* window = glint_active_window();
+    if (!window)
+      return;
+
+    UIView* anchorView = glint_last_interaction_view ? glint_last_interaction_view : window;
+    CGPoint anchorPoint = glint_last_interaction_view
+      ? glint_last_interaction_point
+      : CGPointMake(CGRectGetMidX(anchorView.bounds), CGRectGetMidY(anchorView.bounds));
+
+    NSMutableArray<GlintIOSMenuItem*>* nativeItems = [NSMutableArray arrayWithCapacity:items.size()];
+    for (const auto& item : items)
+    {
+      if (item.first == 0 && item.second == "-")
+        continue;
+
+      const bool disabled = std::find(disabledIds.begin(), disabledIds.end(), item.first) != disabledIds.end();
+      [nativeItems addObject:[GlintIOSMenuItem itemWithId:item.first
+                                                    title:glint_nsstring_from_utf8(item.second)
+                                                  enabled:!disabled
+                                                  checked:item.first == selectedId
+                                                separator:NO]];
+    }
+    if (!nativeItems.count)
+      return;
+
+    GlintIOSMenuTracker* tracker = [[GlintIOSMenuTracker alloc] init];
+    tracker->selectedId = 0;
+    tracker->finished = NO;
+
+    if (@available(iOS 17.4, *))
+    {
+      GlintIOSSelectPickerCoordinator* coordinator = [[GlintIOSSelectPickerCoordinator alloc]
+        initWithItems:nativeItems
+           selectedId:selectedId
+              tracker:tracker];
+      [coordinator presentInView:anchorView sourcePoint:anchorPoint];
+
+      while (!tracker->finished && [coordinator isAwaitingDismissal])
+      {
+        @autoreleasepool
+        {
+          NSDate* until = [NSDate dateWithTimeIntervalSinceNow:0.01];
+          [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+          [[NSRunLoop mainRunLoop] runMode:UITrackingRunLoopMode beforeDate:until];
+        }
+      }
+
+      [coordinator release];
+    }
+    else
+    {
+      GlintIOSMenuListController* listController = [[GlintIOSMenuListController alloc] initWithItems:nativeItems tracker:tracker];
+      UINavigationController* navigationController = [[UINavigationController alloc] initWithRootViewController:listController];
+      navigationController.preferredContentSize = listController.preferredContentSize;
+
+      UIViewController* presenter = glint_top_view_controller(window.rootViewController);
+      if (!presenter)
+      {
+        presenter = window.rootViewController;
+        if (!presenter)
+        {
+          [navigationController release];
+          [listController release];
+          [tracker release];
+          return;
+        }
+      }
+
+      navigationController.modalPresentationStyle = UIModalPresentationPopover;
+      UIPopoverPresentationController* popover = navigationController.popoverPresentationController;
+      popover.delegate = listController;
+      popover.sourceView = anchorView;
+      popover.sourceRect = CGRectMake(anchorPoint.x, anchorPoint.y, 1.0f, 1.0f);
+      popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+
+      [presenter presentViewController:navigationController animated:YES completion:nil];
+
+      while (!tracker->finished)
+      {
+        @autoreleasepool
+        {
+          NSDate* until = [NSDate dateWithTimeIntervalSinceNow:0.01];
+          [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+          [[NSRunLoop mainRunLoop] runMode:UITrackingRunLoopMode beforeDate:until];
+        }
+      }
+
+      [navigationController release];
+      [listController release];
+    }
+
+    result = tracker->selectedId;
+    [tracker release];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
 }
 
 std::string showOpenFileDialog(const std::vector<std::string>&,

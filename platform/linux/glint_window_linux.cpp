@@ -1448,6 +1448,17 @@ int showContextMenu(int /*screenX*/, int /*screenY*/,
   return 0;
 }
 
+int showSelectMenu(int screenX, int screenY,
+                   const std::vector<std::pair<int, std::string>>& items,
+                   int selectedId,
+                   const std::vector<int>& disabledIds)
+{
+  const std::vector<int> checkedIds = selectedId > 0
+    ? std::vector<int>{selectedId}
+    : std::vector<int>{};
+  return showContextMenu(screenX, screenY, items, disabledIds, checkedIds);
+}
+
 std::string showOpenFileDialog(const std::vector<std::string>& /*extensions*/,
                                const std::string& /*title*/,
                                bool /*allowDirectories*/)

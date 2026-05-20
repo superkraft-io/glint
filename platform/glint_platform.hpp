@@ -40,6 +40,12 @@ enum class confirm_dialog_result {
                       const std::vector<int>& disabledIds = {},
                       const std::vector<int>& checkedIds  = {});
 
+  /** Show a single-select chooser. Returns the item id, or 0 if dismissed. */
+  int showSelectMenu(int screenX, int screenY,
+                     const std::vector<std::pair<int, std::string>>& items,
+                     int selectedId = 0,
+                     const std::vector<int>& disabledIds = {});
+
   /** Show a synchronous native open-file dialog filtered by extension. */
   std::string showOpenFileDialog(const std::vector<std::string>& extensions = {},
                                  const std::string& title = {},
