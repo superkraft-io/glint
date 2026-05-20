@@ -920,14 +920,22 @@ public:
 
   void Layout(glint_canvas* g) override
   {
-    if (mActiveType != type)
+    if (mActiveDelegateKind != _delegateKindForType(type))
       _buildDelegate();
     _syncDelegateProps();
     glint_element::Layout(g);
   }
 
 private:
-  std::string        mActiveType;
+  static std::string _delegateKindForType(const std::string& inputType)
+  {
+    if (inputType == "checkbox") return "checkbox";
+    if (inputType == "radio")    return "radio";
+    if (inputType == "range")    return "range";
+    return "text";
+  }
+
+  std::string        mActiveDelegateKind;
   glint_text_input*  mTextInput  = nullptr;
   glint_slider*      mSlider     = nullptr;
   glint_checkbox*    mCheckbox   = nullptr;
@@ -1023,7 +1031,7 @@ private:
         mRoot->SetFocus(mTextInput);
       }
     }
-    mActiveType = type;
+    mActiveDelegateKind = _delegateKindForType(type);
   }
 
   void _syncDelegateProps()

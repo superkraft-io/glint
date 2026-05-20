@@ -93,6 +93,16 @@ bool glint_hit_targets_keyboard(const glint_element* hit)
   return false;
 }
 
+glint_element* glint_keyboard_target_from_hit(const glint_element* hit)
+{
+  for (const glint_element* node = hit; node; node = node->mParent)
+  {
+    if (glint_node_wants_keyboard(node))
+      return const_cast<glint_element*>(node);
+  }
+  return nullptr;
+}
+
 bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_element* focused)
 {
   for (const glint_element* node = hit; node; node = node->mParent)
@@ -333,14 +343,18 @@ CGRect glint_centered_source_rect(UIView* sourceView)
   BOOL lastWantedKeyboard;
   BOOL lastSuppressesSoftwareKeyboard;
   BOOL lastUsesSearchResponder;
+  BOOL keyboardPrewarmScheduled;
+  BOOL keyboardPrewarmActive;
+  BOOL keyboardPrewarmDone;
 }
 - (instancetype)initWithView:(glint_view_ios*)view frame:(CGRect)frame;
 - (void)displayLinkFired:(CADisplayLink*)displayLink;
 - (void)handleEditMenuLongPress:(UILongPressGestureRecognizer*)recognizer;
+- (void)prewarmKeyboardHostIfNeeded;
 - (void)syncKeyboardFocus;
 @end
 
-@interface GlintKeyboardProxyField : UISearchTextField
+@interface GlintKeyboardProxyField : UITextField
 {
 @public
   glint_view_ios* cppView;
@@ -394,6 +408,7 @@ CGRect glint_centered_source_rect(UIView* sourceView)
   GlintIOSSelectMenuControl* menuControl;
   CGPoint sourcePoint;
   BOOL menuTriggered;
+  BOOL awaitingDismissCleanup;
 }
 - (instancetype)initWithItems:(NSArray<GlintIOSMenuItem*>*)items
                    selectedId:(int)selectedId
@@ -725,6 +740,13 @@ CGRect glint_centered_source_rect(UIView* sourceView)
   return configuration;
 }
 
+- (UIView*)hitTest:(CGPoint)point withEvent:(UIEvent*)event
+{
+  if (owner && owner->menuTriggered)
+    return nil;
+  return [super hitTest:point withEvent:event];
+}
+
 - (void)contextMenuInteraction:(UIContextMenuInteraction*)interaction
 willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
                        animator:(id<UIContextMenuInteractionAnimating>)animator
@@ -760,6 +782,7 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   menuControl = nil;
   sourcePoint = CGPointZero;
   menuTriggered = NO;
+  awaitingDismissCleanup = NO;
 
   for (NSUInteger index = 0; index < menuItems.count; ++index)
     [menuItems objectAtIndex:index]->checked = ([menuItems objectAtIndex:index]->itemId == selectedId);
@@ -813,7 +836,13 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
     UIMenuElementAttributes attributes = item->enabled ? 0 : UIMenuElementAttributesDisabled;
     UIAction* action = [UIAction actionWithTitle:item->title image:nil identifier:nil handler:^(__kindof UIAction* selectedAction) {
       (void)selectedAction;
+      if (!awaitingDismissCleanup)
+      {
+        awaitingDismissCleanup = YES;
+        [self retain];
+      }
       tracker->selectedId = item->itemId;
+      tracker->finished = YES;
     }];
     action.attributes = attributes;
     action.state = item->checked ? UIMenuElementStateOn : UIMenuElementStateOff;
@@ -844,6 +873,12 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   hostView = nil;
 
   tracker->finished = YES;
+
+  if (awaitingDismissCleanup)
+  {
+    awaitingDismissCleanup = NO;
+    [self release];
+  }
 }
 
 - (void)failIfMenuDidNotAppear
@@ -1023,6 +1058,9 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
     lastWantedKeyboard = NO;
     lastSuppressesSoftwareKeyboard = NO;
     lastUsesSearchResponder = NO;
+    keyboardPrewarmScheduled = NO;
+    keyboardPrewarmActive = NO;
+    keyboardPrewarmDone = NO;
   }
   return self;
 }
@@ -1052,7 +1090,21 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
 
 - (UIView*)inputView
 {
+  if (keyboardPrewarmActive)
+  {
+    static UIView* emptyInputView = nil;
+    if (!emptyInputView)
+      emptyInputView = [[UIView alloc] initWithFrame:CGRectZero];
+    return emptyInputView;
+  }
+
   return [keyboardProxyField inputView];
+}
+
+- (void)didMoveToWindow
+{
+  [super didMoveToWindow];
+  [self prewarmKeyboardHostIfNeeded];
 }
 
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender
@@ -1277,6 +1329,44 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
     cppView->_handleDisplayLink();
 }
 
+- (void)prewarmKeyboardHostIfNeeded
+{
+  if (keyboardPrewarmDone || keyboardPrewarmScheduled || !self.window)
+    return;
+
+  keyboardPrewarmScheduled = YES;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    keyboardPrewarmScheduled = NO;
+
+    if (keyboardPrewarmDone || !self.window || [self isFirstResponder] || [keyboardSearchBar.searchTextField isFirstResponder])
+      return;
+
+    keyboardPrewarmActive = YES;
+    [self becomeFirstResponder];
+    [self reloadInputViews];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!keyboardPrewarmActive)
+      {
+        keyboardPrewarmDone = YES;
+        return;
+      }
+
+      if (cppView && cppView->_focusedNodeWantsKeyboard())
+      {
+        keyboardPrewarmActive = NO;
+        [self reloadInputViews];
+        keyboardPrewarmDone = YES;
+        return;
+      }
+
+      [self resignFirstResponder];
+      keyboardPrewarmActive = NO;
+      keyboardPrewarmDone = YES;
+    });
+  });
+}
+
 - (void)handleEditMenuLongPress:(UILongPressGestureRecognizer*)recognizer
 {
   if (!cppView || recognizer.state != UIGestureRecognizerStateBegan)
@@ -1291,9 +1381,9 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
     if (![keyboardSearchBar.searchTextField isFirstResponder])
       [keyboardSearchBar.searchTextField becomeFirstResponder];
   }
-  else if (![keyboardProxyField isFirstResponder])
+  else if (![self isFirstResponder])
   {
-    [keyboardProxyField becomeFirstResponder];
+    [self becomeFirstResponder];
   }
 
   const bool hasActions = cppView->_focusedCanCut() || cppView->_focusedCanCopy()
@@ -1315,9 +1405,12 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   if (!cppView)
     return;
 
+  if (keyboardPrewarmActive && cppView->_focusedNodeWantsKeyboard())
+    keyboardPrewarmActive = NO;
+
   const bool wantsKeyboard = cppView->_focusedNodeWantsKeyboard();
   const BOOL wantsSearchResponder = wantsKeyboard && cppView->_focusedReturnKeyType() == UIReturnKeySearch;
-  const bool proxyResponder = [keyboardProxyField isFirstResponder];
+  const bool proxyResponder = [self isFirstResponder];
   const bool searchResponder = [keyboardSearchBar.searchTextField isFirstResponder];
   const int keyboardType = cppView->_focusedKeyboardType();
   const int returnKeyType = cppView->_focusedReturnKeyType();
@@ -1355,7 +1448,7 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
     if (wantsSearchResponder)
     {
       if (proxyResponder)
-        [keyboardProxyField resignFirstResponder];
+        [self resignFirstResponder];
 
       if (!searchResponder)
         [searchField becomeFirstResponder];
@@ -1368,16 +1461,16 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
         [keyboardSearchBar.searchTextField resignFirstResponder];
 
       if (!proxyResponder)
-        [keyboardProxyField becomeFirstResponder];
+        [self becomeFirstResponder];
       else if (traitsChanged)
-        [keyboardProxyField reloadInputViews];
+        [self reloadInputViews];
     }
 
   }
   else if (proxyResponder || searchResponder)
   {
     [keyboardSearchBar.searchTextField resignFirstResponder];
-    [keyboardProxyField resignFirstResponder];
+    [self resignFirstResponder];
     [self endEditing:YES];
     [self.window endEditing:YES];
   }
@@ -1563,6 +1656,12 @@ void glint_view_ios::_syncKeyboardFocus()
     return;
 
   GlintIOSView* view = (__bridge GlintIOSView*) mViewHandle;
+  if ([NSThread isMainThread])
+  {
+    [view syncKeyboardFocus];
+    return;
+  }
+
   dispatch_async(dispatch_get_main_queue(), ^{
     [view syncKeyboardFocus];
   });
@@ -1766,11 +1865,18 @@ void glint_view_ios::_handleTouchDown(float x, float y)
 
   const glint_element* hit = mDocument->mCanvas.HitTest(x, y);
   mLastTouchTargetWantsKeyboard = glint_hit_targets_keyboard(hit);
+  glint_element* keyboardTarget = glint_keyboard_target_from_hit(hit);
 
   if (const glint_element* focused = mDocument->getFocusedNode(); glint_node_wants_keyboard(focused))
   {
     if (!glint_hit_keeps_keyboard_focus(hit, focused))
       mDocument->SetFocus(nullptr);
+  }
+
+  if (keyboardTarget && mDocument->getFocusedNode() != keyboardTarget)
+  {
+    mDocument->SetFocus(keyboardTarget);
+    _syncKeyboardFocus();
   }
 
   mPrevX = x;
