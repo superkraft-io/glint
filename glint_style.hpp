@@ -56,6 +56,10 @@ struct glint_length
   bool builderInjected = false;
 
   glint_length() = default;
+  glint_length(const glint_length&) = default;
+  glint_length(glint_length&&) noexcept = default;
+  glint_length& operator=(const glint_length&) = default;
+  glint_length& operator=(glint_length&&) noexcept = default;
 
   // Implicit construction from numeric types — keeps existing float assignments working.
   glint_length(float f)  { char b[32]; std::snprintf(b, sizeof(b), "%g", f); raw = b; }  // NOLINT
@@ -65,6 +69,41 @@ struct glint_length
   // Implicit construction from string literals and std::string.
   glint_length(const char* s)        : raw(s ? s : "0") {}  // NOLINT
   glint_length(const std::string& s) : raw(s) {}             // NOLINT
+
+  glint_length& operator=(float f)
+  {
+    char b[32];
+    std::snprintf(b, sizeof(b), "%g", f);
+    raw = b;
+    builderInjected = false;
+    return *this;
+  }
+
+  glint_length& operator=(double f)
+  {
+    return operator=(static_cast<float>(f));
+  }
+
+  glint_length& operator=(int f)
+  {
+    raw = std::to_string(f);
+    builderInjected = false;
+    return *this;
+  }
+
+  glint_length& operator=(const char* s)
+  {
+    raw = s ? s : "0";
+    builderInjected = false;
+    return *this;
+  }
+
+  glint_length& operator=(const std::string& s)
+  {
+    raw = s;
+    builderInjected = false;
+    return *this;
+  }
 
   // Resolve to pixels given the parent dimension on the same axis.
   // "50%"  → parentSize * 0.5

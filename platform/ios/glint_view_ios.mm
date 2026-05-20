@@ -6,6 +6,7 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
+#import <objc/runtime.h>
 
 #include "glint_view_ios.hpp"
 #include "../glint_platform.hpp"
@@ -104,6 +105,27 @@ bool glint_inputmode_is_none(std::string_view inputmode)
   return inputmode == "none";
 }
 
+UITextAutocapitalizationType glint_autocapitalization_for_traits(int keyboardType, bool secureEntry)
+{
+  if (keyboardType == UIKeyboardTypeEmailAddress || keyboardType == UIKeyboardTypeDecimalPad || secureEntry)
+    return UITextAutocapitalizationTypeNone;
+  return UITextAutocapitalizationTypeSentences;
+}
+
+UITextAutocorrectionType glint_autocorrection_for_traits(int keyboardType, bool secureEntry)
+{
+  if (keyboardType == UIKeyboardTypeEmailAddress || keyboardType == UIKeyboardTypeDecimalPad || secureEntry)
+    return UITextAutocorrectionTypeNo;
+  return UITextAutocorrectionTypeDefault;
+}
+
+UITextSpellCheckingType glint_spellchecking_for_traits(int keyboardType, bool secureEntry)
+{
+  if (keyboardType == UIKeyboardTypeEmailAddress || keyboardType == UIKeyboardTypeDecimalPad || secureEntry)
+    return UITextSpellCheckingTypeNo;
+  return UITextSpellCheckingTypeDefault;
+}
+
 int glint_keyboard_type_from_inputmode(std::string_view inputmode)
 {
   if (inputmode == "decimal") return UIKeyboardTypeDecimalPad;
@@ -135,6 +157,18 @@ int glint_keyboard_type_for_textarea(const glint_textarea& textarea)
   return UIKeyboardTypeDefault;
 }
 
+int glint_return_key_type_from_hint(std::string_view enterkeyhint)
+{
+  if (enterkeyhint == "enter")    return UIReturnKeyDefault;
+  if (enterkeyhint == "done")     return UIReturnKeyDone;
+  if (enterkeyhint == "go")       return UIReturnKeyGo;
+  if (enterkeyhint == "next")     return UIReturnKeyNext;
+  if (enterkeyhint == "previous") return UIReturnKeyDefault;
+  if (enterkeyhint == "search")   return UIReturnKeySearch;
+  if (enterkeyhint == "send")     return UIReturnKeySend;
+  return UIReturnKeyDefault;
+}
+
 glint_text_editor_base* glint_focused_text_editor(glint_document* doc)
 {
   if (!doc)
@@ -148,9 +182,39 @@ const glint_text_editor_base* glint_focused_text_editor(const glint_document* do
   return glint_focused_text_editor(const_cast<glint_document*>(doc));
 }
 
+const void* glint_keyboard_cpp_view_key()
+{
+  static int key = 0;
+  return &key;
+}
+
+glint_view_ios* glint_keyboard_cpp_view(id object)
+{
+  NSValue* value = (NSValue*) objc_getAssociatedObject(object, glint_keyboard_cpp_view_key());
+  return value ? (glint_view_ios*) value.pointerValue : nullptr;
+}
+
+void glint_set_keyboard_cpp_view(id object, glint_view_ios* cppView)
+{
+  if (!object)
+    return;
+
+  if (!cppView)
+  {
+    objc_setAssociatedObject(object, glint_keyboard_cpp_view_key(), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return;
+  }
+
+  objc_setAssociatedObject(object,
+                           glint_keyboard_cpp_view_key(),
+                           [NSValue valueWithPointer:cppView],
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 } // namespace
 
 @class GlintKeyboardProxyField;
+@class GlintKeyboardSearchField;
 
 @interface GlintIOSView : UIView <UIGestureRecognizerDelegate, UIKeyInput, UITextInputTraits>
 {
@@ -161,11 +225,13 @@ const glint_text_editor_base* glint_focused_text_editor(const glint_document* do
   UIPanGestureRecognizer* twoFingerPanRecognizer;
   UILongPressGestureRecognizer* editMenuRecognizer;
   GlintKeyboardProxyField* keyboardProxyField;
+  UISearchBar* keyboardSearchBar;
   int lastKeyboardType;
   int lastReturnKeyType;
   BOOL lastSecureEntry;
   BOOL lastWantedKeyboard;
   BOOL lastSuppressesSoftwareKeyboard;
+  BOOL lastUsesSearchResponder;
 }
 - (instancetype)initWithView:(glint_view_ios*)view frame:(CGRect)frame;
 - (void)displayLinkFired:(CADisplayLink*)displayLink;
@@ -173,11 +239,14 @@ const glint_text_editor_base* glint_focused_text_editor(const glint_document* do
 - (void)syncKeyboardFocus;
 @end
 
-@interface GlintKeyboardProxyField : UIView <UIKeyInput, UITextInputTraits>
+@interface GlintKeyboardProxyField : UISearchTextField
 {
 @public
   glint_view_ios* cppView;
 }
+@end
+
+@interface GlintKeyboardSearchField : UISearchTextField
 @end
 
 @implementation GlintKeyboardProxyField
@@ -270,62 +339,100 @@ const glint_text_editor_base* glint_focused_text_editor(const glint_document* do
     cppView->_handleBackspace();
 }
 
-- (UIKeyboardType)keyboardType
+@end
+
+@implementation GlintKeyboardSearchField
+
+- (BOOL)hasText
 {
-  return cppView ? (UIKeyboardType) cppView->_focusedKeyboardType() : UIKeyboardTypeDefault;
+  glint_view_ios* cppView = glint_keyboard_cpp_view(self);
+  return cppView ? cppView->_focusedNodeHasText() : NO;
 }
 
-- (UIReturnKeyType)returnKeyType
+- (UIView*)inputView
 {
-  return cppView ? (UIReturnKeyType) cppView->_focusedReturnKeyType() : UIReturnKeyDefault;
+  glint_view_ios* cppView = glint_keyboard_cpp_view(self);
+  if (!cppView || !cppView->_focusedSuppressesSoftwareKeyboard())
+    return nil;
+
+  static UIView* emptyInputView = nil;
+  if (!emptyInputView)
+    emptyInputView = [[UIView alloc] initWithFrame:CGRectZero];
+  return emptyInputView;
 }
 
-- (BOOL)isSecureTextEntry
+- (BOOL)canPerformAction:(SEL)action withSender:(id)sender
 {
-  return cppView ? cppView->_focusedSecureEntry() : NO;
-}
-
-- (UITextAutocapitalizationType)autocapitalizationType
-{
+  (void)sender;
+  glint_view_ios* cppView = glint_keyboard_cpp_view(self);
   if (!cppView)
-    return UITextAutocapitalizationTypeSentences;
+    return NO;
 
-  const int keyboardType = cppView->_focusedKeyboardType();
-  if (keyboardType == UIKeyboardTypeEmailAddress || keyboardType == UIKeyboardTypeDecimalPad || cppView->_focusedSecureEntry())
-    return UITextAutocapitalizationTypeNone;
-  return UITextAutocapitalizationTypeSentences;
-}
-
-- (UITextAutocorrectionType)autocorrectionType
-{
-  if (cppView)
-  {
-    const int keyboardType = cppView->_focusedKeyboardType();
-    if (keyboardType == UIKeyboardTypeEmailAddress || keyboardType == UIKeyboardTypeDecimalPad || cppView->_focusedSecureEntry())
-      return UITextAutocorrectionTypeNo;
-  }
-  return UITextAutocorrectionTypeDefault;
-}
-
-- (UITextSpellCheckingType)spellCheckingType
-{
-  if (cppView)
-  {
-    const int keyboardType = cppView->_focusedKeyboardType();
-    if (keyboardType == UIKeyboardTypeEmailAddress || keyboardType == UIKeyboardTypeDecimalPad || cppView->_focusedSecureEntry())
-      return UITextSpellCheckingTypeNo;
-  }
-  return UITextSpellCheckingTypeDefault;
-}
-
-- (UIKeyboardAppearance)keyboardAppearance
-{
-  return UIKeyboardAppearanceDark;
-}
-
-- (BOOL)enablesReturnKeyAutomatically
-{
+  if (action == @selector(cut:))       return cppView->_focusedCanCut() ? YES : NO;
+  if (action == @selector(copy:))      return cppView->_focusedCanCopy() ? YES : NO;
+  if (action == @selector(paste:))     return cppView->_focusedCanPaste() ? YES : NO;
+  if (action == @selector(selectAll:)) return cppView->_focusedCanSelectAll() ? YES : NO;
   return NO;
+}
+
+- (void)cut:(id)sender
+{
+  (void)sender;
+  glint_view_ios* cppView = glint_keyboard_cpp_view(self);
+  if (cppView)
+    cppView->_focusedCut();
+}
+
+- (void)copy:(id)sender
+{
+  (void)sender;
+  glint_view_ios* cppView = glint_keyboard_cpp_view(self);
+  if (cppView)
+    cppView->_focusedCopy();
+}
+
+- (void)paste:(id)sender
+{
+  (void)sender;
+  glint_view_ios* cppView = glint_keyboard_cpp_view(self);
+  if (cppView)
+    cppView->_focusedPaste();
+}
+
+- (void)selectAll:(id)sender
+{
+  (void)sender;
+  glint_view_ios* cppView = glint_keyboard_cpp_view(self);
+  if (cppView)
+    cppView->_focusedSelectAll();
+}
+
+- (void)insertText:(NSString*)text
+{
+  glint_view_ios* cppView = glint_keyboard_cpp_view(self);
+  if (!cppView || text == nil || text.length == 0)
+    return;
+
+  if ([text isEqualToString:@"\n"] || [text isEqualToString:@"\r"])
+  {
+    cppView->_handleReturnKey();
+    return;
+  }
+
+  NSData* utf8data = [text dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO];
+  if (!utf8data || utf8data.length == 0)
+    return;
+
+  const NSUInteger length = std::min<NSUInteger>(utf8data.length, 32u);
+  std::string utf8((const char*) utf8data.bytes, length);
+  cppView->_handleTextInsert(utf8);
+}
+
+- (void)deleteBackward
+{
+  glint_view_ios* cppView = glint_keyboard_cpp_view(self);
+  if (cppView)
+    cppView->_handleBackspace();
 }
 
 @end
@@ -371,13 +478,31 @@ const glint_text_editor_base* glint_focused_text_editor(const glint_document* do
     keyboardProxyField->cppView = view;
     keyboardProxyField.alpha = 1.0;
     keyboardProxyField.backgroundColor = UIColor.clearColor;
+    keyboardProxyField.borderStyle = UITextBorderStyleNone;
+    keyboardProxyField.tintColor = UIColor.clearColor;
+    keyboardProxyField.textColor = UIColor.clearColor;
     [self addSubview:keyboardProxyField];
+
+    keyboardSearchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0.0, 0.0, 1.0, 1.0)];
+    keyboardSearchBar.alpha = 1.0;
+    keyboardSearchBar.backgroundColor = UIColor.clearColor;
+    keyboardSearchBar.barTintColor = UIColor.clearColor;
+    keyboardSearchBar.tintColor = UIColor.clearColor;
+    keyboardSearchBar.searchBarStyle = UISearchBarStyleMinimal;
+    UISearchTextField* nativeSearchField = keyboardSearchBar.searchTextField;
+    object_setClass(nativeSearchField, [GlintKeyboardSearchField class]);
+    glint_set_keyboard_cpp_view(nativeSearchField, view);
+    nativeSearchField.backgroundColor = UIColor.clearColor;
+    nativeSearchField.textColor = UIColor.clearColor;
+    nativeSearchField.tintColor = UIColor.clearColor;
+    [self addSubview:keyboardSearchBar];
 
     lastKeyboardType = UIKeyboardTypeDefault;
     lastReturnKeyType = UIReturnKeyDefault;
     lastSecureEntry = NO;
     lastWantedKeyboard = NO;
     lastSuppressesSoftwareKeyboard = NO;
+    lastUsesSearchResponder = NO;
   }
   return self;
 }
@@ -385,7 +510,9 @@ const glint_text_editor_base* glint_focused_text_editor(const glint_document* do
 - (void)dealloc
 {
   keyboardProxyField->cppView = nullptr;
+  glint_set_keyboard_cpp_view(keyboardSearchBar.searchTextField, nullptr);
   [keyboardProxyField release];
+  [keyboardSearchBar release];
   [pinchRecognizer release];
   [rotationRecognizer release];
   [twoFingerPanRecognizer release];
@@ -638,8 +765,16 @@ const glint_text_editor_base* glint_focused_text_editor(const glint_document* do
   if (!cppView->_focusedNodeWantsKeyboard())
     return;
 
-  if (![keyboardProxyField isFirstResponder])
+  const BOOL wantsSearchResponder = cppView->_focusedReturnKeyType() == UIReturnKeySearch;
+  if (wantsSearchResponder)
+  {
+    if (![keyboardSearchBar.searchTextField isFirstResponder])
+      [keyboardSearchBar.searchTextField becomeFirstResponder];
+  }
+  else if (![keyboardProxyField isFirstResponder])
+  {
     [keyboardProxyField becomeFirstResponder];
+  }
 
   const bool hasActions = cppView->_focusedCanCut() || cppView->_focusedCanCopy()
                        || cppView->_focusedCanPaste() || cppView->_focusedCanSelectAll();
@@ -661,30 +796,67 @@ const glint_text_editor_base* glint_focused_text_editor(const glint_document* do
     return;
 
   const bool wantsKeyboard = cppView->_focusedNodeWantsKeyboard();
+  const BOOL wantsSearchResponder = wantsKeyboard && cppView->_focusedReturnKeyType() == UIReturnKeySearch;
   const bool proxyResponder = [keyboardProxyField isFirstResponder];
+  const bool searchResponder = [keyboardSearchBar.searchTextField isFirstResponder];
   const int keyboardType = cppView->_focusedKeyboardType();
   const int returnKeyType = cppView->_focusedReturnKeyType();
   const BOOL secureEntry = cppView->_focusedSecureEntry() ? YES : NO;
   const BOOL suppressesSoftwareKeyboard = cppView->_focusedSuppressesSoftwareKeyboard() ? YES : NO;
+  keyboardProxyField.keyboardType = (UIKeyboardType) keyboardType;
+  keyboardProxyField.returnKeyType = (UIReturnKeyType) returnKeyType;
+  keyboardProxyField.secureTextEntry = secureEntry;
+  keyboardProxyField.autocapitalizationType = glint_autocapitalization_for_traits(keyboardType, secureEntry == YES);
+  keyboardProxyField.autocorrectionType = glint_autocorrection_for_traits(keyboardType, secureEntry == YES);
+  keyboardProxyField.spellCheckingType = glint_spellchecking_for_traits(keyboardType, secureEntry == YES);
+  keyboardProxyField.keyboardAppearance = UIKeyboardAppearanceDark;
+  keyboardProxyField.enablesReturnKeyAutomatically = NO;
+  UISearchTextField* searchField = keyboardSearchBar.searchTextField;
+  searchField.keyboardType = (UIKeyboardType) keyboardType;
+  searchField.returnKeyType = (UIReturnKeyType) returnKeyType;
+  searchField.secureTextEntry = secureEntry;
+  searchField.autocapitalizationType = glint_autocapitalization_for_traits(keyboardType, secureEntry == YES);
+  searchField.autocorrectionType = glint_autocorrection_for_traits(keyboardType, secureEntry == YES);
+  searchField.spellCheckingType = glint_spellchecking_for_traits(keyboardType, secureEntry == YES);
+  searchField.keyboardAppearance = UIKeyboardAppearanceDark;
+  searchField.enablesReturnKeyAutomatically = NO;
   const BOOL traitsChanged = lastWantedKeyboard != wantsKeyboard
                           || lastKeyboardType != keyboardType
                           || lastReturnKeyType != returnKeyType
                           || lastSecureEntry != secureEntry
-                          || lastSuppressesSoftwareKeyboard != suppressesSoftwareKeyboard;
+                          || lastSuppressesSoftwareKeyboard != suppressesSoftwareKeyboard
+                          || lastUsesSearchResponder != wantsSearchResponder;
 
   if (wantsKeyboard)
   {
     if (!self.window)
       return;
 
-    if (!proxyResponder)
-      [keyboardProxyField becomeFirstResponder];
-    else if (traitsChanged)
-      [keyboardProxyField reloadInputViews];
+    if (wantsSearchResponder)
+    {
+      if (proxyResponder)
+        [keyboardProxyField resignFirstResponder];
+
+      if (!searchResponder)
+        [searchField becomeFirstResponder];
+      else if (traitsChanged)
+        [searchField reloadInputViews];
+    }
+    else
+    {
+      if (searchResponder)
+        [keyboardSearchBar.searchTextField resignFirstResponder];
+
+      if (!proxyResponder)
+        [keyboardProxyField becomeFirstResponder];
+      else if (traitsChanged)
+        [keyboardProxyField reloadInputViews];
+    }
 
   }
-  else if (proxyResponder)
+  else if (proxyResponder || searchResponder)
   {
+    [keyboardSearchBar.searchTextField resignFirstResponder];
     [keyboardProxyField resignFirstResponder];
     [self endEditing:YES];
     [self.window endEditing:YES];
@@ -695,6 +867,7 @@ const glint_text_editor_base* glint_focused_text_editor(const glint_document* do
   lastReturnKeyType = returnKeyType;
   lastSecureEntry = secureEntry;
   lastSuppressesSoftwareKeyboard = suppressesSoftwareKeyboard;
+  lastUsesSearchResponder = wantsSearchResponder;
 }
 
 @end
@@ -926,6 +1099,18 @@ int glint_view_ios::_focusedReturnKeyType() const
 {
   if (!mDocument)
     return UIReturnKeyDefault;
+
+  const glint_element* focused = mDocument->getFocusedNode();
+  if (const auto* input = dynamic_cast<const glint_text_input*>(focused))
+  {
+    if (!input->enterkeyhint.empty())
+      return glint_return_key_type_from_hint(input->enterkeyhint);
+  }
+  if (const auto* textarea = dynamic_cast<const glint_textarea*>(focused))
+  {
+    if (!textarea->enterkeyhint.empty())
+      return glint_return_key_type_from_hint(textarea->enterkeyhint);
+  }
 
   return UIReturnKeyDefault;
 }

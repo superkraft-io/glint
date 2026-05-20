@@ -105,6 +105,7 @@ public:
   // ── Public fields ──────────────────────────────────────────────────────────
   std::string placeholder;
   std::string inputmode;
+  std::string enterkeyhint;
   float       lineHeight = 1.5f;   // multiplier applied to fontSize
 
   // ── Construction ──────────────────────────────────────────────────────────

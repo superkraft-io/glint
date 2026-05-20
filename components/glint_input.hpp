@@ -61,6 +61,9 @@ public:
   /** Virtual keyboard hint only; does not change validation semantics. */
   std::string inputmode;
 
+  /** Virtual keyboard return-key label hint only. */
+  std::string enterkeyhint;
+
   /** Placeholder text shown when the field is empty and unfocused. */
   std::string placeholder;
 
@@ -750,6 +753,9 @@ public:
   /** Virtual keyboard hint only; does not change validation semantics. */
   std::string inputmode;
 
+  /** Virtual keyboard return-key label hint only. */
+  std::string enterkeyhint;
+
   /** Placeholder text shown when the field is empty and unfocused. */
   std::string placeholder;
 
@@ -876,6 +882,7 @@ public:
   {
     if (name == "type") { found = true; return type.empty() ? "text" : type; }
     if (name == "inputmode") { found = true; return inputmode; }
+    if (name == "enterkeyhint") { found = true; return enterkeyhint; }
     return glint_element::getAttribute(name, found);
   }
 
@@ -1025,6 +1032,7 @@ private:
     {
       mTextInput->type        = type;
       mTextInput->inputmode   = inputmode;
+      mTextInput->enterkeyhint = enterkeyhint;
       mTextInput->min         = min;
       mTextInput->max         = max;
       mTextInput->placeholder = placeholder;
