@@ -56,8 +56,16 @@ public:
   bool _focusedNodeWantsKeyboard() const;
   bool _focusedSuppressesSoftwareKeyboard() const;
   bool _focusedNodeHasText() const;
+  bool _focusedNeedsNativeTextServices() const;
+  std::string _focusedTextValue() const;
+  glint_rect _focusedPaintRect() const;
   int _focusedKeyboardType() const;
   int _focusedReturnKeyType() const;
+  int _focusedAutocapitalizationType() const;
+  int _focusedAutocorrectionType() const;
+  int _focusedSpellCheckingType() const;
+  std::string _focusedAutocomplete() const;
+  bool _replaceFocusedTextFromPlatform(const std::string& utf8);
   bool _focusedSecureEntry() const;
   bool _focusedCanCut() const;
   bool _focusedCanCopy() const;

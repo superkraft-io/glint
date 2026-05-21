@@ -67,6 +67,15 @@ public:
   /** Virtual keyboard return-key label hint only. */
   std::string enterkeyhint;
 
+  /** Autofill hint token, mirroring the HTML autocomplete attribute. */
+  std::string autocomplete;
+
+  /** Autocapitalization hint, e.g. none, sentences, words, characters. */
+  std::string autocapitalize;
+
+  /** Spellchecking hint, typically true or false. */
+  std::string spellcheck;
+
   /** Maximum number of Unicode codepoints allowed, or -1 when unlimited. */
   int maxlength = -1;
 
@@ -953,6 +962,15 @@ public:
   /** Virtual keyboard return-key label hint only. */
   std::string enterkeyhint;
 
+  /** Autofill hint token, mirroring the HTML autocomplete attribute. */
+  std::string autocomplete;
+
+  /** Autocapitalization hint, e.g. none, sentences, words, characters. */
+  std::string autocapitalize;
+
+  /** Spellchecking hint, typically true or false. */
+  std::string spellcheck;
+
   /** Placeholder text shown when the field is empty and unfocused. */
   std::string placeholder;
 
@@ -1164,6 +1182,9 @@ public:
     if (name == "type") { found = true; return type.empty() ? "text" : type; }
     if (name == "inputmode") { found = true; return inputmode; }
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
+    if (name == "autocomplete") { found = true; return autocomplete; }
+    if (name == "autocapitalize") { found = true; return autocapitalize; }
+    if (name == "spellcheck") { found = true; return spellcheck; }
     if (name == "maxlength") { found = true; return maxlength >= 0 ? std::to_string(maxlength) : std::string(); }
     if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
     if (name == "required") { found = true; return required ? "true" : std::string(); }
@@ -1357,6 +1378,9 @@ private:
       mTextInput->type        = type;
       mTextInput->inputmode   = inputmode;
       mTextInput->enterkeyhint = enterkeyhint;
+      mTextInput->autocomplete = autocomplete;
+      mTextInput->autocapitalize = autocapitalize;
+      mTextInput->spellcheck  = spellcheck;
       mTextInput->maxlength   = maxlength;
       mTextInput->minlength   = minlength;
       mTextInput->required    = required;

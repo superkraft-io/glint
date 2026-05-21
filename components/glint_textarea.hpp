@@ -106,6 +106,9 @@ public:
   std::string placeholder;
   std::string inputmode;
   std::string enterkeyhint;
+  std::string autocomplete;
+  std::string autocapitalize;
+  std::string spellcheck;
   int         maxlength = -1;
   int         minlength = -1;
   bool        required = false;
@@ -144,6 +147,9 @@ public:
   {
     if (name == "inputmode") { found = true; return inputmode; }
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
+    if (name == "autocomplete") { found = true; return autocomplete; }
+    if (name == "autocapitalize") { found = true; return autocapitalize; }
+    if (name == "spellcheck") { found = true; return spellcheck; }
     if (name == "maxlength") { found = true; return maxlength >= 0 ? std::to_string(maxlength) : std::string(); }
     if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
     if (name == "required") { found = true; return required ? "true" : std::string(); }

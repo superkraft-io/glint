@@ -154,6 +154,25 @@ public:
     setValueInternal(s, false);
   }
 
+  void replaceTextFromPlatform(const std::string& s)
+  {
+    const std::string clamped = clampTextToMaxLength(s);
+    if (mText == clamped
+        && mCursorPos == static_cast<int>(mText.size())
+        && mSelStart == -1
+        && mSelEnd == -1)
+      return;
+
+    mText = clamped;
+    mCursorPos = static_cast<int>(mText.size());
+    mSelStart = mSelEnd = -1;
+    onTextChanged();
+    if (onChange) onChange(mText);
+    resetBlink();
+    onCursorMoved();
+    setDirty(false);
+  }
+
 private:
   void setValueInternal(const std::string& s, bool requestRedraw)
   {
