@@ -58,7 +58,7 @@ public:
   // makes _activeStyle() return the parent's computedStyle (for color, font, etc.).
   bool mUseParentStyle = false;
 
-  /** Input type: "text" | "number" | "password" | "email" */
+  /** Input type: text-like values plus checkbox, radio, range, and hidden. */
   std::string type = "text";
 
   /** Virtual keyboard hint only; does not change validation semantics. */
@@ -1261,6 +1261,8 @@ private:
   bool               mFocusPending = false;   // true when shell was focused before delegate existed
   float              mEnabledOpacity = 1.f;
   bool               mDisabledOpacityApplied = false;
+  std::string        mDisplayBeforeHidden;
+  bool               mHiddenDisplayApplied = false;
 
   void _buildDelegate()
   {
@@ -1354,6 +1356,26 @@ private:
 
   void _syncDelegateProps()
   {
+    const bool isHiddenType = (type == "hidden");
+
+    if (isHiddenType)
+    {
+      if (!mHiddenDisplayApplied)
+      {
+        mDisplayBeforeHidden = style.display;
+        mHiddenDisplayApplied = true;
+      }
+      style.display = "none";
+
+      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == this))
+        mRoot->SetFocus(nullptr);
+    }
+    else if (mHiddenDisplayApplied)
+    {
+      style.display = mDisplayBeforeHidden;
+      mHiddenDisplayApplied = false;
+    }
+
     if (disabled)
     {
       if (!mDisabledOpacityApplied)
@@ -1374,7 +1396,8 @@ private:
 
     if (mTextInput)
     {
-      mTextInput->mAcceptsFocus = !disabled;
+      mTextInput->mAcceptsFocus = !disabled && !isHiddenType;
+      mTextInput->mTabStop      = !disabled && !isHiddenType;
       mTextInput->type        = type;
       mTextInput->inputmode   = inputmode;
       mTextInput->enterkeyhint = enterkeyhint;
