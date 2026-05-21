@@ -96,6 +96,19 @@
     float baseline = 0.f;
   };
 
+  static void _refreshLayoutStyle(glint_element* node)
+  {
+    if (!node) return;
+    node->computedStyle = node->mergedStyleForLayout();
+  }
+
+  static void _refreshLayoutStyle(const glint_element* node)
+  {
+    if (!node) return;
+    auto* mutableNode = const_cast<glint_element*>(node);
+    mutableNode->computedStyle = mutableNode->mergedStyleForLayout();
+  }
+
   template <typename T>
   static std::vector<_TableRowInfo<T>> _collectTableRows(T& table)
   {
@@ -114,6 +127,7 @@
     for (auto& childPtr : table.mChildren)
     {
       T* child = childPtr.get();
+      _refreshLayoutStyle(child);
       if (child->computedStyle.display == "none" || child->computedStyle.position == "absolute")
         continue;
 
@@ -125,6 +139,7 @@
         for (auto& cellPtr : child->mChildren)
         {
           T* cell = cellPtr.get();
+          _refreshLayoutStyle(cell);
           if (cell->computedStyle.display == "none" || cell->computedStyle.position == "absolute")
             continue;
           row.cells.push_back(cell);
@@ -161,6 +176,7 @@
     }
     for (auto& child : node->mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display == "none" || child->computedStyle.position == "absolute") continue;
       _translateSubtree(child.get(), dx, dy);
     }
@@ -439,6 +455,7 @@
 
     for (auto& child : cell->mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display == "none" || child->computedStyle.position == "absolute") continue;
       const glint_rect childRect = child->GetPaintRECT();
       if (!m.hasBounds)
@@ -510,6 +527,7 @@
     }
     for (auto& child : cell->mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display == "none" || child->computedStyle.position == "absolute") continue;
       _translateSubtree(child.get(), 0.f, dy);
     }
@@ -1276,6 +1294,7 @@
     for (auto& childPtr : mChildren)
     {
       glint_element* child = childPtr.get();
+      _refreshLayoutStyle(child);
       if (child->computedStyle.display == "none") continue;
       if (child->computedStyle.position == "absolute") continue;
 
@@ -1607,6 +1626,7 @@
     for (auto& childPtr : mChildren)
     {
       glint_element* child = childPtr.get();
+      _refreshLayoutStyle(child);
       if (child->computedStyle.display == "none" || child->computedStyle.position != "absolute") continue;
       const glint_rect cb  = _containingBlockContent(child);
       const float cbW = cb.W(), cbH = cb.H();
@@ -1733,6 +1753,7 @@
     for (auto& childPtr : mChildren)
     {
       glint_element* child = childPtr.get();
+      _refreshLayoutStyle(child);
       if (child->computedStyle.display == "none" || child->computedStyle.position != "absolute") continue;
       const glint_rect cb  = _containingBlockContent(child);
       const float cbW = cb.W(), cbH = cb.H();
@@ -1763,6 +1784,7 @@
     // any other block-level element) may have innerText set without being inline.
     for (const auto& ch : mChildren)
     {
+      _refreshLayoutStyle(ch.get());
       if (ch->computedStyle.display == "none" || ch->computedStyle.position == "absolute") continue;
       if (ch->computedStyle.display == "inline")
       { layoutInline(g, rect, rW, rH); return; }
@@ -1771,6 +1793,7 @@
     float cursorY = 0.f;
     for (auto& child : mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display == "none") continue;
       const bool  isAbs = (child->computedStyle.position == "absolute");
       // Scrollbar children are excluded — _positionScrollbars() owns their rects.

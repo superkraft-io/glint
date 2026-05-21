@@ -31,6 +31,7 @@
 #include "glint_text_editor_base.hpp"
 #include "../default_style.hpp"
 #include "../render/glint_resource_request.hpp"
+#include "glint_button.hpp"
 #include "glint_slider.hpp"
 #include "glint_checkbox.hpp"
 #include "glint_radio.hpp"
@@ -943,8 +944,8 @@ private:
 };
 
 // ─── glint_input ──────────────────────────────────────────────────────────────
-// Thin shell that owns a glint_text_input (for "text"|"number"|"password"|"email")
-// or a glint_slider (for "range") as a child delegate.
+// Thin shell that owns a glint_text_input (for text-like types), glint_button
+// (for button-like types), or a specialized delegate child for range/checkbox/radio.
 // All visual styling (border, background, padding) stays on glint_input.
 // All interaction logic lives inside the delegate child.
 
@@ -953,7 +954,7 @@ class glint_input : public glint_element
 public:
   // ── Configuration ─────────────────────────────────────────────────────────
 
-  /** Input type: "text" | "number" | "password" | "email" | "range" | "checkbox" | "radio" */
+  /** Input type: text-like values plus range, checkbox, radio, hidden, button, submit, and reset. */
   std::string type        = "text";
 
   /** Virtual keyboard hint only; does not change validation semantics. */
@@ -1015,6 +1016,9 @@ public:
   /** Called when the user presses Enter (text types only). */
   std::function<void(const std::string&)> onSubmit;
 
+  /** Called when the control is clicked (button, submit, reset). */
+  std::function<void(const std::string&)> onClick;
+
   /** Optional key interceptor (text types only). Return true to consume the key. */
   std::function<bool(const glint_key_press&)> onKeyDown;
 
@@ -1062,6 +1066,7 @@ public:
     if (mCheckbox) return mCheckbox->checked ? "true" : "false";
     if (mRadio)    return mRadio->value;
     if (mTextInput) return mTextInput->getValue();
+    if (mButton) return _resolvedButtonLabel();
     if (mSlider)
     {
       char buf[64];
@@ -1076,6 +1081,7 @@ public:
   {
     mPendingValue = v;   // buffer for pre-Layout calls
     if (mTextInput) { mTextInput->setValue(v); return; }
+    if (mButton)    { mButton->SetLabel(_resolvedButtonLabel()); return; }
     if (mSlider)    { try { mSlider->SetValue(std::stof(v)); } catch (...) {} }
   }
 
@@ -1180,6 +1186,7 @@ public:
   std::string getAttribute(const std::string& name, bool& found) const override
   {
     if (name == "type") { found = true; return type.empty() ? "text" : type; }
+    if (name == "value" && _isButtonLikeType(type)) { found = true; return getValue(); }
     if (name == "inputmode") { found = true; return inputmode; }
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
     if (name == "autocomplete") { found = true; return autocomplete; }
@@ -1205,6 +1212,7 @@ public:
     if (!GetPaintRECT().Contains(x, y)) return nullptr;
     auto* hit = glint_element::HitTest(x, y);
     if (hit && hit != this) return hit;
+    if (mButton)    return mButton;
     if (mTextInput) return mTextInput;
     if (mSlider)    return mSlider;
     return this;
@@ -1245,13 +1253,35 @@ public:
 private:
   static std::string _delegateKindForType(const std::string& inputType)
   {
+    if (_isButtonLikeType(inputType)) return "button";
     if (inputType == "checkbox") return "checkbox";
     if (inputType == "radio")    return "radio";
     if (inputType == "range")    return "range";
     return "text";
   }
 
+  static bool _isButtonLikeType(const std::string& inputType)
+  {
+    return inputType == "button" || inputType == "submit" || inputType == "reset";
+  }
+
+  std::string _defaultButtonLabel() const
+  {
+    if (type == "submit") return "Submit";
+    if (type == "reset") return "Reset";
+    return "Button";
+  }
+
+  std::string _resolvedButtonLabel() const
+  {
+    if (!mPendingValue.empty()) return mPendingValue;
+    if (!value.empty()) return value;
+    if (!text.empty()) return text;
+    return _defaultButtonLabel();
+  }
+
   std::string        mActiveDelegateKind;
+  glint_button*      mButton     = nullptr;
   glint_text_input*  mTextInput  = nullptr;
   glint_slider*      mSlider     = nullptr;
   glint_checkbox*    mCheckbox   = nullptr;
@@ -1266,12 +1296,36 @@ private:
 
   void _buildDelegate()
   {
+    if (mButton)    { removeChild(mButton);    mButton    = nullptr; }
     if (mTextInput) { removeChild(mTextInput); mTextInput = nullptr; }
     if (mSlider)    { removeChild(mSlider);    mSlider    = nullptr; }
     if (mCheckbox)  { removeChild(mCheckbox);  mCheckbox  = nullptr; }
     if (mRadio)     { removeChild(mRadio);     mRadio     = nullptr; }
 
-    if (type == "checkbox")
+    if (_isButtonLikeType(type))
+    {
+      style.cursor       = "default";
+      auto* bt           = new glint_button();
+      bt->setCssStyleLayer({});
+      bt->style.position = "absolute";
+      bt->style.left     = 0.f;
+      bt->style.top      = 0.f;
+      bt->style.width    = "100%";
+      bt->style.height   = "100%";
+      bt->style.userSelect = "none";
+      bt->style.textAlign  = EAlign::Center;
+      bt->SetLabel(_resolvedButtonLabel());
+      bt->SetOnClick([this]() {
+        if (disabled) return;
+        const std::string currentValue = getValue();
+        if (onClick) onClick(currentValue);
+        if (type == "submit" && onSubmit) onSubmit(currentValue);
+      });
+      addChild(bt);
+      mButton = bt;
+      mFocusPending = false;
+    }
+    else if (type == "checkbox")
     {
       style.cursor       = "default";
       auto* cb           = new glint_checkbox();
@@ -1309,6 +1363,7 @@ private:
     }
     else if (type == "range")
     {
+      style.cursor       = "default";
       auto* sl           = new glint_slider();
       sl->style.position = "absolute";
       sl->style.left     = 0.f;
@@ -1327,6 +1382,7 @@ private:
     }
     else
     {
+      style.cursor        = "text";
       auto* ti            = new glint_text_input();
       ti->mUseParentStyle = true;   // visual style (color, font…) from parent
       ti->setCssStyleLayer({});     // clear box model — parent draws it
@@ -1351,6 +1407,8 @@ private:
         mRoot->SetFocus(mTextInput);
       }
     }
+    if (!mButton && !mCheckbox && !mRadio && !mSlider && !mTextInput)
+      style.cursor = "text";
     mActiveDelegateKind = _delegateKindForType(type);
   }
 
@@ -1415,6 +1473,12 @@ private:
       mTextInput->placeholder = placeholder;
       mTextInput->readonly    = readonly;
       mTextInput->disabled    = disabled;
+    }
+    if (mButton)
+    {
+      mButton->innerText = _resolvedButtonLabel();
+      mButton->style.userSelect = "none";
+      mButton->style.textAlign  = EAlign::Center;
     }
     if (mSlider)
     {
