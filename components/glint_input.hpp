@@ -1524,6 +1524,7 @@ private:
     else
     {
       auto* ti            = new glint_text_input();
+      ti->mUseParentStyle = true;
       ti->onChange  = [this](const std::string& v) { if (onChange)  onChange(v);  };
       ti->onSubmit  = [this](const std::string& v) {
         bool submitted = true;

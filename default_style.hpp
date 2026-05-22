@@ -20,7 +20,22 @@ select {
 
 input {
   position: relative;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="search"],
+input[type="tel"],
+input[type="url"],
+input[type="color"] {
   height: 36px;
+  border: 1px solid #414141;
+  border-radius: 8px;
+  padding: 0 10px;
+  color: #dcdcdc;
+  font-size: 13px;
 }
 
 input[type="button"],
@@ -30,6 +45,12 @@ input[type="checkbox"],
 input[type="radio"],
 input[type="range"] {
   cursor: default;
+}
+
+input[type="button"],
+input[type="submit"],
+input[type="reset"] {
+  height: 36px;
 }
 
 input > button,
@@ -46,11 +67,6 @@ input > text-input {
 
 input > text-input {
   cursor: text;
-  border: 1px solid #414141;
-  border-radius: 8px;
-  padding: 0 10px;
-  color: #dcdcdc;
-  font-size: 13px;
 }
 
 input > button {
