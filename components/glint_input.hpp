@@ -1249,6 +1249,46 @@ public:
     _syncDelegateProps();
     glint_element::tickTransitionsAll();
   }
+  
+  void syncBeforeLayout() override
+  {
+    if (mActiveDelegateKind != _delegateKindForType(type))
+      _buildDelegate();
+    _syncDelegateProps();
+  }
+  
+  float preferredW() const override
+  {
+    if (!_isButtonLikeType(type)) return glint_element::preferredW();
+  
+    const std::string label = _resolvedButtonLabel();
+    if (label.empty()) return 0.f;
+  
+    const float sz = computedStyle.fontSize.toFloat() > 0.f ? computedStyle.fontSize.toFloat() : 13.f;
+    SkFont font = skFont(sz,
+                         computedStyle.fontFamily.c_str(),
+                         computedStyle.fontWeight,
+                         computedStyle.fontStyle.c_str());
+    SkRect bounds;
+    return font.measureText(label.c_str(), label.size(), SkTextEncoding::kUTF8, &bounds) + 4.f;
+  }
+  
+  float preferredH(float availW = 0.f) const override
+  {
+    if (!_isButtonLikeType(type)) return glint_element::preferredH(availW);
+  
+    const std::string label = _resolvedButtonLabel();
+    if (label.empty()) return 0.f;
+  
+    const float sz = computedStyle.fontSize.toFloat() > 0.f ? computedStyle.fontSize.toFloat() : 13.f;
+    SkFont font = skFont(sz,
+                         computedStyle.fontFamily.c_str(),
+                         computedStyle.fontWeight,
+                         computedStyle.fontStyle.c_str());
+    SkFontMetrics metrics;
+    font.getMetrics(&metrics);
+    return -metrics.fAscent + metrics.fDescent + std::max(0.f, metrics.fLeading);
+  }
 
   void Layout(glint_canvas* g) override
   {

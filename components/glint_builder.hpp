@@ -886,7 +886,21 @@ inline void glint_component_style::glint_component_adder::img(std::function<void
 inline void glint_component_style::glint_component_adder::input(std::function<void(glint_input&)> s, glint_input** out) {
   _ops.push_back({
     [s, out](glint_ctx& c){ auto* t = c.add.input(s); if (out) *out = t; },
-    [s](glint_canvas*, glint_element*) -> glint_style { glint_input t; if (s) s(t); return t.style; }
+    [s](glint_canvas*, glint_element*) -> glint_style {
+      glint_input t;
+      if (s) s(t);
+      t.syncBeforeLayout();
+      glint_style style = t.style;
+      if (sk_is_fit_content(style.height.raw)) {
+        const float h = t.preferredH(0.f);
+        if (h > 0.f) style.height = h;
+      }
+      if (sk_is_fit_content(style.width.raw)) {
+        const float w = t.preferredW();
+        if (w > 0.f) style.width = w;
+      }
+      return style;
+    }
   });
 }
 

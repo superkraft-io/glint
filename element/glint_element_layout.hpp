@@ -23,6 +23,17 @@
     const auto& r = c.computedStyle.width.raw;
     return !r.empty() && r != "fit-content" && r != "auto";
   }
+  
+  static bool _hasInFlowChildren(const glint_element& c)
+  {
+    for (const auto& child : c.mChildren)
+    {
+      if (child->computedStyle.display == "none") continue;
+      if (child->computedStyle.position == "absolute") continue;
+      return true;
+    }
+    return false;
+  }
 
   // Returns true when the component has explicit fractional position/size or a
   // non-trivial transform — meaning sub-pixel placement is intentional and we
@@ -627,7 +638,7 @@
     else
     {
       computeIntrinsic:
-      if (!c.mChildren.empty())
+      if (!c.mChildren.empty() && _hasInFlowChildren(c))
       {
         // Resolve the container's OWN width first so that text inside a column-flex
         // card wraps at the card's actual pixel width, not at the full grandparent
@@ -717,7 +728,7 @@
     else
     {
       computeIntrinsic:
-      if (!c.mChildren.empty())
+      if (!c.mChildren.empty() && _hasInFlowChildren(c))
       {
         // CSS width percentages behave like auto when the containing block width
         // is itself intrinsic/indefinite, avoiding circular inflation during
