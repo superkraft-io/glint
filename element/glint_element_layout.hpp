@@ -780,6 +780,7 @@
 
     for (auto& child : mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display   == "none")     continue;
       if (child->computedStyle.position  == "absolute") continue;
       CI ci;
@@ -888,6 +889,7 @@
     // Scrollbar children are excluded — _positionScrollbars() owns their rects.
     for (auto& child : mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.position != "absolute") continue;
       if (child.get() == mScrollbarV || child.get() == mScrollbarH || child.get() == mScrollCorner) continue;
       const glint_rect cb  = _containingBlockContent(child.get());

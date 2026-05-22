@@ -115,6 +115,14 @@ inline glint_rect sk_rect(float x, float y, float width, float height)
 class glint_document;
 // Forward declaration — glint_scrollbar is defined in components/glint_scrollbar/glint_scrollbar.hpp.
 class glint_scrollbar;
+class glint_element;
+
+struct glint_form_value
+{
+  std::string name;
+  std::string value;
+  glint_element* control = nullptr;
+};
 
 // ── glint_element ───────────────────────────────────────────────────────────
 // Plain C++ base owned by its parent component or by
@@ -670,6 +678,8 @@ public:
       mApplyCss(mChildren[mChildren.size() - 2].get());
     // Tree shape changed — next frame must relayout.
     if (mRoot) _markRootLayoutDirty();
+    if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
+    if (mRequestRedraw) mRequestRedraw();
     // Notify the inspector (if open) that the tree has changed.
     callRootTreeChanged();
   }
@@ -697,6 +707,8 @@ public:
       element.scrollCornerBox = nullptr;
     }
     if (mRoot) _markRootLayoutDirty();
+    if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
+    if (mRequestRedraw) mRequestRedraw();
     callRootTreeChanged();
   }
 
@@ -723,6 +735,8 @@ public:
     if (erased)
     {
       if (mRoot) _markRootLayoutDirty();
+      if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
+      if (mRequestRedraw) mRequestRedraw();
       callRootTreeChanged();
     }
   }
@@ -773,6 +787,16 @@ public:
     found = false;
     return "";
   }
+
+  // Controls override these hooks when they participate in a parent <form>.
+  virtual bool isFormAssociatedControl() const { return false; }
+  virtual std::string formControlName() const { return {}; }
+  virtual bool isFormControlDisabled() const { return false; }
+  virtual bool formControlIsValid() const { return true; }
+  virtual void captureFormDefaultsIfNeeded() {}
+  virtual void resetFormControl() {}
+  virtual void appendFormValues(std::vector<glint_form_value>&,
+                                const glint_element* /*submitter*/) const {}
 
   /** DOM appendChild — adds a child node. Alias for addChild(). */
   void appendChild(glint_element* node) { addChild(node); }

@@ -103,6 +103,7 @@ class glint_textarea : public glint_text_editor_base
 {
 public:
   // ── Public fields ──────────────────────────────────────────────────────────
+  std::string name;
   std::string placeholder;
   std::string inputmode;
   std::string enterkeyhint;
@@ -145,6 +146,7 @@ public:
 
   std::string getAttribute(const std::string& name, bool& found) const override
   {
+    if (name == "name") { found = true; return this->name; }
     if (name == "inputmode") { found = true; return inputmode; }
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
     if (name == "autocomplete") { found = true; return autocomplete; }
@@ -154,6 +156,32 @@ public:
     if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
     if (name == "required") { found = true; return required ? "true" : std::string(); }
     return glint_text_editor_base::getAttribute(name, found);
+  }
+
+  bool isFormAssociatedControl() const override { return true; }
+  std::string formControlName() const override { return name; }
+  bool isFormControlDisabled() const override { return disabled; }
+  bool formControlIsValid() const override { return disabled || satisfiesTextConstraints(); }
+
+  void captureFormDefaultsIfNeeded() override
+  {
+    if (mFormDefaultsCaptured) return;
+    mDefaultValue = getValue();
+    mFormDefaultsCaptured = true;
+  }
+
+  void resetFormControl() override
+  {
+    captureFormDefaultsIfNeeded();
+    setValue(mDefaultValue);
+    setDirty(false);
+  }
+
+  void appendFormValues(std::vector<glint_form_value>& values,
+                        const glint_element* /*submitter*/) const override
+  {
+    if (disabled || name.empty()) return;
+    values.push_back({name, getValue(), const_cast<glint_textarea*>(this)});
   }
 
   void onFocusGained() override
@@ -507,6 +535,8 @@ private:
   glint_element*  mResizeHandle  = nullptr;
   float           mEnabledOpacity = 1.f;
   bool            mDisabledOpacityApplied = false;
+  bool            mFormDefaultsCaptured = false;
+  std::string     mDefaultValue;
 
   float _fontSize() const
   {

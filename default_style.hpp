@@ -19,8 +19,33 @@ select {
 }
 
 input {
+  position: relative;
   height: 36px;
-  background-color: #202020;
+}
+
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"] {
+  cursor: default;
+}
+
+input > button,
+input > checkbox,
+input > radio,
+input > slider,
+input > text-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+
+input > text-input {
+  cursor: text;
   border: 1px solid #414141;
   border-radius: 8px;
   padding: 0 10px;
@@ -28,11 +53,13 @@ input {
   font-size: 13px;
 }
 
-input[type="range"] {
-  border: none;
-  background-color: transparent;
-  border-radius: 0;
-  padding: 0;
+input > button {
+  user-select: none;
+  text-align: center;
+}
+
+text-input {
+  cursor: text;
 }
 
 dial {

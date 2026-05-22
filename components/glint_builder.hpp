@@ -700,6 +700,7 @@ inline glint_element* glint_element::ComponentAdd::component(S&& setup, glint_el
 #include "glint_button.hpp"
 #include "glint_image.hpp"
 #include "glint_text_editor_base.hpp"
+#include "glint_form.hpp"
 #include "glint_input.hpp"
 #include "glint_colorpicker.hpp"
 #include "glint_dial.hpp"

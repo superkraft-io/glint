@@ -29,6 +29,7 @@
  */
 
 #include "glint_text_editor_base.hpp"
+#include "glint_form.hpp"
 #include "../default_style.hpp"
 #include "../render/glint_resource_request.hpp"
 #include "glint_button.hpp"
@@ -55,8 +56,8 @@ class glint_text_input : public glint_text_editor_base
 public:
   // ── Configuration (set in builder callback) ────────────────────────────────
 
-  // Set to true by glint_input when used as a delegate child:
-  // makes _activeStyle() return the parent's computedStyle (for color, font, etc.).
+  // Set to true when a parent wants the delegate to render against the
+  // parent's content box and computed style instead of its own.
   bool mUseParentStyle = false;
 
   /** Input type: text-like values plus checkbox, radio, range, and hidden. */
@@ -124,7 +125,6 @@ public:
 
   glint_text_input()
   {
-    style.cursor = "text";   // inline layer — always live, read by getCursorAtPoint
     setCssStyleLayer(glint_default_user_agent_style_for(*this));
     computedStyle = mergedStyleForLayout();
   }
@@ -946,7 +946,8 @@ private:
 // ─── glint_input ──────────────────────────────────────────────────────────────
 // Thin shell that owns a glint_text_input (for text-like types), glint_button
 // (for button-like types), or a specialized delegate child for range/checkbox/radio.
-// All visual styling (border, background, padding) stays on glint_input.
+// The shell still owns layout chrome like border and padding; delegates can
+// supply their own background when needed.
 // All interaction logic lives inside the delegate child.
 
 class glint_input : public glint_element
@@ -1005,6 +1006,9 @@ public:
   /** When true, the field is entirely non-interactive. */
   bool disabled = false;
 
+  /** Form field name used during submit serialization. */
+  std::string name;
+
   /** Tag for glint_document::GetNodeWithTag. */
   int tag = glint_no_tag;
 
@@ -1052,8 +1056,6 @@ public:
 
   glint_input()
   {
-    style.position = "relative";   // establish containing block for absolute delegate children
-    style.cursor   = "text";       // inline layer — always live, read by getCursorAtPoint
     setCssStyleLayer(glint_default_user_agent_style_for(*this));
     computedStyle = mergedStyleForLayout();
   }
@@ -1186,6 +1188,7 @@ public:
   std::string getAttribute(const std::string& name, bool& found) const override
   {
     if (name == "type") { found = true; return type.empty() ? "text" : type; }
+    if (name == "name") { found = true; return this->name; }
     if (name == "value" && _isButtonLikeType(type)) { found = true; return getValue(); }
     if (name == "inputmode") { found = true; return inputmode; }
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
@@ -1203,6 +1206,77 @@ public:
     return glint_element::getAttribute(name, found);
   }
 
+  bool isFormAssociatedControl() const override { return true; }
+  std::string formControlName() const override { return name; }
+  bool isFormControlDisabled() const override { return disabled; }
+
+  bool formControlIsValid() const override
+  {
+    if (disabled || type == "hidden" || _isButtonLikeType(type)) return true;
+    return satisfiesConstraints();
+  }
+
+  void captureFormDefaultsIfNeeded() override
+  {
+    if (mFormDefaultsCaptured) return;
+    mDefaultChecked = checked;
+    mDefaultValue = getValue();
+    mDefaultFloatValue = getFloatValue();
+    mFormDefaultsCaptured = true;
+  }
+
+  void resetFormControl() override
+  {
+    captureFormDefaultsIfNeeded();
+
+    if (type == "checkbox" || type == "radio")
+    {
+      checked = mDefaultChecked;
+      _syncDelegateProps();
+      setDirty(false);
+      return;
+    }
+
+    if (type == "range")
+    {
+      setFloatValue(mDefaultFloatValue);
+      _syncDelegateProps();
+      setDirty(false);
+      return;
+    }
+
+    setValue(mDefaultValue);
+    _syncDelegateProps();
+    setDirty(false);
+  }
+
+  void appendFormValues(std::vector<glint_form_value>& values,
+                        const glint_element* submitter) const override
+  {
+    if (disabled || name.empty() || type == "button" || type == "reset")
+      return;
+
+    if (type == "submit")
+    {
+      if (submitter != this) return;
+      values.push_back({name, getValue(), const_cast<glint_input*>(this)});
+      return;
+    }
+
+    if (type == "checkbox" || type == "radio")
+    {
+      if (!checked) return;
+      values.push_back({
+        name,
+        value.empty() ? std::string("on") : value,
+        const_cast<glint_input*>(this)
+      });
+      return;
+    }
+
+    values.push_back({name, getValue(), const_cast<glint_input*>(this)});
+  }
+
   // ── Hit testing ───────────────────────────────────────────────────────────
   // Forward hits in the padding/border area to the delegate so clicking
   // anywhere within glint_input always interacts with it.
@@ -1215,6 +1289,8 @@ public:
     if (mButton)    return mButton;
     if (mTextInput) return mTextInput;
     if (mSlider)    return mSlider;
+    if (mCheckbox)  return mCheckbox;
+    if (mRadio)     return mRadio;
     return this;
   }
 
@@ -1259,6 +1335,21 @@ public:
   
   float preferredW() const override
   {
+    if (type == "checkbox" || type == "radio")
+    {
+      const float controlSize = checkSize > 0.f ? checkSize : 16.f;
+      if (text.empty()) return controlSize;
+
+      const float gap = std::roundf(controlSize * 0.5f);
+      SkFont font = skFont(controlSize,
+                           computedStyle.fontFamily.c_str(),
+                           computedStyle.fontWeight,
+                           computedStyle.fontStyle.c_str());
+      SkRect bounds;
+      const float textWidth = font.measureText(text.c_str(), text.size(), SkTextEncoding::kUTF8, &bounds);
+      return controlSize + gap + textWidth;
+    }
+
     if (!_isButtonLikeType(type)) return glint_element::preferredW();
   
     const std::string label = _resolvedButtonLabel();
@@ -1275,6 +1366,9 @@ public:
   
   float preferredH(float availW = 0.f) const override
   {
+    if (type == "checkbox" || type == "radio")
+      return checkSize > 0.f ? checkSize : 16.f;
+
     if (!_isButtonLikeType(type)) return glint_element::preferredH(availW);
   
     const std::string label = _resolvedButtonLabel();
@@ -1341,6 +1435,10 @@ private:
   bool               mDisabledOpacityApplied = false;
   std::string        mDisplayBeforeHidden;
   bool               mHiddenDisplayApplied = false;
+  bool               mFormDefaultsCaptured = false;
+  bool               mDefaultChecked = false;
+  float              mDefaultFloatValue = 0.f;
+  std::string        mDefaultValue;
 
   void _buildDelegate()
   {
@@ -1350,38 +1448,42 @@ private:
     if (mCheckbox)  { removeChild(mCheckbox);  mCheckbox  = nullptr; }
     if (mRadio)     { removeChild(mRadio);     mRadio     = nullptr; }
 
+    auto applyAttachedUserAgentStyle = [](glint_element* el)
+    {
+      el->setCssStyleLayer(glint_default_user_agent_style_for(*el));
+      el->computedStyle = el->mergedStyleForLayout();
+    };
+
     if (_isButtonLikeType(type))
     {
-      style.cursor       = "default";
       auto* bt           = new glint_button();
-      bt->setCssStyleLayer({});
-      bt->style.position = "absolute";
-      bt->style.left     = 0.f;
-      bt->style.top      = 0.f;
-      bt->style.width    = "100%";
-      bt->style.height   = "100%";
-      bt->style.userSelect = "none";
-      bt->style.textAlign  = EAlign::Center;
       bt->SetLabel(_resolvedButtonLabel());
       bt->SetOnClick([this]() {
         if (disabled) return;
         const std::string currentValue = getValue();
         if (onClick) onClick(currentValue);
-        if (type == "submit" && onSubmit) onSubmit(currentValue);
+        if (type == "submit")
+        {
+          bool submitted = true;
+          if (auto* form = glint_form::nearestFor(this))
+            submitted = form->submit(this);
+          if (submitted && onSubmit)
+            onSubmit(currentValue);
+        }
+        else if (type == "reset")
+        {
+          if (auto* form = glint_form::nearestFor(this))
+            form->reset();
+        }
       });
       addChild(bt);
+      applyAttachedUserAgentStyle(bt);
       mButton = bt;
       mFocusPending = false;
     }
     else if (type == "checkbox")
     {
-      style.cursor       = "default";
       auto* cb           = new glint_checkbox();
-      cb->style.position = "absolute";
-      cb->style.left     = 0.f;
-      cb->style.top      = 0.f;
-      cb->style.width    = "100%";
-      cb->style.height   = "100%";
       cb->onChange = [this](bool v)
       {
         checked = v;
@@ -1389,17 +1491,12 @@ private:
         if (onChange) onChange(v ? "true" : "false");
       };
       addChild(cb);
+      applyAttachedUserAgentStyle(cb);
       mCheckbox = cb;
     }
     else if (type == "radio")
     {
-      style.cursor      = "default";
       auto* r           = new glint_radio();
-      r->style.position = "absolute";
-      r->style.left     = 0.f;
-      r->style.top      = 0.f;
-      r->style.width    = "100%";
-      r->style.height   = "100%";
       r->onChange = [this](bool v)
       {
         checked = v;
@@ -1407,17 +1504,12 @@ private:
         if (onChange) onChange(this->value);
       };
       addChild(r);
+      applyAttachedUserAgentStyle(r);
       mRadio = r;
     }
     else if (type == "range")
     {
-      style.cursor       = "default";
       auto* sl           = new glint_slider();
-      sl->style.position = "absolute";
-      sl->style.left     = 0.f;
-      sl->style.top      = 0.f;
-      sl->style.width    = "100%";
-      sl->style.height   = "100%";
       sl->onChange = [this](float v)
       {
         char buf[64];
@@ -1425,27 +1517,27 @@ private:
         if (onChange) onChange(std::string(buf));
       };
       addChild(sl);
+      applyAttachedUserAgentStyle(sl);
       mSlider = sl;
       mSlider->SetValue(mInitialFloatValue);
     }
     else
     {
-      style.cursor        = "text";
       auto* ti            = new glint_text_input();
-      ti->mUseParentStyle = true;   // visual style (color, font…) from parent
-      ti->setCssStyleLayer({});     // clear box model — parent draws it
-      ti->style.position  = "absolute";
-      ti->style.left      = 0.f;
-      ti->style.top       = 0.f;
-      ti->style.width     = "100%";
-      ti->style.height    = "100%";
       ti->onChange  = [this](const std::string& v) { if (onChange)  onChange(v);  };
-      ti->onSubmit  = [this](const std::string& v) { if (onSubmit)  onSubmit(v);  };
+      ti->onSubmit  = [this](const std::string& v) {
+        bool submitted = true;
+        if (auto* form = glint_form::nearestFor(this))
+          submitted = form->submit(this);
+        if (submitted && onSubmit)
+          onSubmit(v);
+      };
       ti->onKeyDown = [this](const glint_key_press& k) -> bool
                       { return onKeyDown ? onKeyDown(k) : false; };
       ti->onFocus   = [this]() { if (onFocus) onFocus(); };
       ti->onBlur    = [this]() { if (onBlur)  onBlur();  };
       addChild(ti);
+      applyAttachedUserAgentStyle(ti);
       mTextInput = ti;
       if (!mPendingValue.empty()) mTextInput->setValue(mPendingValue);
       // If SetFocus(shell) was called before the delegate existed, forward now.
@@ -1455,8 +1547,6 @@ private:
         mRoot->SetFocus(mTextInput);
       }
     }
-    if (!mButton && !mCheckbox && !mRadio && !mSlider && !mTextInput)
-      style.cursor = "text";
     mActiveDelegateKind = _delegateKindForType(type);
   }
 
