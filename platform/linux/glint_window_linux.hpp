@@ -20,6 +20,7 @@
 
 #include "../glint_window_base.hpp"
 #include "../../glint_bus.hpp"
+#include "../glint_platform_rect.hpp"
 
 #include <atomic>
 #include <functional>
@@ -40,7 +41,6 @@ using LRESULT  = intptr_t;
 using HWND     = void*;
 using COLORREF = unsigned long;
 using LONG     = int;
-struct RECT  { int left = 0, top = 0, right = 0, bottom = 0; };
 struct POINT { int x = 0, y = 0; };
 static constexpr UINT WM_USER = 0x0400u;
 #define LOWORD(l)  (static_cast<unsigned short>(static_cast<unsigned long>(l) & 0xFFFF))

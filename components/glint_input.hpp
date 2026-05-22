@@ -30,6 +30,7 @@
 
 #include "glint_text_editor_base.hpp"
 #include "glint_form.hpp"
+#include "glint_input_colorpicker_bridge.hpp"
 #include "../default_style.hpp"
 #include "../render/glint_resource_request.hpp"
 #include "glint_button.hpp"
@@ -1056,8 +1057,17 @@ public:
 
   glint_input()
   {
-    setCssStyleLayer(glint_default_user_agent_style_for(*this));
-    computedStyle = mergedStyleForLayout();
+    _refreshShellUserAgentStyle();
+  }
+
+  ~glint_input() override
+  {
+    *mAlive = false;
+    if (mColorPickerBridge)
+    {
+      glint_input_colorpicker_destroy(mColorPickerBridge);
+      mColorPickerBridge = nullptr;
+    }
   }
 
   // ── Value API ─────────────────────────────────────────────────────────────
@@ -1067,6 +1077,7 @@ public:
   {
     if (mCheckbox) return mCheckbox->checked ? "true" : "false";
     if (mRadio)    return mRadio->value;
+    if (mColorButton) return _resolvedColorValue();
     if (mTextInput) return mTextInput->getValue();
     if (mButton) return _resolvedButtonLabel();
     if (mSlider)
@@ -1081,6 +1092,17 @@ public:
   /** Sets the current value from a string. */
   void setValue(const std::string& v)
   {
+    if (type == "color" || mColorButton)
+    {
+      mPendingValue = _normalizeColorValue(v);
+      if (mColorButton)
+      {
+        _syncDelegateProps();
+        setDirty(false);
+      }
+      return;
+    }
+
     mPendingValue = v;   // buffer for pre-Layout calls
     if (mTextInput) { mTextInput->setValue(v); return; }
     if (mButton)    { mButton->SetLabel(_resolvedButtonLabel()); return; }
@@ -1189,7 +1211,7 @@ public:
   {
     if (name == "type") { found = true; return type.empty() ? "text" : type; }
     if (name == "name") { found = true; return this->name; }
-    if (name == "value" && _isButtonLikeType(type)) { found = true; return getValue(); }
+    if (name == "value" && (_isButtonLikeType(type) || type == "color")) { found = true; return getValue(); }
     if (name == "inputmode") { found = true; return inputmode; }
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
     if (name == "autocomplete") { found = true; return autocomplete; }
@@ -1221,7 +1243,8 @@ public:
     if (mFormDefaultsCaptured) return;
     mDefaultChecked = checked;
     mDefaultValue = getValue();
-    mDefaultFloatValue = getFloatValue();
+    if (type == "range")
+      mDefaultFloatValue = getFloatValue();
     mFormDefaultsCaptured = true;
   }
 
@@ -1287,6 +1310,7 @@ public:
     auto* hit = glint_element::HitTest(x, y);
     if (hit && hit != this) return hit;
     if (mButton)    return mButton;
+    if (mColorButton) return mColorButton;
     if (mTextInput) return mTextInput;
     if (mSlider)    return mSlider;
     if (mCheckbox)  return mCheckbox;
@@ -1328,6 +1352,7 @@ public:
   
   void syncBeforeLayout() override
   {
+    _refreshShellUserAgentStyle();
     if (mActiveDelegateKind != _delegateKindForType(type))
       _buildDelegate();
     _syncDelegateProps();
@@ -1335,6 +1360,9 @@ public:
   
   float preferredW() const override
   {
+    if (type == "color")
+      return 44.f;
+
     if (type == "checkbox" || type == "radio")
     {
       const float controlSize = checkSize > 0.f ? checkSize : 16.f;
@@ -1361,11 +1389,14 @@ public:
                          computedStyle.fontWeight,
                          computedStyle.fontStyle.c_str());
     SkRect bounds;
-    return font.measureText(label.c_str(), label.size(), SkTextEncoding::kUTF8, &bounds) + 4.f;
+    return font.measureText(label.c_str(), label.size(), SkTextEncoding::kUTF8, &bounds) + 24.f;
   }
   
   float preferredH(float availW = 0.f) const override
   {
+    if (type == "color")
+      return 36.f;
+
     if (type == "checkbox" || type == "radio")
       return checkSize > 0.f ? checkSize : 16.f;
 
@@ -1386,6 +1417,7 @@ public:
 
   void Layout(glint_canvas* g) override
   {
+    _refreshShellUserAgentStyle();
     if (mActiveDelegateKind != _delegateKindForType(type))
       _buildDelegate();
     _syncDelegateProps();
@@ -1393,12 +1425,21 @@ public:
   }
 
 private:
+  void _refreshShellUserAgentStyle()
+  {
+    if (mStyledShellType == type) return;
+    setCssStyleLayer(glint_default_user_agent_style_for(*this));
+    computedStyle = mergedStyleForLayout();
+    mStyledShellType = type;
+  }
+
   static std::string _delegateKindForType(const std::string& inputType)
   {
     if (_isButtonLikeType(inputType)) return "button";
     if (inputType == "checkbox") return "checkbox";
     if (inputType == "radio")    return "radio";
     if (inputType == "range")    return "range";
+    if (inputType == "color")    return "color";
     return "text";
   }
 
@@ -1422,12 +1463,70 @@ private:
     return _defaultButtonLabel();
   }
 
+  static std::string _colorValueFrom(glint_color c)
+  {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", c.R, c.G, c.B);
+    return buf;
+  }
+
+  static std::string _normalizeColorValue(const std::string& raw)
+  {
+    if (raw.empty()) return "#000000";
+    return _colorValueFrom(sk_color(raw.c_str()).value);
+  }
+
+  std::string _resolvedColorValue() const
+  {
+    if (!mPendingValue.empty()) return _normalizeColorValue(mPendingValue);
+    if (!value.empty()) return _normalizeColorValue(value);
+    return "#000000";
+  }
+
+  glint_color _resolvedColor() const
+  {
+    return sk_color(_resolvedColorValue().c_str()).value;
+  }
+
+  void _openColorPicker()
+  {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    return;
+#else
+    if (disabled || type != "color") return;
+
+    const glint_color currentColor = _resolvedColor();
+    const RECT anchor = glint_input_colorpicker_anchor_screen_rect(this);
+    auto alive = mAlive;
+
+    mColorPickerBridge = glint_input_colorpicker_reopen(
+      mColorPickerBridge,
+      currentColor,
+      anchor,
+      [this, alive](glint_color c) {
+        if (!*alive) return;
+        const std::string normalized = _colorValueFrom(c);
+        mPendingValue = normalized;
+        _syncDelegateProps();
+        if (onChange) onChange(normalized);
+        setDirty(false);
+      },
+      [this, alive]() {
+        if (!*alive) return;
+      }
+    );
+#endif
+  }
+
   std::string        mActiveDelegateKind;
+  std::string        mStyledShellType;
   glint_button*      mButton     = nullptr;
+  glint_button*      mColorButton = nullptr;
   glint_text_input*  mTextInput  = nullptr;
   glint_slider*      mSlider     = nullptr;
   glint_checkbox*    mCheckbox   = nullptr;
   glint_radio*       mRadio      = nullptr;
+  glint_input_colorpicker_bridge* mColorPickerBridge = nullptr;
   float              mInitialFloatValue = 0.f;
   std::string        mPendingValue;
   bool               mFocusPending = false;   // true when shell was focused before delegate existed
@@ -1439,18 +1538,29 @@ private:
   bool               mDefaultChecked = false;
   float              mDefaultFloatValue = 0.f;
   std::string        mDefaultValue;
+  std::shared_ptr<bool> mAlive = std::make_shared<bool>(true);
 
   void _buildDelegate()
   {
     if (mButton)    { removeChild(mButton);    mButton    = nullptr; }
+    if (mColorButton) { removeChild(mColorButton); mColorButton = nullptr; }
     if (mTextInput) { removeChild(mTextInput); mTextInput = nullptr; }
     if (mSlider)    { removeChild(mSlider);    mSlider    = nullptr; }
     if (mCheckbox)  { removeChild(mCheckbox);  mCheckbox  = nullptr; }
     if (mRadio)     { removeChild(mRadio);     mRadio     = nullptr; }
 
+    if (_delegateKindForType(type) != "color" && mColorPickerBridge)
+    {
+      glint_input_colorpicker_destroy(mColorPickerBridge);
+      mColorPickerBridge = nullptr;
+    }
+
     auto applyAttachedUserAgentStyle = [](glint_element* el)
     {
-      el->setCssStyleLayer(glint_default_user_agent_style_for(*el));
+      if (el->mRoot && el->mApplyCss)
+        el->mApplyCss(el);
+      else
+        el->setCssStyleLayer(glint_default_user_agent_style_for(*el));
       el->computedStyle = el->mergedStyleForLayout();
     };
 
@@ -1479,6 +1589,22 @@ private:
       addChild(bt);
       applyAttachedUserAgentStyle(bt);
       mButton = bt;
+      mFocusPending = false;
+    }
+    else if (type == "color")
+    {
+      auto* bt = new glint_button();
+      bt->className = "glint_input_color_button";
+      bt->SetLabel("");
+      bt->style.width = "100%";
+      bt->style.height = "100%";
+      bt->SetOnClick([this]() {
+        _openColorPicker();
+      });
+      addChild(bt);
+      applyAttachedUserAgentStyle(bt);
+      bt->computedStyle = bt->mergedStyleForLayout();
+      mColorButton = bt;
       mFocusPending = false;
     }
     else if (type == "checkbox")
@@ -1591,6 +1717,9 @@ private:
       mDisabledOpacityApplied = false;
     }
 
+    if ((disabled || isHiddenType) && mColorPickerBridge)
+      glint_input_colorpicker_hide(mColorPickerBridge);
+
     if (mTextInput)
     {
       mTextInput->mAcceptsFocus = !disabled && !isHiddenType;
@@ -1618,6 +1747,11 @@ private:
       mButton->innerText = _resolvedButtonLabel();
       mButton->style.userSelect = "none";
       mButton->style.textAlign  = EAlign::Center;
+    }
+    if (mColorButton)
+    {
+      mColorButton->innerText = "";
+      mColorButton->style.backgroundColor = _resolvedColor();
     }
     if (mSlider)
     {

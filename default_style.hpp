@@ -11,6 +11,21 @@ button {
   display: inline-block;
   user-select: none;
   cursor: default;
+  height: 36px;
+  padding: 0 12px;
+  background-color: #2d2d2d;
+  border: 1px solid #555555;
+  border-radius: 8px;
+  color: #e6e6e6;
+  font-size: 13px;
+}
+
+button:hover {
+  background-color: #353535;
+}
+
+button:active {
+  background-color: #222222;
 }
 
 select {
@@ -28,8 +43,7 @@ input[type="password"],
 input[type="number"],
 input[type="search"],
 input[type="tel"],
-input[type="url"],
-input[type="color"] {
+input[type="url"] {
   height: 36px;
   border: 1px solid #414141;
   border-radius: 8px;
@@ -43,8 +57,16 @@ input[type="submit"],
 input[type="reset"],
 input[type="checkbox"],
 input[type="radio"],
+input[type="color"],
 input[type="range"] {
   cursor: default;
+}
+
+input[type="color"] {
+  height: 36px;
+  width: 44px;
+  border: 0;
+  border-radius: 0;
 }
 
 input[type="button"],
@@ -72,6 +94,11 @@ input > text-input {
 input > button {
   user-select: none;
   text-align: center;
+}
+
+input[type="color"] > button {
+  border: 1px solid #414141;
+  border-radius: 8px;
 }
 
 text-input {
