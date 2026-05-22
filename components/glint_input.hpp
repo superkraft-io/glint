@@ -1242,6 +1242,14 @@ public:
     mFocusPending = true;   // delegate not yet built; forward on first _buildDelegate()
   }
 
+  void tickTransitionsAll() override
+  {
+    // Keep hidden/disabled shell state in sync before parent layout decides
+    // whether to skip this subtree based on computedStyle.display.
+    _syncDelegateProps();
+    glint_element::tickTransitionsAll();
+  }
+
   void Layout(glint_canvas* g) override
   {
     if (mActiveDelegateKind != _delegateKindForType(type))
