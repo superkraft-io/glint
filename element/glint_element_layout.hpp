@@ -1961,12 +1961,13 @@
     const float maxX = std::max(0.f, mScrollWidth  - viewW);
     const float maxY = std::max(0.f, mScrollHeight - viewH);
 
-    // If the viewport shrank and the element was already pinned to the prior
-    // edge, keep it pinned to the new edge instead of leaving it short by the
-    // delta between old and new max scroll.
-    if (mLastScrollMaxX >= 0.f && maxX > mLastScrollMaxX && std::fabs(mScrollLeft - mLastScrollMaxX) <= 0.5f)
+    // Preserve end-pinning only when there was already a real scroll range.
+    // When the prior max scroll was 0, a newly overflowing element starts at
+    // scrollTop/Left == 0 by default and must stay at the origin rather than
+    // being treated as intentionally pinned to the far edge.
+    if (mLastScrollMaxX > 0.f && maxX > mLastScrollMaxX && std::fabs(mScrollLeft - mLastScrollMaxX) <= 0.5f)
       mScrollLeft = maxX;
-    if (mLastScrollMaxY >= 0.f && maxY > mLastScrollMaxY && std::fabs(mScrollTop - mLastScrollMaxY) <= 0.5f)
+    if (mLastScrollMaxY > 0.f && maxY > mLastScrollMaxY && std::fabs(mScrollTop - mLastScrollMaxY) <= 0.5f)
       mScrollTop = maxY;
 
     mScrollLeft = std::max(0.f, std::min(mScrollLeft, maxX));

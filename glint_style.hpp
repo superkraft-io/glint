@@ -587,19 +587,31 @@ struct SKEdgeInsets
 
   // Uniform
   explicit SKEdgeInsets(float all)
-    : top(all), right(all), bottom(all), left(all) {}
+  {
+    assignAll(all);
+  }
 
   // Vertical / horizontal
   SKEdgeInsets(float topBottom, float leftRight)
-    : top(topBottom), right(leftRight), bottom(topBottom), left(leftRight) {}
+  {
+    setSide(top, rawTop, topBottom);
+    setSide(right, rawRight, leftRight);
+    setSide(bottom, rawBottom, topBottom);
+    setSide(left, rawLeft, leftRight);
+  }
 
   // Explicit sides (CSS order: top right bottom left)
   SKEdgeInsets(float t, float r, float b, float l)
-    : top(t), right(r), bottom(b), left(l) {}
+  {
+    setSide(top, rawTop, t);
+    setSide(right, rawRight, r);
+    setSide(bottom, rawBottom, b);
+    setSide(left, rawLeft, l);
+  }
 
   // ── Shorthand assignment — the ONLY public way to set insets in user code. ──
   // For individual sides use the paddingTop / marginLeft etc. proxies on glint_style.
-  SKEdgeInsets& operator=(float all)   { top = right = bottom = left = all; return *this; }
+  SKEdgeInsets& operator=(float all)   { assignAll(all); return *this; }
   SKEdgeInsets& operator=(double all)  { return operator=(static_cast<float>(all)); }
   SKEdgeInsets& operator=(int all)     { return operator=(static_cast<float>(all)); }
   // CSS shorthand string:
@@ -610,23 +622,92 @@ struct SKEdgeInsets
   //   Values may carry a "px" suffix which is ignored.
   SKEdgeInsets& operator=(const char* css)
   {
-    if (!css || !*css) return *this;
+    if (!css || !*css)
+    {
+      clear();
+      return *this;
+    }
     std::istringstream ss(css);
     std::vector<float> v;
+    std::vector<std::string> raw;
     std::string tok;
     while (ss >> tok)
     {
-      if (!tok.empty()) { try { v.push_back(std::stof(tok)); } catch (...) {} } // stof stops at 'px'
+      if (!tok.empty())
+      {
+        try
+        {
+          v.push_back(std::stof(tok));
+          raw.push_back(tok);
+        }
+        catch (...) {}
+      }
     }
-    if      (v.size() == 1) { top = right = bottom = left = v[0]; }
-    else if (v.size() == 2) { top = bottom = v[0]; right = left = v[1]; }
-    else if (v.size() == 3) { top = v[0]; right = left = v[1]; bottom = v[2]; }
-    else if (v.size() >= 4) { top = v[0]; right = v[1]; bottom = v[2]; left = v[3]; }
+    if      (v.size() == 1)
+    {
+      setSide(top, rawTop, v[0], raw[0]);
+      setSide(right, rawRight, v[0], raw[0]);
+      setSide(bottom, rawBottom, v[0], raw[0]);
+      setSide(left, rawLeft, v[0], raw[0]);
+    }
+    else if (v.size() == 2)
+    {
+      setSide(top, rawTop, v[0], raw[0]);
+      setSide(bottom, rawBottom, v[0], raw[0]);
+      setSide(right, rawRight, v[1], raw[1]);
+      setSide(left, rawLeft, v[1], raw[1]);
+    }
+    else if (v.size() == 3)
+    {
+      setSide(top, rawTop, v[0], raw[0]);
+      setSide(right, rawRight, v[1], raw[1]);
+      setSide(left, rawLeft, v[1], raw[1]);
+      setSide(bottom, rawBottom, v[2], raw[2]);
+    }
+    else if (v.size() >= 4)
+    {
+      setSide(top, rawTop, v[0], raw[0]);
+      setSide(right, rawRight, v[1], raw[1]);
+      setSide(bottom, rawBottom, v[2], raw[2]);
+      setSide(left, rawLeft, v[3], raw[3]);
+    }
     return *this;
   }
   SKEdgeInsets& operator=(const std::string& css) { return operator=(css.c_str()); }
 
 private:
+  static std::string formatValue(float value)
+  {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g", value);
+    return buf;
+  }
+
+  void clear()
+  {
+    top = right = bottom = left = 0.f;
+    rawTop.clear();
+    rawRight.clear();
+    rawBottom.clear();
+    rawLeft.clear();
+  }
+
+  void assignAll(float value)
+  {
+    const std::string raw = formatValue(value);
+    setSide(top, rawTop, value, raw);
+    setSide(right, rawRight, value, raw);
+    setSide(bottom, rawBottom, value, raw);
+    setSide(left, rawLeft, value, raw);
+  }
+
+  static void setSide(float& side, std::string& rawSide, float value,
+                      const std::string& rawValue = std::string{})
+  {
+    side = value;
+    rawSide = rawValue.empty() ? formatValue(value) : rawValue;
+  }
+
   float top    = 0.f;
   float right  = 0.f;
   float bottom = 0.f;
@@ -657,13 +738,24 @@ struct sk_side_proxy
 
   sk_side_proxy& operator=(float v)  {
     if (_p) *_p = v;
-    if (_rawp) _rawp->clear();   // clear raw: this is a plain px value
+    if (_rawp)
+    {
+      char buf[32];
+      std::snprintf(buf, sizeof(buf), "%g", v);
+      *_rawp = buf;
+    }
     return *this;
   }
   sk_side_proxy& operator=(double v) { return operator=(static_cast<float>(v)); }
   sk_side_proxy& operator=(int v)    { return operator=(static_cast<float>(v)); }
   sk_side_proxy& operator=(const char* s) {
-    if (!_p || !s || !*s) return *this;
+    if (!_p) return *this;
+    if (!s || !*s)
+    {
+      *_p = 0.f;
+      if (_rawp) _rawp->clear();
+      return *this;
+    }
     if (_rawp) *_rawp = s;              // store raw string for resolve()
     try { *_p = std::stof(s); } catch (...) {}  // stof stops at '%' or 'px' — stores numeric part
     return *this;
@@ -2196,8 +2288,8 @@ struct glint_style
                  &backgroundGradientRadius, &backgroundImage)
     , backgroundImageProp(&backgroundImage)
     , border(&borderStyle, &borderWidth._val, &borderColor)
-    , paddingTop   (&padding.top)   , paddingRight (&padding.right)
-    , paddingBottom(&padding.bottom), paddingLeft  (&padding.left)
+    , paddingTop   (&padding.top,    &padding.rawTop)   , paddingRight (&padding.right,  &padding.rawRight)
+    , paddingBottom(&padding.bottom, &padding.rawBottom), paddingLeft  (&padding.left,   &padding.rawLeft)
     , marginTop   (&margin.top,    &margin.rawTop)   , marginRight (&margin.right,  &margin.rawRight)
     , marginBottom(&margin.bottom, &margin.rawBottom), marginLeft  (&margin.left,   &margin.rawLeft)
     , overflow(&overflowX, &overflowY)
@@ -2236,8 +2328,8 @@ struct glint_style
     , textAlign(o.textAlign), verticalAlign(o.verticalAlign), textDecoration(o.textDecoration)
     , selectionColor(o.selectionColor)
     , padding(o.padding)
-    , paddingTop   (&padding.top)   , paddingRight (&padding.right)
-    , paddingBottom(&padding.bottom), paddingLeft  (&padding.left)
+    , paddingTop   (&padding.top,    &padding.rawTop)   , paddingRight (&padding.right,  &padding.rawRight)
+    , paddingBottom(&padding.bottom, &padding.rawBottom), paddingLeft  (&padding.left,   &padding.rawLeft)
     , margin(o.margin)
     , marginTop   (&margin.top,    &margin.rawTop)   , marginRight (&margin.right,  &margin.rawRight)
     , marginBottom(&margin.bottom, &margin.rawBottom), marginLeft  (&margin.left,   &margin.rawLeft)
