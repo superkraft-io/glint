@@ -4,6 +4,7 @@
  */
 
 #import <UIKit/UIKit.h>
+#import <PhotosUI/PhotosUI.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 #import <objc/runtime.h>
@@ -11,6 +12,7 @@
 #include "glint_view_ios.hpp"
 #include "../glint_platform.hpp"
 #include "../glint_platform_colorpicker.hpp"
+#include "../../i18n/glint_i18n.hpp"
 #include "../../components/glint_input.hpp"
 #include "../../components/glint_textarea.hpp"
 
@@ -424,6 +426,33 @@ CGRect glint_centered_source_rect(UIView* sourceView)
                     1.0);
 }
 
+CGRect glint_source_rect_for_point(UIView* sourceView, CGPoint point)
+{
+  if (!sourceView)
+    return CGRectMake(point.x, point.y, 1.0, 1.0);
+
+    const CGFloat maxX = std::max<CGFloat>(0.0, CGRectGetWidth(sourceView.bounds) - 1.0);
+    const CGFloat maxY = std::max<CGFloat>(0.0, CGRectGetHeight(sourceView.bounds) - 1.0);
+    const CGFloat clampedX = std::clamp(point.x, static_cast<CGFloat>(0.0), maxX);
+    const CGFloat clampedY = std::clamp(point.y, static_cast<CGFloat>(0.0), maxY);
+    return CGRectMake(clampedX, clampedY, 1.0, 1.0);
+}
+
+CGFloat glint_display_scale_for_view(UIView* view)
+{
+  if (!view)
+    return 1.0f;
+
+  if (view.window.windowScene.screen)
+    return std::max<CGFloat>(1.0f, view.window.windowScene.screen.scale);
+
+  UITraitCollection* traits = view.traitCollection;
+  if (traits.displayScale > 0.0)
+    return traits.displayScale;
+
+  return 1.0f;
+}
+
 UIColor* glint_uicolor_from_glint_color(glint_color color)
 {
   return [UIColor colorWithRed:std::clamp(color.R / 255.0f, 0.0f, 1.0f)
@@ -530,7 +559,7 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 @interface GlintKeyboardSearchField : UISearchTextField
 @end
 
-@interface GlintIOSMenuTracker : NSObject
+@interface GlintIOSMenuTracker : NSObject <UIAdaptivePresentationControllerDelegate>
 {
 @public
   int selectedId;
@@ -543,12 +572,19 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 @public
   int itemId;
   NSString* title;
+  NSString* systemImageName;
   BOOL enabled;
   BOOL checked;
   BOOL separator;
 }
 + (instancetype)itemWithId:(int)itemId
                      title:(NSString*)title
+                   enabled:(BOOL)enabled
+                   checked:(BOOL)checked
+                 separator:(BOOL)separator;
++ (instancetype)itemWithId:(int)itemId
+                     title:(NSString*)title
+           systemImageName:(NSString*)systemImageName
                    enabled:(BOOL)enabled
                    checked:(BOOL)checked
                  separator:(BOOL)separator;
@@ -612,6 +648,26 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 - (void)presentWithColor:(UIColor*)color anchorScreenRect:(RECT)anchorScreenRect;
 - (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed;
 - (void)destroy;
+@end
+
+@interface GlintIOSFilePickerTracker : NSObject <UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate>
+{
+@public
+  NSMutableArray<NSString*>* selectedPaths;
+  BOOL finished;
+}
+- (void)finishWithURLs:(NSArray<NSURL*>*)urls;
+@end
+
+@interface GlintIOSMediaPickerTracker : NSObject <UIImagePickerControllerDelegate, UINavigationControllerDelegate, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate>
+{
+@public
+  NSMutableArray<NSString*>* selectedPaths;
+  BOOL finished;
+}
+- (NSString*)temporaryPathWithExtension:(NSString*)extension;
+- (NSString*)copyURLToTemporaryLocation:(NSURL*)url suggestedExtension:(NSString*)extension;
+- (NSString*)writeImageToTemporaryLocation:(UIImage*)image sourceURL:(NSURL*)sourceURL;
 @end
 
 @implementation GlintKeyboardProxyField
@@ -727,6 +783,12 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 
 @implementation GlintIOSMenuTracker
 
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController
+{
+  (void)presentationController;
+  finished = YES;
+}
+
 @end
 
 @implementation GlintIOSMenuItem
@@ -737,9 +799,25 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
                    checked:(BOOL)checkedValue
                  separator:(BOOL)separatorValue
 {
+  return [self itemWithId:itemIdValue
+                    title:titleValue
+          systemImageName:nil
+                  enabled:enabledValue
+                  checked:checkedValue
+                separator:separatorValue];
+}
+
++ (instancetype)itemWithId:(int)itemIdValue
+                     title:(NSString*)titleValue
+           systemImageName:(NSString*)systemImageNameValue
+                   enabled:(BOOL)enabledValue
+                   checked:(BOOL)checkedValue
+                 separator:(BOOL)separatorValue
+{
   GlintIOSMenuItem* item = [[[self alloc] init] autorelease];
   item->itemId = itemIdValue;
   item->title = [titleValue copy];
+  item->systemImageName = [systemImageNameValue copy];
   item->enabled = enabledValue;
   item->checked = checkedValue;
   item->separator = separatorValue;
@@ -749,6 +827,7 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 - (void)dealloc
 {
   [title release];
+  [systemImageName release];
   [super dealloc];
 }
 
@@ -764,7 +843,7 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 
   menuItems = [items copy];
   tracker = [menuTracker retain];
-  self.title = @"Options";
+  self.title = glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::common_options));
   return self;
 }
 
@@ -876,6 +955,8 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
   cell.textLabel.textColor = item->enabled
     ? [UIColor colorWithWhite:0.05f alpha:1.0f]
     : [UIColor colorWithWhite:0.05f alpha:0.35f];
+  cell.imageView.image = item->systemImageName.length > 0 ? [UIImage systemImageNamed:item->systemImageName] : nil;
+  cell.imageView.tintColor = cell.textLabel.textColor;
   cell.accessoryType = item->checked ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
   cell.selectionStyle = item->enabled ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
   cell.userInteractionEnabled = item->enabled;
@@ -910,7 +991,7 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
   self.alpha = 0.01f;
   self.opaque = NO;
   self.backgroundColor = [UIColor clearColor];
-  self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  self.autoresizingMask = UIViewAutoresizingNone;
   self.contextMenuInteractionEnabled = YES;
   self.showsMenuAsPrimaryAction = YES;
   return self;
@@ -1012,10 +1093,11 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   if (@available(iOS 17.4, *))
   {
     hostView = [view retain];
-    sourcePoint = point;
+    CGRect sourceRect = glint_source_rect_for_point(hostView, point);
+    sourcePoint = CGPointMake(CGRectGetMidX(sourceRect), CGRectGetMidY(sourceRect));
     menuTriggered = NO;
 
-    menuControl = [[GlintIOSSelectMenuControl alloc] initWithFrame:hostView.bounds
+    menuControl = [[GlintIOSSelectMenuControl alloc] initWithFrame:sourceRect
                                                              owner:self
                                                    attachmentPoint:sourcePoint];
     [hostView addSubview:menuControl];
@@ -1035,7 +1117,8 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   for (GlintIOSMenuItem* item in menuItems)
   {
     UIMenuElementAttributes attributes = item->enabled ? 0 : UIMenuElementAttributesDisabled;
-    UIAction* action = [UIAction actionWithTitle:item->title image:nil identifier:nil handler:^(__kindof UIAction* selectedAction) {
+    UIImage* image = item->systemImageName.length > 0 ? [UIImage systemImageNamed:item->systemImageName] : nil;
+    UIAction* action = [UIAction actionWithTitle:item->title image:image identifier:nil handler:^(__kindof UIAction* selectedAction) {
       (void)selectedAction;
       if (!awaitingDismissCleanup)
       {
@@ -1161,7 +1244,7 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
     picker.selectedColor = color ?: UIColor.blackColor;
     closedNotified = NO;
 
-    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad)
     {
       picker.modalPresentationStyle = UIModalPresentationPopover;
       UIPopoverPresentationController* popover = picker.popoverPresentationController;
@@ -1230,6 +1313,239 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
 {
   (void)presentationController;
   [self notifyClosedIfNeeded];
+}
+
+@end
+
+@implementation GlintIOSFilePickerTracker
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  selectedPaths = [[NSMutableArray alloc] init];
+  finished = NO;
+  return self;
+}
+
+- (void)dealloc
+{
+  [selectedPaths release];
+  [super dealloc];
+}
+
+- (void)finishWithURLs:(NSArray<NSURL*>*)urls
+{
+  [selectedPaths removeAllObjects];
+  for (NSURL* url in urls)
+  {
+    if (!url)
+      continue;
+
+    NSString* path = url.path;
+    if (path.length > 0)
+      [selectedPaths addObject:path];
+  }
+  finished = YES;
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls
+{
+  (void)controller;
+  [self finishWithURLs:urls ?: @[]];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentAtURL:(NSURL*)url
+{
+  (void)controller;
+  [self finishWithURLs:url ? @[url] : @[]];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController*)controller
+{
+  (void)controller;
+  finished = YES;
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController
+{
+  (void)presentationController;
+  finished = YES;
+}
+
+@end
+
+@implementation GlintIOSMediaPickerTracker
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  selectedPaths = [[NSMutableArray alloc] init];
+  finished = NO;
+  return self;
+}
+
+- (void)dealloc
+{
+  [selectedPaths release];
+  [super dealloc];
+}
+
+- (NSString*)temporaryPathWithExtension:(NSString*)extension
+{
+  NSString* normalized = extension ?: @"tmp";
+  if ([normalized hasPrefix:@"."])
+    normalized = [normalized substringFromIndex:1];
+  if (normalized.length == 0)
+    normalized = @"tmp";
+
+  NSString* directory = [NSTemporaryDirectory() stringByAppendingPathComponent:@"glint-file-picker"];
+  [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
+
+  NSString* fileName = [[NSUUID UUID].UUIDString stringByAppendingPathExtension:normalized];
+  return [directory stringByAppendingPathComponent:fileName];
+}
+
+- (NSString*)copyURLToTemporaryLocation:(NSURL*)url suggestedExtension:(NSString*)extension
+{
+  if (!url)
+    return nil;
+
+  NSString* destinationPath = [self temporaryPathWithExtension:(extension.length > 0 ? extension : url.pathExtension)];
+  NSURL* destinationURL = [NSURL fileURLWithPath:destinationPath];
+  NSFileManager* fileManager = [NSFileManager defaultManager];
+
+  if ([url isFileURL] && [fileManager copyItemAtURL:url toURL:destinationURL error:nil])
+    return destinationPath;
+
+  NSData* data = [NSData dataWithContentsOfURL:url];
+  if (data && [data writeToURL:destinationURL atomically:YES])
+    return destinationPath;
+
+  return nil;
+}
+
+- (NSString*)writeImageToTemporaryLocation:(UIImage*)image sourceURL:(NSURL*)sourceURL
+{
+  if (!image)
+    return nil;
+
+  NSString* sourceExtension = sourceURL.pathExtension.lowercaseString;
+  NSString* outputExtension = @"jpg";
+  NSData* imageData = nil;
+
+  if ([sourceExtension isEqualToString:@"png"])
+  {
+    imageData = UIImagePNGRepresentation(image);
+    outputExtension = @"png";
+  }
+
+  if (!imageData)
+  {
+    imageData = UIImageJPEGRepresentation(image, 0.92);
+    outputExtension = @"jpg";
+  }
+
+  if (!imageData)
+    return nil;
+
+  NSString* destinationPath = [self temporaryPathWithExtension:outputExtension];
+  return [imageData writeToFile:destinationPath atomically:YES] ? destinationPath : nil;
+}
+
+- (void)imagePickerController:(UIImagePickerController*)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id>*)info
+{
+  [selectedPaths removeAllObjects];
+
+  NSString* mediaType = info[UIImagePickerControllerMediaType];
+  NSString* selectedPath = nil;
+  if ([mediaType isEqualToString:@"public.movie"])
+  {
+    selectedPath = [self copyURLToTemporaryLocation:info[UIImagePickerControllerMediaURL] suggestedExtension:nil];
+  }
+  else
+  {
+    NSURL* imageURL = nil;
+    if (@available(iOS 11.0, *))
+      imageURL = info[UIImagePickerControllerImageURL];
+
+    if (imageURL && imageURL.isFileURL)
+      selectedPath = [self copyURLToTemporaryLocation:imageURL suggestedExtension:nil];
+    if (!selectedPath)
+      selectedPath = [self writeImageToTemporaryLocation:info[UIImagePickerControllerOriginalImage] sourceURL:imageURL];
+  }
+
+  if (selectedPath.length > 0)
+    [selectedPaths addObject:selectedPath];
+
+  [picker.presentingViewController dismissViewControllerAnimated:YES completion:^{
+    finished = YES;
+  }];
+}
+
+- (void)imagePickerControllerDidCancel:(UIImagePickerController*)picker
+{
+  [picker.presentingViewController dismissViewControllerAnimated:YES completion:^{
+    finished = YES;
+  }];
+}
+
+- (void)picker:(PHPickerViewController*)picker didFinishPicking:(NSArray<PHPickerResult*>*)results
+{
+  [selectedPaths removeAllObjects];
+
+  if (!results.count)
+  {
+    [picker.presentingViewController dismissViewControllerAnimated:YES completion:^{
+      finished = YES;
+    }];
+    return;
+  }
+
+  dispatch_group_t group = dispatch_group_create();
+  for (PHPickerResult* result in results)
+  {
+    NSItemProvider* itemProvider = result.itemProvider;
+    NSString* typeIdentifier = nil;
+    if ([itemProvider hasItemConformingToTypeIdentifier:@"public.movie"])
+      typeIdentifier = @"public.movie";
+    else if ([itemProvider hasItemConformingToTypeIdentifier:@"public.image"])
+      typeIdentifier = @"public.image";
+    else if (itemProvider.registeredTypeIdentifiers.count > 0)
+      typeIdentifier = itemProvider.registeredTypeIdentifiers.firstObject;
+
+    if (!typeIdentifier)
+      continue;
+
+    dispatch_group_enter(group);
+    [itemProvider loadFileRepresentationForTypeIdentifier:typeIdentifier completionHandler:^(NSURL* url, NSError* error) {
+      (void)error;
+      NSString* selectedPath = [self copyURLToTemporaryLocation:url suggestedExtension:nil];
+      if (selectedPath.length > 0)
+      {
+        @synchronized (self)
+        {
+          [selectedPaths addObject:selectedPath];
+        }
+      }
+      dispatch_group_leave(group);
+    }];
+  }
+
+  dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+    [picker.presentingViewController dismissViewControllerAnimated:YES completion:^{
+      finished = YES;
+    }];
+  });
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController
+{
+  (void)presentationController;
+  finished = YES;
 }
 
 @end
@@ -1361,7 +1677,7 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   {
     cppView = view;
     self.multipleTouchEnabled = YES;
-    self.contentScaleFactor = UIScreen.mainScreen.scale;
+    self.contentScaleFactor = glint_display_scale_for_view(self);
     self.opaque = YES;
     self.backgroundColor = UIColor.clearColor;
 
@@ -1483,6 +1799,7 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
 - (void)didMoveToWindow
 {
   [super didMoveToWindow];
+  self.contentScaleFactor = glint_display_scale_for_view(self);
 }
 
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender
@@ -2700,7 +3017,7 @@ int showContextMenu(int,
     UINavigationController* navigationController = [[UINavigationController alloc] initWithRootViewController:listController];
     navigationController.preferredContentSize = listController.preferredContentSize;
 
-    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad)
     {
       navigationController.modalPresentationStyle = UIModalPresentationPopover;
       UIPopoverPresentationController* popover = navigationController.popoverPresentationController;
@@ -2861,18 +3178,498 @@ int showSelectMenu(int,
   return result;
 }
 
-std::string showOpenFileDialog(const std::vector<std::string>&,
-                               const std::string&,
-                               bool)
+static NSArray<NSString*>* glint_document_picker_type_identifiers(const std::vector<std::string>& extensions,
+                                                                  bool allowDirectories)
 {
-  return {};
+  static NSString* const kGlintUTIItem = @"public.item";
+  static NSString* const kGlintUTIFolder = @"public.folder";
+  static NSString* const kGlintUTIData = @"public.data";
+  static NSString* const kGlintUTIImage = @"public.image";
+  static NSString* const kGlintUTIAudio = @"public.audio";
+  static NSString* const kGlintUTIMovie = @"public.movie";
+  static NSString* const kGlintUTIPdf = @"com.adobe.pdf";
+  static NSString* const kGlintUTIPlainText = @"public.plain-text";
+  NSMutableArray<NSString*>* identifiers = [NSMutableArray array];
+  NSMutableSet<NSString*>* seen = [NSMutableSet set];
+  auto appendIdentifier = ^(NSString* identifier) {
+    if (!identifier || identifier.length == 0 || [seen containsObject:identifier])
+      return;
+    [seen addObject:identifier];
+    [identifiers addObject:identifier];
+  };
+
+  auto identifierForExtension = ^NSString* (std::string extension) {
+    if (!extension.empty() && extension.front() == '.')
+      extension.erase(extension.begin());
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    if (extension == "png" || extension == "jpg" || extension == "jpeg" ||
+        extension == "gif" || extension == "webp" || extension == "svg")
+      return kGlintUTIImage;
+    if (extension == "mp3" || extension == "wav" || extension == "m4a" || extension == "ogg")
+      return kGlintUTIAudio;
+    if (extension == "mp4" || extension == "mov" || extension == "m4v" || extension == "webm")
+      return kGlintUTIMovie;
+    if (extension == "pdf")
+      return kGlintUTIPdf;
+    if (extension == "txt")
+      return kGlintUTIPlainText;
+    return kGlintUTIData;
+  };
+
+  for (const auto& rawExtension : extensions)
+  {
+    appendIdentifier(identifierForExtension(rawExtension));
+  }
+
+  if (allowDirectories)
+    appendIdentifier(kGlintUTIFolder);
+  if (identifiers.count == 0)
+    appendIdentifier(kGlintUTIItem);
+  return identifiers;
 }
 
-std::vector<std::string> showOpenFilesDialog(const std::vector<std::string>&,
-                                             const std::string&,
-                                             bool)
+enum class glint_ios_file_source_option {
+  cancel = 0,
+  photo_library = 1,
+  camera = 2,
+  files = 3,
+};
+
+static UIView* glint_file_picker_source_view(UIViewController* presenter, UIWindow* window)
 {
-  return {};
+  if (glint_last_interaction_view)
+    return glint_last_interaction_view;
+  return presenter.view ?: window;
+}
+
+static CGRect glint_file_picker_source_rect(UIView* sourceView)
+{
+  if (glint_last_interaction_view && sourceView == glint_last_interaction_view)
+  {
+    return CGRectMake(glint_last_interaction_point.x,
+                      glint_last_interaction_point.y,
+                      1.0f,
+                      1.0f);
+  }
+
+  return glint_centered_source_rect(sourceView);
+}
+
+static NSArray<NSString*>* glint_media_picker_types(UIImagePickerControllerSourceType sourceType)
+{
+  NSArray<NSString*>* availableTypes = [UIImagePickerController availableMediaTypesForSourceType:sourceType] ?: @[];
+  NSMutableArray<NSString*>* mediaTypes = [NSMutableArray array];
+  if ([availableTypes containsObject:@"public.image"])
+    [mediaTypes addObject:@"public.image"];
+  if ([availableTypes containsObject:@"public.movie"])
+    [mediaTypes addObject:@"public.movie"];
+  if (!mediaTypes.count)
+    [mediaTypes addObjectsFromArray:availableTypes];
+  return mediaTypes;
+}
+
+static bool glint_extension_matches_any(const std::vector<std::string>& extensions,
+                                        std::initializer_list<const char*> candidates)
+{
+  for (const auto& rawExtension : extensions)
+  {
+    std::string normalized = rawExtension;
+    if (!normalized.empty() && normalized.front() == '.')
+      normalized.erase(normalized.begin());
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    for (const char* candidate : candidates)
+    {
+      if (normalized == candidate)
+        return true;
+    }
+  }
+  return false;
+}
+
+static bool glint_allows_image_selection(const std::vector<std::string>& extensions)
+{
+  if (extensions.empty())
+    return true;
+  return glint_extension_matches_any(extensions, {"png", "jpg", "jpeg", "gif", "webp", "svg", "heic", "heif", "bmp", "tif", "tiff"});
+}
+
+static bool glint_allows_video_selection(const std::vector<std::string>& extensions)
+{
+  if (extensions.empty())
+    return true;
+  return glint_extension_matches_any(extensions, {"mp4", "mov", "m4v", "webm", "avi", "mpeg", "mpg"});
+}
+
+static NSString* glint_camera_action_label(bool allowsImage, bool allowsVideo)
+{
+  if (allowsImage && allowsVideo)
+    return glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::file_input_take_photo_or_video));
+  if (allowsVideo)
+    return glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::file_input_take_video));
+  return glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::file_input_take_photo));
+}
+
+static glint_ios_file_source_option glint_show_file_source_menu(const std::vector<std::string>& extensions)
+{
+  __block glint_ios_file_source_option result = glint_ios_file_source_option::cancel;
+
+  void (^run)(void) = ^{
+    UIWindow* window = glint_active_window();
+    if (!window)
+      return;
+
+    UIViewController* presenter = glint_top_view_controller(window.rootViewController);
+    if (!presenter)
+      presenter = window.rootViewController;
+    if (!presenter)
+      return;
+
+    UIView* sourceView = glint_file_picker_source_view(presenter, window);
+    if (!sourceView)
+      return;
+
+    GlintIOSMenuTracker* tracker = [[GlintIOSMenuTracker alloc] init];
+    tracker->selectedId = 0;
+    tracker->finished = NO;
+
+    const bool allowsImage = glint_allows_image_selection(extensions);
+    const bool allowsVideo = glint_allows_video_selection(extensions);
+    const bool allowsMedia = allowsImage || allowsVideo;
+
+    NSMutableArray<GlintIOSMenuItem*>* nativeItems = [NSMutableArray arrayWithCapacity:3];
+    if (allowsMedia)
+    {
+      [nativeItems addObject:[GlintIOSMenuItem itemWithId:(int)glint_ios_file_source_option::photo_library
+                                                    title:glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::file_input_photo_library))
+                                          systemImageName:@"photo.on.rectangle.angled"
+                                                  enabled:YES
+                                                  checked:NO
+                                                separator:NO]];
+      [nativeItems addObject:[GlintIOSMenuItem itemWithId:(int)glint_ios_file_source_option::camera
+                                                    title:glint_camera_action_label(allowsImage, allowsVideo)
+                                          systemImageName:@"camera"
+                                                  enabled:[UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeCamera]
+                                                  checked:NO
+                                                separator:NO]];
+    }
+    [nativeItems addObject:[GlintIOSMenuItem itemWithId:(int)glint_ios_file_source_option::files
+                                                  title:glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::file_input_choose_file))
+                                        systemImageName:@"folder"
+                                                enabled:YES
+                                                checked:NO
+                                              separator:NO]];
+
+    UIView* anchorView = glint_last_interaction_view ? glint_last_interaction_view : sourceView;
+    CGPoint anchorPoint = glint_last_interaction_view
+      ? glint_last_interaction_point
+      : CGPointMake(CGRectGetMidX(anchorView.bounds), CGRectGetMidY(anchorView.bounds));
+
+    if (@available(iOS 17.4, *))
+    {
+      GlintIOSSelectPickerCoordinator* coordinator = [[GlintIOSSelectPickerCoordinator alloc]
+        initWithItems:nativeItems
+           selectedId:0
+              tracker:tracker];
+      [coordinator presentInView:anchorView sourcePoint:anchorPoint];
+
+      while (!tracker->finished && [coordinator isAwaitingDismissal])
+      {
+        @autoreleasepool
+        {
+          NSDate* until = [NSDate dateWithTimeIntervalSinceNow:0.01];
+          [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+          [[NSRunLoop mainRunLoop] runMode:UITrackingRunLoopMode beforeDate:until];
+        }
+      }
+
+      [coordinator release];
+    }
+    else
+    {
+      UIAlertController* alert = [UIAlertController alertControllerWithTitle:nil
+                                                                     message:nil
+                                                              preferredStyle:UIAlertControllerStyleActionSheet];
+
+      for (GlintIOSMenuItem* item in nativeItems)
+      {
+        UIAlertAction* action = [UIAlertAction actionWithTitle:item->title
+                                                         style:UIAlertActionStyleDefault
+                                                       handler:^(__unused UIAlertAction* selectedAction) {
+          tracker->selectedId = item->itemId;
+          tracker->finished = YES;
+        }];
+        action.enabled = item->enabled;
+        [alert addAction:action];
+      }
+
+      UIAlertAction* cancelAction = [UIAlertAction actionWithTitle:glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::common_cancel))
+                                                             style:UIAlertActionStyleCancel
+                                                           handler:^(__unused UIAlertAction* action) {
+        tracker->finished = YES;
+      }];
+      [alert addAction:cancelAction];
+
+      if (alert.presentationController)
+        alert.presentationController.delegate = tracker;
+
+      if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad)
+      {
+        UIPopoverPresentationController* popover = alert.popoverPresentationController;
+        popover.sourceView = sourceView;
+        popover.sourceRect = glint_file_picker_source_rect(sourceView);
+        popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+      }
+
+      [presenter presentViewController:alert animated:YES completion:nil];
+
+      while (!tracker->finished)
+      {
+        @autoreleasepool
+        {
+          NSDate* until = [NSDate dateWithTimeIntervalSinceNow:0.01];
+          [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+          [[NSRunLoop mainRunLoop] runMode:UITrackingRunLoopMode beforeDate:until];
+        }
+      }
+    }
+
+    result = static_cast<glint_ios_file_source_option>(tracker->selectedId);
+    [tracker release];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+static std::vector<std::string> glint_run_media_picker(UIImagePickerControllerSourceType sourceType)
+{
+  __block std::vector<std::string> result;
+
+  void (^run)(void) = ^{
+    if (![UIImagePickerController isSourceTypeAvailable:sourceType])
+      return;
+
+    UIWindow* window = glint_active_window();
+    if (!window)
+      return;
+
+    UIViewController* presenter = glint_top_view_controller(window.rootViewController);
+    if (!presenter)
+      presenter = window.rootViewController;
+    if (!presenter)
+      return;
+
+    GlintIOSMediaPickerTracker* tracker = [[GlintIOSMediaPickerTracker alloc] init];
+    UIImagePickerController* picker = [[UIImagePickerController alloc] init];
+    picker.delegate = tracker;
+    picker.sourceType = sourceType;
+    picker.mediaTypes = glint_media_picker_types(sourceType);
+    if (picker.presentationController)
+      picker.presentationController.delegate = tracker;
+
+    [presenter presentViewController:picker animated:YES completion:nil];
+
+    while (!tracker->finished)
+    {
+      @autoreleasepool
+      {
+        NSDate* until = [NSDate dateWithTimeIntervalSinceNow:0.01];
+        [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+        [[NSRunLoop mainRunLoop] runMode:UITrackingRunLoopMode beforeDate:until];
+      }
+    }
+
+    for (NSString* path in tracker->selectedPaths)
+      result.push_back(glint_utf8_from_nsstring(path));
+
+    [picker release];
+    [tracker release];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+static std::vector<std::string> glint_run_photo_picker(const std::vector<std::string>& extensions,
+                                                       bool allowsMultipleSelection)
+{
+  __block std::vector<std::string> result;
+
+  void (^run)(void) = ^{
+    UIWindow* window = glint_active_window();
+    if (!window)
+      return;
+
+    UIViewController* presenter = glint_top_view_controller(window.rootViewController);
+    if (!presenter)
+      presenter = window.rootViewController;
+    if (!presenter)
+      return;
+
+    const bool allowsImage = glint_allows_image_selection(extensions);
+    const bool allowsVideo = glint_allows_video_selection(extensions);
+
+    GlintIOSMediaPickerTracker* tracker = [[GlintIOSMediaPickerTracker alloc] init];
+    PHPickerConfiguration* configuration = [[PHPickerConfiguration alloc] init];
+    configuration.selectionLimit = allowsMultipleSelection ? 0 : 1;
+    configuration.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeCompatible;
+    if (allowsImage && !allowsVideo)
+      configuration.filter = PHPickerFilter.imagesFilter;
+    else if (allowsVideo && !allowsImage)
+      configuration.filter = PHPickerFilter.videosFilter;
+
+    PHPickerViewController* picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
+    picker.delegate = tracker;
+    if (picker.presentationController)
+      picker.presentationController.delegate = tracker;
+
+    [presenter presentViewController:picker animated:YES completion:nil];
+
+    while (!tracker->finished)
+    {
+      @autoreleasepool
+      {
+        NSDate* until = [NSDate dateWithTimeIntervalSinceNow:0.01];
+        [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+        [[NSRunLoop mainRunLoop] runMode:UITrackingRunLoopMode beforeDate:until];
+      }
+    }
+
+    for (NSString* path in tracker->selectedPaths)
+      result.push_back(glint_utf8_from_nsstring(path));
+
+    [picker release];
+    [configuration release];
+    [tracker release];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+static std::vector<std::string> glint_run_open_document_picker(const std::vector<std::string>& extensions,
+                                                               const std::string& title,
+                                                               bool allowDirectories,
+                                                               bool allowsMultipleSelection)
+{
+  __block std::vector<std::string> result;
+
+  void (^run)(void) = ^{
+    UIWindow* window = glint_active_window();
+    if (!window)
+      return;
+
+    UIViewController* presenter = glint_top_view_controller(window.rootViewController);
+    if (!presenter)
+      presenter = window.rootViewController;
+    if (!presenter)
+      return;
+
+    GlintIOSFilePickerTracker* tracker = [[GlintIOSFilePickerTracker alloc] init];
+    NSArray<NSString*>* typeIdentifiers = glint_document_picker_type_identifiers(extensions, allowDirectories);
+    UIDocumentPickerViewController* picker = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:typeIdentifiers
+                                                                    inMode:UIDocumentPickerModeImport];
+#pragma clang diagnostic pop
+
+    picker.delegate = tracker;
+    picker.title = title.empty() ? nil : glint_nsstring_from_utf8(title);
+    if ([picker respondsToSelector:@selector(setAllowsMultipleSelection:)])
+      picker.allowsMultipleSelection = allowsMultipleSelection;
+    if (picker.presentationController)
+      picker.presentationController.delegate = tracker;
+
+    [presenter presentViewController:picker animated:YES completion:nil];
+
+    while (!tracker->finished)
+    {
+      @autoreleasepool
+      {
+        NSDate* until = [NSDate dateWithTimeIntervalSinceNow:0.01];
+        [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+        [[NSRunLoop mainRunLoop] runMode:UITrackingRunLoopMode beforeDate:until];
+      }
+    }
+
+    for (NSString* path in tracker->selectedPaths)
+      result.push_back(glint_utf8_from_nsstring(path));
+
+    [picker release];
+    [tracker release];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+std::string showOpenFileDialog(const std::vector<std::string>& extensions,
+                               const std::string& title,
+                               bool allowDirectories)
+{
+  std::vector<std::string> results;
+  if (allowDirectories)
+  {
+    results = glint_run_open_document_picker(extensions, title, true, false);
+  }
+  else
+  {
+    switch (glint_show_file_source_menu(extensions))
+    {
+      case glint_ios_file_source_option::photo_library:
+        results = glint_run_photo_picker(extensions, false);
+        break;
+      case glint_ios_file_source_option::camera:
+        results = glint_run_media_picker(UIImagePickerControllerSourceTypeCamera);
+        break;
+      case glint_ios_file_source_option::files:
+        results = glint_run_open_document_picker(extensions, title, false, false);
+        break;
+      default:
+        break;
+    }
+  }
+  return results.empty() ? std::string{} : results.front();
+}
+
+std::vector<std::string> showOpenFilesDialog(const std::vector<std::string>& extensions,
+                                             const std::string& title,
+                                             bool allowDirectories)
+{
+  if (allowDirectories)
+    return glint_run_open_document_picker(extensions, title, true, true);
+
+  switch (glint_show_file_source_menu(extensions))
+  {
+    case glint_ios_file_source_option::photo_library:
+      return glint_run_photo_picker(extensions, true);
+    case glint_ios_file_source_option::camera:
+      return glint_run_media_picker(UIImagePickerControllerSourceTypeCamera);
+    case glint_ios_file_source_option::files:
+      return glint_run_open_document_picker(extensions, title, false, true);
+    default:
+      return {};
+  }
 }
 
 std::string showSaveFileDialog(const std::vector<std::string>&,
@@ -2883,9 +3680,10 @@ std::string showSaveFileDialog(const std::vector<std::string>&,
   return {};
 }
 
-std::string showOpenFolderDialog(const std::string&)
+std::string showOpenFolderDialog(const std::string& title)
 {
-  return {};
+  const auto results = glint_run_open_document_picker({}, title, true, false);
+  return results.empty() ? std::string{} : results.front();
 }
 
 void showAlertDialog(const std::string&, const std::string&)

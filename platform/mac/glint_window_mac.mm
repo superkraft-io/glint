@@ -20,6 +20,7 @@
 #include <atomic>
 
 #include "glint_window_mac.hpp"
+#include "../../i18n/glint_i18n.hpp"
 #include "../../glint_bus.hpp"        // glint_insp_bridge declarations
 #ifndef GLINT_INSPECTOR_DISABLED
 #  include "../../components/glint_builder.hpp"  // glint_component_style + full builder (needed by inspector headers)
@@ -1374,7 +1375,7 @@ std::string showSaveFileDialog(const std::vector<std::string>& extensions,
         normalized.erase(normalized.begin());
       if (NSString* ext = _glintNSStringFromUtf8(normalized))
         if ([[panel nameFieldStringValue] length] == 0)
-        [panel setNameFieldStringValue:[@"Untitled." stringByAppendingString:ext]];
+        [panel setNameFieldStringValue:[[ _glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::file_dialog_untitled)) stringByAppendingString:@"."] stringByAppendingString:ext]];
     }
 
     if ([panel runModal] != NSModalResponseOK) return;
@@ -1437,7 +1438,7 @@ void showAlertDialog(const std::string& title, const std::string& message)
       [alert setMessageText:nsTitle];
     if (NSString* nsMessage = _glintNSStringFromUtf8(message))
       [alert setInformativeText:nsMessage];
-    [alert addButtonWithTitle:@"OK"];
+    [alert addButtonWithTitle:_glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::common_ok))];
     [alert runModal];
   };
 
@@ -1463,9 +1464,9 @@ confirm_dialog_result showConfirmDialog(const std::string& title,
     NSString* primary = _glintNSStringFromUtf8(primaryButton);
     NSString* secondary = _glintNSStringFromUtf8(secondaryButton);
     NSString* cancel = _glintNSStringFromUtf8(cancelButton);
-    [alert addButtonWithTitle:primary ? primary : @"OK"];
-    [alert addButtonWithTitle:secondary ? secondary : @"No"];
-    [alert addButtonWithTitle:cancel ? cancel : @"Cancel"];
+    [alert addButtonWithTitle:primary ? primary : _glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::common_ok))];
+    [alert addButtonWithTitle:secondary ? secondary : _glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::common_no))];
+    [alert addButtonWithTitle:cancel ? cancel : _glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::common_cancel))];
 
     const NSModalResponse response = [alert runModal];
     if (response == NSAlertFirstButtonReturn)

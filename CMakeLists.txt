@@ -320,6 +320,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     "-framework MetalKit"
     "-framework ImageIO"
     "-framework QuartzCore"
+      "-framework UniformTypeIdentifiers"
     "-framework CoreGraphics"
     "-framework CoreText"
     "-framework CoreFoundation"
@@ -358,11 +359,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 
   target_link_libraries(glint_host_ios INTERFACE
     "-framework Metal"
+    "-framework PhotosUI"
     "-framework QuartzCore"
     "-framework CoreGraphics"
     "-framework CoreText"
     "-framework CoreFoundation"
     "-framework Foundation"
+    "-framework UniformTypeIdentifiers"
     "-framework UIKit"
   )
 endif()

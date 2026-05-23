@@ -29,6 +29,7 @@
  */
 
 #include "glint_graphics.hpp"      // glint_rect, glint_color, glint_canvas, glint_popup_menu — centralized seam
+#include "i18n/glint_i18n.hpp"
 #include "glint_types.hpp"   // glint_mouse_mod, glint_no_tag, glint_no_val_idx
 #include "utils/glint_debug.hpp"
 #include "element/glint_html_element.hpp"  // includes glint_style.hpp transitively
@@ -2814,15 +2815,22 @@ protected:
     HWND hwnd = mpG ? static_cast<HWND>(mpG->GetWindow()) : nullptr;
     if (!hwnd) return;
 
-    auto sysStr = [](UINT id, const wchar_t* fb) -> std::wstring {
-      wchar_t buf[256] = {};
-      int n = ::LoadStringW(::GetModuleHandleW(L"user32.dll"), id, buf, 256);
-      return n > 0 ? std::wstring(buf, static_cast<std::size_t>(n)) : fb;
+    auto utf8ToWide = [](const std::string& utf8) -> std::wstring {
+      if (utf8.empty())
+        return {};
+      const int size = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), nullptr, 0);
+      if (size <= 0)
+        return {};
+      std::wstring wide(static_cast<size_t>(size), L'\0');
+      ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), wide.data(), size);
+      return wide;
     };
+    const std::wstring sCopy = utf8ToWide(glint_i18n::localized(glint_i18n_key::edit_copy));
+    const std::wstring sSelectAll = utf8ToWide(glint_i18n::localized(glint_i18n_key::edit_select_all));
     HMENU hMenu = ::CreatePopupMenu();
-    ::AppendMenuW(hMenu, MF_STRING | (hasSelection ? 0u : MF_GRAYED), 1, sysStr(31962, L"&Copy").c_str());
+    ::AppendMenuW(hMenu, MF_STRING | (hasSelection ? 0u : MF_GRAYED), 1, sCopy.c_str());
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    ::AppendMenuW(hMenu, MF_STRING | MF_ENABLED, 3, sysStr(31965, L"Select &All").c_str());
+    ::AppendMenuW(hMenu, MF_STRING | MF_ENABLED, 3, sSelectAll.c_str());
 
     POINT pt = { static_cast<LONG>(wx), static_cast<LONG>(wy) };
     ::ClientToScreen(hwnd, &pt);
@@ -2846,7 +2854,9 @@ protected:
     (void)x; (void)y;
     const bool hasSelection = (mSelStart != -1 && mSelStart != mSelEnd);
     const std::vector<std::pair<int, std::string>> menuItems = {
-      {1, "Copy"}, {0, "-"}, {3, "Select All"}
+      {1, glint_i18n::localized(glint_i18n_key::edit_copy)},
+      {0, "-"},
+      {3, glint_i18n::localized(glint_i18n_key::edit_select_all)}
     };
     const std::vector<int> grayed = hasSelection
       ? std::vector<int>{}

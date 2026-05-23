@@ -38,6 +38,7 @@
 #include "glint_button.hpp"
 #include "glint_slider.hpp"
 #include "glint_checkbox.hpp"
+#include "../i18n/glint_i18n.hpp"
 #include "glint_radio.hpp"
 
 #include <algorithm>
@@ -647,18 +648,20 @@ private:
                      : (mRoot ? mRoot->hwnd : nullptr);
     if (!hwnd) return;
 
-    // Load localized strings from user32.dll (edit-control context menu strings).
-    // These IDs are stable across all Windows versions and honour the OS language.
-    auto sysStr = [](UINT id, const wchar_t* fallback) -> std::wstring {
-      wchar_t buf[256] = {};
-      if (int n = ::LoadStringW(::GetModuleHandleW(L"user32.dll"), id, buf, 256); n > 0)
-        return std::wstring(buf, static_cast<size_t>(n));
-      return fallback;
+    auto utf8ToWide = [](const std::string& utf8) -> std::wstring {
+      if (utf8.empty())
+        return {};
+      const int size = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), nullptr, 0);
+      if (size <= 0)
+        return {};
+      std::wstring wide(static_cast<size_t>(size), L'\0');
+      ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), wide.data(), size);
+      return wide;
     };
-    const std::wstring sCut       = sysStr(31961, L"Cu&t");
-    const std::wstring sCopy      = sysStr(31962, L"&Copy");
-    const std::wstring sPaste     = sysStr(31963, L"&Paste");
-    const std::wstring sSelectAll = sysStr(31965, L"Select &All");
+    const std::wstring sCut       = utf8ToWide(glint_i18n::localized(glint_i18n_key::edit_cut));
+    const std::wstring sCopy      = utf8ToWide(glint_i18n::localized(glint_i18n_key::edit_copy));
+    const std::wstring sPaste     = utf8ToWide(glint_i18n::localized(glint_i18n_key::edit_paste));
+    const std::wstring sSelectAll = utf8ToWide(glint_i18n::localized(glint_i18n_key::edit_select_all));
 
     HMENU hMenu = ::CreatePopupMenu();
     ::AppendMenuW(hMenu, MF_STRING | ((!readonly && hasSelection) ? 0u : MF_GRAYED), 1, sCut.c_str());
@@ -688,11 +691,11 @@ private:
       const bool hasSelection = (mSelStart != -1 && mSelStart != mSelEnd);
       using P = std::pair<int, std::string>;
       const std::vector<P> items = {
-        {1, "Cut"},
-        {2, "Copy"},
-        {3, "Paste"},
+        {1, glint_i18n::localized(glint_i18n_key::edit_cut)},
+        {2, glint_i18n::localized(glint_i18n_key::edit_copy)},
+        {3, glint_i18n::localized(glint_i18n_key::edit_paste)},
         {0, "-"},
-        {5, "Select All"},
+        {5, glint_i18n::localized(glint_i18n_key::edit_select_all)},
       };
       std::vector<int> disabled;
       if (readonly || !hasSelection) disabled.push_back(1);  // Cut
