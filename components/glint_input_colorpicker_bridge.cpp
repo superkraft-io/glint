@@ -1,12 +1,13 @@
 #include "../render/glint_tree_node.hpp"
 #include "../glint_document.hpp"
+#include "../platform/glint_platform_colorpicker.hpp"
 #include "glint_input_colorpicker_bridge.hpp"
 #include "glint_colorpicker_window.hpp"
 
 struct glint_input_colorpicker_bridge
 {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
-  bool unused = false;
+  glint_platform::colorpicker_handle* picker = nullptr;
 #else
   glint_colorpicker_window* window = nullptr;
 #endif
@@ -59,10 +60,11 @@ glint_input_colorpicker_bridge* glint_input_colorpicker_reopen(
   if (!bridge) bridge = new glint_input_colorpicker_bridge();
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
-  (void)initialColor;
-  (void)anchorScreenRect;
-  (void)onChange;
-  (void)onClosed;
+  bridge->picker = glint_platform::reopenColorPicker(bridge->picker,
+                                                     initialColor,
+                                                     anchorScreenRect,
+                                                     std::move(onChange),
+                                                     std::move(onClosed));
   return bridge;
 #else
   if (!bridge->window)
@@ -77,6 +79,7 @@ void glint_input_colorpicker_hide(glint_input_colorpicker_bridge* bridge)
 {
   if (!bridge) return;
 #if defined(__APPLE__) && TARGET_OS_IPHONE
+  glint_platform::hideColorPicker(bridge->picker);
   return;
 #else
   if (bridge->window) bridge->window->hide();
@@ -87,6 +90,8 @@ void glint_input_colorpicker_destroy(glint_input_colorpicker_bridge* bridge)
 {
   if (!bridge) return;
 #if defined(__APPLE__) && TARGET_OS_IPHONE
+  glint_platform::destroyColorPicker(bridge->picker);
+  bridge->picker = nullptr;
   delete bridge;
 #else
   if (bridge->window)

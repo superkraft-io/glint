@@ -1490,9 +1490,6 @@ private:
 
   void _openColorPicker()
   {
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    return;
-#else
     if (disabled || type != "color") return;
 
     const glint_color currentColor = _resolvedColor();
@@ -1515,7 +1512,6 @@ private:
         if (!*alive) return;
       }
     );
-#endif
   }
 
   std::string        mActiveDelegateKind;

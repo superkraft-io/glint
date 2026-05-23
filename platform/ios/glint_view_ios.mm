@@ -10,6 +10,7 @@
 
 #include "glint_view_ios.hpp"
 #include "../glint_platform.hpp"
+#include "../glint_platform_colorpicker.hpp"
 #include "../../components/glint_input.hpp"
 #include "../../components/glint_textarea.hpp"
 
@@ -423,6 +424,57 @@ CGRect glint_centered_source_rect(UIView* sourceView)
                     1.0);
 }
 
+UIColor* glint_uicolor_from_glint_color(glint_color color)
+{
+  return [UIColor colorWithRed:std::clamp(color.R / 255.0f, 0.0f, 1.0f)
+                         green:std::clamp(color.G / 255.0f, 0.0f, 1.0f)
+                          blue:std::clamp(color.B / 255.0f, 0.0f, 1.0f)
+                         alpha:std::clamp(color.A / 255.0f, 0.0f, 1.0f)];
+}
+
+glint_color glint_color_from_uicolor(UIColor* color)
+{
+  CGFloat red = 0.0f;
+  CGFloat green = 0.0f;
+  CGFloat blue = 0.0f;
+  CGFloat alpha = 1.0f;
+  if (![color getRed:&red green:&green blue:&blue alpha:&alpha])
+  {
+    CGFloat white = 0.0f;
+    if ([color getWhite:&white alpha:&alpha])
+      red = green = blue = white;
+  }
+
+  return glint_color(static_cast<int>(std::round(std::clamp(alpha, 0.0, 1.0) * 255.0)),
+                     static_cast<int>(std::round(std::clamp(red,   0.0, 1.0) * 255.0)),
+                     static_cast<int>(std::round(std::clamp(green, 0.0, 1.0) * 255.0)),
+                     static_cast<int>(std::round(std::clamp(blue,  0.0, 1.0) * 255.0)));
+}
+
+CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
+{
+  if (glint_last_interaction_view)
+  {
+    CGPoint point = [sourceView convertPoint:glint_last_interaction_point fromView:glint_last_interaction_view];
+    return CGRectMake(point.x, point.y, 1.0f, 1.0f);
+  }
+
+  const CGFloat width = std::max<CGFloat>(1.0f, static_cast<CGFloat>(anchorScreenRect.right - anchorScreenRect.left));
+  const CGFloat height = std::max<CGFloat>(1.0f, static_cast<CGFloat>(anchorScreenRect.bottom - anchorScreenRect.top));
+  if (sourceView.window && width > 0.0f && height > 0.0f)
+  {
+    CGRect screenRect = CGRectMake(static_cast<CGFloat>(anchorScreenRect.left),
+                                   static_cast<CGFloat>(anchorScreenRect.top),
+                                   width,
+                                   height);
+    CGRect localRect = [sourceView convertRect:screenRect fromCoordinateSpace:sourceView.window.screen.coordinateSpace];
+    if (!CGRectIsNull(localRect) && !CGRectIsEmpty(localRect))
+      return localRect;
+  }
+
+  return glint_centered_source_rect(sourceView);
+}
+
 } // namespace
 
 @class GlintKeyboardProxyField;
@@ -432,6 +484,7 @@ CGRect glint_centered_source_rect(UIView* sourceView)
 @class GlintIOSMenuListController;
 @class GlintIOSSelectPickerCoordinator;
 @class GlintIOSSelectMenuControl;
+@class GlintIOSColorPickerCoordinator;
 
 @interface GlintIOSView : UIView <UIGestureRecognizerDelegate, UIKeyInput, UITextInputTraits, UITextFieldDelegate>
 {
@@ -543,6 +596,22 @@ CGRect glint_centered_source_rect(UIView* sourceView)
 - (instancetype)initWithFrame:(CGRect)frame
                         owner:(GlintIOSSelectPickerCoordinator*)menuOwner
               attachmentPoint:(CGPoint)point;
+@end
+
+@interface GlintIOSColorPickerCoordinator : NSObject <UIColorPickerViewControllerDelegate, UIPopoverPresentationControllerDelegate, UIAdaptivePresentationControllerDelegate>
+{
+@public
+  UIColorPickerViewController* picker;
+  UIViewController* presenter;
+  UIView* sourceView;
+  CGRect sourceRect;
+  std::function<void(glint_color)> onChange;
+  std::function<void()> onClosed;
+  BOOL closedNotified;
+}
+- (void)presentWithColor:(UIColor*)color anchorScreenRect:(RECT)anchorScreenRect;
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed;
+- (void)destroy;
 @end
 
 @implementation GlintKeyboardProxyField
@@ -1024,6 +1093,143 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
 - (BOOL)isAwaitingDismissal
 {
   return menuControl != nil;
+}
+
+@end
+
+@implementation GlintIOSColorPickerCoordinator
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  picker = nil;
+  presenter = nil;
+  sourceView = nil;
+  sourceRect = CGRectZero;
+  closedNotified = YES;
+  return self;
+}
+
+- (void)dealloc
+{
+  [picker release];
+  [presenter release];
+  [sourceView release];
+  [super dealloc];
+}
+
+- (void)notifyClosedIfNeeded
+{
+  if (closedNotified)
+    return;
+  closedNotified = YES;
+  if (onClosed)
+    onClosed();
+}
+
+- (void)presentWithColor:(UIColor*)color anchorScreenRect:(RECT)anchorScreenRect
+{
+  if (@available(iOS 14.0, *))
+  {
+    UIWindow* window = glint_active_window();
+    UIViewController* top = glint_top_view_controller(window.rootViewController);
+    if (!top)
+      top = window.rootViewController;
+    if (!top)
+    {
+      [self notifyClosedIfNeeded];
+      return;
+    }
+
+    if (!picker)
+    {
+      picker = [[UIColorPickerViewController alloc] init];
+      picker.delegate = self;
+      picker.supportsAlpha = YES;
+    }
+
+    [presenter release];
+    presenter = [top retain];
+
+    UIView* resolvedSourceView = presenter.view ?: window;
+    [sourceView release];
+    sourceView = [resolvedSourceView retain];
+    sourceRect = glint_colorpicker_source_rect(sourceView, anchorScreenRect);
+
+    picker.selectedColor = color ?: UIColor.blackColor;
+    closedNotified = NO;
+
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
+    {
+      picker.modalPresentationStyle = UIModalPresentationPopover;
+      UIPopoverPresentationController* popover = picker.popoverPresentationController;
+      popover.delegate = self;
+      popover.sourceView = sourceView;
+      popover.sourceRect = sourceRect;
+      popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+    }
+
+    if (picker.presentingViewController)
+      return;
+
+    [presenter presentViewController:picker animated:YES completion:nil];
+    return;
+  }
+
+  [self notifyClosedIfNeeded];
+}
+
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed
+{
+  if (notifyClosed)
+    closedNotified = NO;
+
+  if (picker.presentingViewController)
+  {
+    [picker.presentingViewController dismissViewControllerAnimated:animated completion:^{
+      if (notifyClosed)
+        [self notifyClosedIfNeeded];
+    }];
+    return;
+  }
+
+  if (notifyClosed)
+    [self notifyClosedIfNeeded];
+}
+
+- (void)destroy
+{
+  onChange = nullptr;
+  onClosed = nullptr;
+  if (picker)
+    picker.delegate = nil;
+  [self hideAnimated:NO notifyClosed:NO];
+}
+
+- (void)colorPickerViewControllerDidSelectColor:(UIColorPickerViewController*)viewController API_AVAILABLE(ios(14.0))
+{
+  if (onChange)
+    onChange(glint_color_from_uicolor(viewController.selectedColor));
+}
+
+- (void)colorPickerViewControllerDidFinish:(UIColorPickerViewController*)viewController API_AVAILABLE(ios(14.0))
+{
+  (void)viewController;
+  [self notifyClosedIfNeeded];
+}
+
+- (void)popoverPresentationControllerDidDismissPopover:(UIPopoverPresentationController*)popoverPresentationController
+{
+  (void)popoverPresentationController;
+  [self notifyClosedIfNeeded];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController
+{
+  (void)presentationController;
+  [self notifyClosedIfNeeded];
 }
 
 @end
@@ -2365,6 +2571,85 @@ void glint_view_ios::paintMetal()
 }
 
 namespace glint_platform {
+
+struct colorpicker_handle
+{
+  GlintIOSColorPickerCoordinator* coordinator = nil;
+};
+
+colorpicker_handle* showColorPicker(const glint_color& initialColor,
+                                    const RECT& anchorScreenRect,
+                                    std::function<void(glint_color)> onChange,
+                                    std::function<void()> onClosed)
+{
+  return reopenColorPicker(nullptr, initialColor, anchorScreenRect, std::move(onChange), std::move(onClosed));
+}
+
+colorpicker_handle* reopenColorPicker(colorpicker_handle* handle,
+                                      const glint_color& initialColor,
+                                      const RECT& anchorScreenRect,
+                                      std::function<void(glint_color)> onChange,
+                                      std::function<void()> onClosed)
+{
+  __block colorpicker_handle* result = handle;
+  __block std::function<void(glint_color)> changeCb = std::move(onChange);
+  __block std::function<void()> closedCb = std::move(onClosed);
+
+  void (^run)(void) = ^{
+    if (!result)
+      result = new colorpicker_handle();
+    if (!result->coordinator)
+      result->coordinator = [[GlintIOSColorPickerCoordinator alloc] init];
+    result->coordinator->onChange = std::move(changeCb);
+    result->coordinator->onClosed = std::move(closedCb);
+    [result->coordinator presentWithColor:glint_uicolor_from_glint_color(initialColor)
+                         anchorScreenRect:anchorScreenRect];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+void hideColorPicker(colorpicker_handle* handle)
+{
+  if (!handle || !handle->coordinator)
+    return;
+
+  void (^run)(void) = ^{
+    [handle->coordinator hideAnimated:YES notifyClosed:YES];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+}
+
+void destroyColorPicker(colorpicker_handle* handle)
+{
+  if (!handle)
+    return;
+
+  void (^run)(void) = ^{
+    if (handle->coordinator)
+    {
+      [handle->coordinator destroy];
+      [handle->coordinator release];
+      handle->coordinator = nil;
+    }
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  delete handle;
+}
 
 void setClipboardText(const std::string& utf8)
 {
