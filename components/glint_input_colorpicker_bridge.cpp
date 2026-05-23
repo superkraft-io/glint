@@ -68,7 +68,10 @@ glint_input_colorpicker_bridge* glint_input_colorpicker_reopen(
   return bridge;
 #else
   if (!bridge->window)
-    bridge->window = glint_colorpicker_window::open(initialColor, anchorScreenRect, std::move(onChange), std::move(onClosed));
+  {
+    bridge->window = glint_colorpicker_window::open(initialColor, anchorScreenRect, onChange, onClosed);
+    bridge->window->reopen(initialColor, anchorScreenRect, std::move(onChange), std::move(onClosed));
+  }
   else
     bridge->window->reopen(initialColor, anchorScreenRect, std::move(onChange), std::move(onClosed));
   return bridge;
