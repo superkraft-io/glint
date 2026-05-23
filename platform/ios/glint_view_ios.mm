@@ -2868,6 +2868,13 @@ std::string showOpenFileDialog(const std::vector<std::string>&,
   return {};
 }
 
+std::vector<std::string> showOpenFilesDialog(const std::vector<std::string>&,
+                                             const std::string&,
+                                             bool)
+{
+  return {};
+}
+
 std::string showSaveFileDialog(const std::vector<std::string>&,
                                const std::string&,
                                const std::string&,

@@ -51,6 +51,11 @@ enum class confirm_dialog_result {
                                  const std::string& title = {},
                                  bool allowDirectories = false);
 
+  /** Show a synchronous native open-file dialog and return all selected paths. */
+  std::vector<std::string> showOpenFilesDialog(const std::vector<std::string>& extensions = {},
+                                               const std::string& title = {},
+                                               bool allowDirectories = false);
+
   /** Show a synchronous native save-file dialog filtered by extension. */
   std::string showSaveFileDialog(const std::vector<std::string>& extensions = {},
                                  const std::string& defaultExtension = {},

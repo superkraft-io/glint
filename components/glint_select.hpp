@@ -101,7 +101,11 @@ public:
   {
     if (disabled || name.empty()) return;
     if (selectedIndex < 0 || selectedIndex >= static_cast<int>(options.size())) return;
-    values.push_back({name, options[selectedIndex], const_cast<glint_select*>(this)});
+    glint_form_value selectedValue;
+    selectedValue.name = name;
+    selectedValue.value = options[selectedIndex];
+    selectedValue.control = const_cast<glint_select*>(this);
+    values.push_back(std::move(selectedValue));
   }
 
   // ── Accessors ──────────────────────────────────────────────────────────────

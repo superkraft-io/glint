@@ -1466,6 +1466,13 @@ std::string showOpenFileDialog(const std::vector<std::string>& /*extensions*/,
   return {};
 }
 
+std::vector<std::string> showOpenFilesDialog(const std::vector<std::string>& /*extensions*/,
+                                             const std::string& /*title*/,
+                                             bool /*allowDirectories*/)
+{
+  return {};
+}
+
 std::string showSaveFileDialog(const std::vector<std::string>& /*extensions*/,
                                const std::string& /*defaultExtension*/,
                                const std::string& /*title*/,

@@ -55,11 +55,17 @@ input[type="url"] {
 input[type="button"],
 input[type="submit"],
 input[type="reset"],
+input[type="file"],
+input[type="image"],
 input[type="checkbox"],
 input[type="radio"],
 input[type="color"],
 input[type="range"] {
   cursor: default;
+}
+
+input[type="file"] {
+  height: 36px;
 }
 
 input[type="color"] {
@@ -79,6 +85,7 @@ input > button,
 input > checkbox,
 input > radio,
 input > slider,
+input > image-input,
 input > text-input {
   position: absolute;
   left: 0;

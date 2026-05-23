@@ -181,7 +181,11 @@ public:
                         const glint_element* /*submitter*/) const override
   {
     if (disabled || name.empty()) return;
-    values.push_back({name, getValue(), const_cast<glint_textarea*>(this)});
+    glint_form_value textareaValue;
+    textareaValue.name = name;
+    textareaValue.value = getValue();
+    textareaValue.control = const_cast<glint_textarea*>(this);
+    values.push_back(std::move(textareaValue));
   }
 
   void onFocusGained() override

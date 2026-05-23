@@ -31,19 +31,26 @@
 #include "glint_text_editor_base.hpp"
 #include "glint_form.hpp"
 #include "glint_input_colorpicker_bridge.hpp"
+#include "glint_image.hpp"
 #include "../default_style.hpp"
+#include "../platform/glint_platform.hpp"
 #include "../render/glint_resource_request.hpp"
 #include "glint_button.hpp"
 #include "glint_slider.hpp"
 #include "glint_checkbox.hpp"
 #include "glint_radio.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <functional>
 #include <regex>
+#include <sstream>
+#include <stdexcept>
+#include <unordered_set>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
@@ -944,6 +951,103 @@ private:
   }
 };
 
+class glint_image_input_delegate : public glint_button
+{
+public:
+  std::function<void(float, float)> onActivate;
+  bool disabled = false;
+
+  glint_image_input_delegate()
+  {
+    mAcceptsFocus = false;
+    mTabStop = false;
+    SetLabel("");
+
+    auto* image = new glint_image();
+    image->style.width = "100%";
+    image->style.height = "100%";
+    image->style.pointerEvents = "none";
+    image->style.objectFit = "fill";
+    addChild(image);
+    mImage = image;
+  }
+  
+  void SetImageSource(const std::string& source)
+  {
+    if (!mImage) return;
+    mImage->SetSrc(source.c_str());
+  }
+
+  void SetAltText(const std::string& altText)
+  {
+    mAlt = altText;
+  }
+
+  void OnMouseDown(float x, float y, const glint_mouse_mod& mod) override
+  {
+    if (disabled) return;
+    glint_button::OnMouseDown(x, y, mod);
+    mPressed = true;
+    setDirty(false);
+  }
+
+  void OnMouseOut() override
+  {
+    glint_button::OnMouseOut();
+    mPressed = false;
+    setDirty(false);
+  }
+
+  void OnMouseUp(float x, float y, const glint_mouse_mod& mod) override
+  {
+    const bool wasPressed = mPressed;
+    glint_button::OnMouseUp(x, y, mod);
+    mPressed = false;
+    setDirty(false);
+    if (disabled || !wasPressed || !mRect.Contains(x, y) || !onActivate) return;
+
+    const glint_rect content = getContent();
+    const float localX = content.W() > 0.f
+      ? std::clamp(x - content.L, 0.f, std::max(0.f, content.W() - 1.f))
+      : 0.f;
+    const float localY = content.H() > 0.f
+      ? std::clamp(y - content.T, 0.f, std::max(0.f, content.H() - 1.f))
+      : 0.f;
+    onActivate(std::floor(localX), std::floor(localY));
+  }
+
+protected:
+  void drawContent(glint_canvas& g) override
+  {
+    glint_button::drawContent(g);
+
+    if (mImageHasSource() || mAlt.empty()) return;
+
+    const std::string resolvedFontId = glint_font_registry::resolveFontFaceId(
+      style.fontFamily.c_str(), (int)style.fontWeight, style.fontStyle.c_str());
+    const char* fontName = resolvedFontId.empty()
+      ? (style.fontFamily.empty() ? nullptr : style.fontFamily.c_str())
+      : resolvedFontId.c_str();
+    glint_text text(
+      style.fontSize.toFloat() > 0.f ? style.fontSize.toFloat() : 13.f,
+      ApplyOpacity(style.color.value, style.opacity),
+      fontName,
+      style.textAlign,
+      EVAlign::Middle);
+    g.DrawText(text, mAlt.c_str(), getContent());
+  }
+
+private:
+  bool mImageHasSource() const
+  {
+    return mImage && !mImage->src.empty();
+  }
+
+  glint_image* mImage = nullptr;
+  std::string mAlt;
+  bool mPressed = false;
+};
+
 // ─── glint_input ──────────────────────────────────────────────────────────────
 // Thin shell that owns a glint_text_input (for text-like types), glint_button
 // (for button-like types), or a specialized delegate child for range/checkbox/radio.
@@ -988,6 +1092,15 @@ public:
 
   /** When true, email inputs accept comma-separated addresses. */
   bool multiple = false;
+
+  /** Native file-picker filter tokens for type="file". */
+  std::string accept;
+
+  /** Image resource for type="image". */
+  std::string src;
+
+  /** Accessible fallback label for type="image". */
+  std::string alt;
 
   /** Regex pattern used for validity checks on text-like inputs. */
   std::string pattern;
@@ -1075,6 +1188,7 @@ public:
   /** Returns the current value as a string. */
   std::string getValue() const
   {
+    if (type == "file") return _selectedFileValue();
     if (mCheckbox) return mCheckbox->checked ? "true" : "false";
     if (mRadio)    return mRadio->value;
     if (mColorButton) return _resolvedColorValue();
@@ -1092,6 +1206,16 @@ public:
   /** Sets the current value from a string. */
   void setValue(const std::string& v)
   {
+    if (type == "file")
+    {
+      if (!v.empty())
+        throw std::invalid_argument("input[type=file] only accepts an empty value assignment");
+      mSelectedFiles.clear();
+      _syncDelegateProps();
+      setDirty(false);
+      return;
+    }
+
     if (type == "color" || mColorButton)
     {
       mPendingValue = _normalizeColorValue(v);
@@ -1118,6 +1242,7 @@ public:
   bool satisfiesRequired() const
   {
     if (disabled || !required) return true;
+    if (type == "file") return !mSelectedFiles.empty();
     if (mTextInput) return mTextInput->satisfiesRequiredTextValue();
     if (mCheckbox) return mCheckbox->checked;
     if (mRadio) return checked;
@@ -1211,10 +1336,13 @@ public:
   {
     if (name == "type") { found = true; return type.empty() ? "text" : type; }
     if (name == "name") { found = true; return this->name; }
-    if (name == "value" && (_isButtonLikeType(type) || type == "color")) { found = true; return getValue(); }
+    if (name == "value" && (_isButtonLikeType(type) || type == "color" || type == "file")) { found = true; return getValue(); }
     if (name == "inputmode") { found = true; return inputmode; }
     if (name == "enterkeyhint") { found = true; return enterkeyhint; }
     if (name == "autocomplete") { found = true; return autocomplete; }
+    if (name == "accept") { found = true; return accept; }
+    if (name == "src") { found = true; return src; }
+    if (name == "alt") { found = true; return alt; }
     if (name == "autocapitalize") { found = true; return autocapitalize; }
     if (name == "spellcheck") { found = true; return spellcheck; }
     if (name == "maxlength") { found = true; return maxlength >= 0 ? std::to_string(maxlength) : std::string(); }
@@ -1241,6 +1369,22 @@ public:
   void captureFormDefaultsIfNeeded() override
   {
     if (mFormDefaultsCaptured) return;
+
+    if (type == "file")
+    {
+      mDefaultFiles.clear();
+      mFormDefaultsCaptured = true;
+      return;
+    }
+
+    if (type == "image")
+    {
+      mDefaultImageSubmitX = 0.f;
+      mDefaultImageSubmitY = 0.f;
+      mFormDefaultsCaptured = true;
+      return;
+    }
+
     mDefaultChecked = checked;
     mDefaultValue = getValue();
     if (type == "range")
@@ -1251,6 +1395,23 @@ public:
   void resetFormControl() override
   {
     captureFormDefaultsIfNeeded();
+
+    if (type == "file")
+    {
+      mSelectedFiles = mDefaultFiles;
+      _syncDelegateProps();
+      setDirty(false);
+      return;
+    }
+
+    if (type == "image")
+    {
+      mLastImageSubmitX = mDefaultImageSubmitX;
+      mLastImageSubmitY = mDefaultImageSubmitY;
+      _syncDelegateProps();
+      setDirty(false);
+      return;
+    }
 
     if (type == "checkbox" || type == "radio")
     {
@@ -1276,28 +1437,80 @@ public:
   void appendFormValues(std::vector<glint_form_value>& values,
                         const glint_element* submitter) const override
   {
-    if (disabled || name.empty() || type == "button" || type == "reset")
+    if (disabled || type == "button" || type == "reset")
       return;
+
+    if (type == "image")
+    {
+      if (submitter != this) return;
+      glint_form_value xValue;
+      xValue.name = name.empty() ? std::string("x") : name + ".x";
+      xValue.value = std::to_string((int)mLastImageSubmitX);
+      xValue.control = const_cast<glint_input*>(this);
+      values.push_back(std::move(xValue));
+
+      glint_form_value yValue;
+      yValue.name = name.empty() ? std::string("y") : name + ".y";
+      yValue.value = std::to_string((int)mLastImageSubmitY);
+      yValue.control = const_cast<glint_input*>(this);
+      values.push_back(std::move(yValue));
+      return;
+    }
+
+    if (name.empty()) return;
+
+    if (type == "file")
+    {
+      if (mSelectedFiles.empty())
+      {
+        glint_form_value emptyValue;
+        emptyValue.name = name;
+        emptyValue.value = "";
+        emptyValue.files.push_back({"", ""});
+        emptyValue.control = const_cast<glint_input*>(this);
+        values.push_back(std::move(emptyValue));
+        return;
+      }
+
+      for (const auto& file : mSelectedFiles)
+      {
+        glint_form_value fileValue;
+        fileValue.name = name;
+        fileValue.value = file.name;
+        fileValue.files.push_back(file);
+        fileValue.control = const_cast<glint_input*>(this);
+        values.push_back(std::move(fileValue));
+      }
+      return;
+    }
 
     if (type == "submit")
     {
       if (submitter != this) return;
-      values.push_back({name, getValue(), const_cast<glint_input*>(this)});
+      glint_form_value submittedValue;
+      submittedValue.name = name;
+      submittedValue.value = getValue();
+      submittedValue.control = const_cast<glint_input*>(this);
+      values.push_back(std::move(submittedValue));
       return;
     }
 
     if (type == "checkbox" || type == "radio")
     {
       if (!checked) return;
-      values.push_back({
-        name,
-        value.empty() ? std::string("on") : value,
-        const_cast<glint_input*>(this)
-      });
+      glint_form_value checkedValue;
+      checkedValue.name = name;
+      checkedValue.value = value.empty() ? std::string("on") : value;
+      checkedValue.control = const_cast<glint_input*>(this);
+      values.push_back(std::move(checkedValue));
       return;
     }
 
-    values.push_back({name, getValue(), const_cast<glint_input*>(this)});
+    glint_form_value controlValue;
+    controlValue.name = name;
+    controlValue.value = getValue();
+    controlValue.control = const_cast<glint_input*>(this);
+    values.push_back(std::move(controlValue));
   }
 
   // ── Hit testing ───────────────────────────────────────────────────────────
@@ -1311,6 +1524,7 @@ public:
     if (hit && hit != this) return hit;
     if (mButton)    return mButton;
     if (mColorButton) return mColorButton;
+    if (mImageInput) return mImageInput;
     if (mTextInput) return mTextInput;
     if (mSlider)    return mSlider;
     if (mCheckbox)  return mCheckbox;
@@ -1363,6 +1577,21 @@ public:
     if (type == "color")
       return 44.f;
 
+    if (type == "image")
+      return 48.f;
+
+    if (type == "file")
+    {
+      const std::string label = _selectedFileLabel();
+      const float sz = computedStyle.fontSize.toFloat() > 0.f ? computedStyle.fontSize.toFloat() : 13.f;
+      SkFont font = skFont(sz,
+                           computedStyle.fontFamily.c_str(),
+                           computedStyle.fontWeight,
+                           computedStyle.fontStyle.c_str());
+      SkRect bounds;
+      return font.measureText(label.c_str(), label.size(), SkTextEncoding::kUTF8, &bounds) + 24.f;
+    }
+
     if (type == "checkbox" || type == "radio")
     {
       const float controlSize = checkSize > 0.f ? checkSize : 16.f;
@@ -1395,6 +1624,9 @@ public:
   float preferredH(float availW = 0.f) const override
   {
     if (type == "color")
+      return 36.f;
+
+    if (type == "file" || type == "image")
       return 36.f;
 
     if (type == "checkbox" || type == "radio")
@@ -1436,6 +1668,8 @@ private:
   static std::string _delegateKindForType(const std::string& inputType)
   {
     if (_isButtonLikeType(inputType)) return "button";
+    if (inputType == "file")     return "file";
+    if (inputType == "image")    return "image";
     if (inputType == "checkbox") return "checkbox";
     if (inputType == "radio")    return "radio";
     if (inputType == "range")    return "range";
@@ -1461,6 +1695,141 @@ private:
     if (!value.empty()) return value;
     if (!text.empty()) return text;
     return _defaultButtonLabel();
+  }
+
+  static std::string _trimAscii(std::string value)
+  {
+    auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+    while (!value.empty() && isSpace((unsigned char)value.front())) value.erase(value.begin());
+    while (!value.empty() && isSpace((unsigned char)value.back())) value.pop_back();
+    return value;
+  }
+
+  static std::string _lowerAscii(std::string value)
+  {
+    for (char& ch : value)
+      ch = (char)std::tolower((unsigned char)ch);
+    return value;
+  }
+
+  static void _appendAcceptExtensionsForToken(const std::string& token,
+                                              std::vector<std::string>& out,
+                                              std::unordered_set<std::string>& seen)
+  {
+    auto add = [&](const std::string& ext) {
+      if (ext.empty()) return;
+      std::string normalized = ext;
+      if (!normalized.empty() && normalized.front() != '.')
+        normalized.insert(normalized.begin(), '.');
+      normalized = _lowerAscii(normalized);
+      if (seen.insert(normalized).second)
+        out.push_back(normalized);
+    };
+
+    if (token.empty()) return;
+    if (token.front() == '.')
+    {
+      add(token);
+      return;
+    }
+
+    if (token == "image/*")
+    {
+      add(".png");
+      add(".jpg");
+      add(".jpeg");
+      add(".gif");
+      add(".webp");
+      add(".svg");
+      return;
+    }
+
+    if (token == "audio/*")
+    {
+      add(".mp3");
+      add(".wav");
+      add(".m4a");
+      add(".ogg");
+      return;
+    }
+
+    if (token == "video/*")
+    {
+      add(".mp4");
+      add(".mov");
+      add(".m4v");
+      add(".webm");
+      return;
+    }
+
+    if (token == "image/png") add(".png");
+    else if (token == "image/jpeg") { add(".jpg"); add(".jpeg"); }
+    else if (token == "image/gif") add(".gif");
+    else if (token == "image/webp") add(".webp");
+    else if (token == "image/svg+xml") add(".svg");
+    else if (token == "application/pdf") add(".pdf");
+    else if (token == "text/plain") add(".txt");
+  }
+
+  std::vector<std::string> _acceptDialogExtensions() const
+  {
+    std::vector<std::string> extensions;
+    std::unordered_set<std::string> seen;
+    std::stringstream stream(accept);
+    std::string token;
+    while (std::getline(stream, token, ','))
+      _appendAcceptExtensionsForToken(_lowerAscii(_trimAscii(token)), extensions, seen);
+    return extensions;
+  }
+
+  std::string _selectedFileLabel() const
+  {
+    if (mSelectedFiles.empty()) return multiple ? std::string("Choose Files") : std::string("Choose File");
+    if (mSelectedFiles.size() == 1) return mSelectedFiles.front().name;
+    return std::to_string(mSelectedFiles.size()) + " files selected";
+  }
+
+  std::string _selectedFileValue() const
+  {
+    if (mSelectedFiles.empty()) return {};
+    return std::string("C:\\fakepath\\") + mSelectedFiles.front().name;
+  }
+
+  static bool _sameSelectedFiles(const std::vector<glint_form_value::file_entry>& lhs,
+                                 const std::vector<glint_form_value::file_entry>& rhs)
+  {
+    if (lhs.size() != rhs.size()) return false;
+    for (size_t i = 0; i < lhs.size(); ++i)
+    {
+      if (lhs[i].path != rhs[i].path || lhs[i].name != rhs[i].name)
+        return false;
+    }
+    return true;
+  }
+
+  void _openFilePicker()
+  {
+    if (disabled || type != "file") return;
+
+    if (onClick) onClick(getValue());
+
+    std::vector<glint_form_value::file_entry> selectedFiles;
+    const auto paths = multiple
+      ? glint_platform::showOpenFilesDialog(_acceptDialogExtensions(), "Select Files", false)
+      : std::vector<std::string>{glint_platform::showOpenFileDialog(_acceptDialogExtensions(), "Select File", false)};
+    for (const auto& path : paths)
+    {
+      if (path.empty()) continue;
+      std::filesystem::path fsPath(path);
+      selectedFiles.push_back({fsPath.filename().string(), path});
+    }
+    if (selectedFiles.empty()) return;
+    if (_sameSelectedFiles(mSelectedFiles, selectedFiles)) return;
+
+    mSelectedFiles = std::move(selectedFiles);
+    _syncDelegateProps();
+    if (onChange) onChange(getValue());
+    setDirty(false);
   }
 
   static std::string _colorValueFrom(glint_color c)
@@ -1518,6 +1887,7 @@ private:
   std::string        mStyledShellType;
   glint_button*      mButton     = nullptr;
   glint_button*      mColorButton = nullptr;
+  glint_image_input_delegate* mImageInput = nullptr;
   glint_text_input*  mTextInput  = nullptr;
   glint_slider*      mSlider     = nullptr;
   glint_checkbox*    mCheckbox   = nullptr;
@@ -1525,6 +1895,12 @@ private:
   glint_input_colorpicker_bridge* mColorPickerBridge = nullptr;
   float              mInitialFloatValue = 0.f;
   std::string        mPendingValue;
+  std::vector<glint_form_value::file_entry> mSelectedFiles;
+  std::vector<glint_form_value::file_entry> mDefaultFiles;
+  float              mLastImageSubmitX = 0.f;
+  float              mLastImageSubmitY = 0.f;
+  float              mDefaultImageSubmitX = 0.f;
+  float              mDefaultImageSubmitY = 0.f;
   bool               mFocusPending = false;   // true when shell was focused before delegate existed
   float              mEnabledOpacity = 1.f;
   bool               mDisabledOpacityApplied = false;
@@ -1540,6 +1916,7 @@ private:
   {
     if (mButton)    { removeChild(mButton);    mButton    = nullptr; }
     if (mColorButton) { removeChild(mColorButton); mColorButton = nullptr; }
+    if (mImageInput) { removeChild(mImageInput); mImageInput = nullptr; }
     if (mTextInput) { removeChild(mTextInput); mTextInput = nullptr; }
     if (mSlider)    { removeChild(mSlider);    mSlider    = nullptr; }
     if (mCheckbox)  { removeChild(mCheckbox);  mCheckbox  = nullptr; }
@@ -1587,6 +1964,20 @@ private:
       mButton = bt;
       mFocusPending = false;
     }
+    else if (type == "file")
+    {
+      auto* bt = new glint_button();
+      bt->SetLabel(_selectedFileLabel());
+      bt->style.width = "100%";
+      bt->style.height = "100%";
+      bt->SetOnClick([this]() {
+        _openFilePicker();
+      });
+      addChild(bt);
+      applyAttachedUserAgentStyle(bt);
+      mButton = bt;
+      mFocusPending = false;
+    }
     else if (type == "color")
     {
       auto* bt = new glint_button();
@@ -1601,6 +1992,29 @@ private:
       applyAttachedUserAgentStyle(bt);
       bt->computedStyle = bt->mergedStyleForLayout();
       mColorButton = bt;
+      mFocusPending = false;
+    }
+    else if (type == "image")
+    {
+      auto* img = new glint_image_input_delegate();
+      img->style.width = "100%";
+      img->style.height = "100%";
+      img->style.cursor = "default";
+      img->onActivate = [this](float x, float y) {
+        if (disabled) return;
+        mLastImageSubmitX = x;
+        mLastImageSubmitY = y;
+        const std::string currentValue = getValue();
+        if (onClick) onClick(currentValue);
+        bool submitted = true;
+        if (auto* form = glint_form::nearestFor(this))
+          submitted = form->submit(this);
+        if (submitted && onSubmit)
+          onSubmit(currentValue);
+      };
+      addChild(img);
+      applyAttachedUserAgentStyle(img);
+      mImageInput = img;
       mFocusPending = false;
     }
     else if (type == "checkbox")
@@ -1740,7 +2154,7 @@ private:
     }
     if (mButton)
     {
-      mButton->innerText = _resolvedButtonLabel();
+      mButton->innerText = (type == "file") ? _selectedFileLabel() : _resolvedButtonLabel();
       mButton->style.userSelect = "none";
       mButton->style.textAlign  = EAlign::Center;
     }
@@ -1748,6 +2162,12 @@ private:
     {
       mColorButton->innerText = "";
       mColorButton->style.backgroundColor = _resolvedColor();
+    }
+    if (mImageInput)
+    {
+      mImageInput->SetImageSource(src);
+      mImageInput->SetAltText(alt.empty() ? std::string("Submit") : alt);
+      mImageInput->disabled = disabled || isHiddenType;
     }
     if (mSlider)
     {

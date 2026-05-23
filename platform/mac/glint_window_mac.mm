@@ -1290,19 +1290,20 @@ static void _glintPrepareForModalDialog()
     [window makeKeyAndOrderFront:nil];
 }
 
-static std::string _glintRunOpenPanel(bool chooseFiles,
-                                      bool chooseDirectories,
-                                      const std::vector<std::string>& extensions,
-                                      const std::string& title)
+static std::vector<std::string> _glintRunOpenPanel(bool chooseFiles,
+                                                   bool chooseDirectories,
+                                                   bool allowMultipleSelection,
+                                                   const std::vector<std::string>& extensions,
+                                                   const std::string& title)
 {
-  __block std::string result;
+  __block std::vector<std::string> result;
   auto run = ^{
     _glintPrepareForModalDialog();
 
     NSOpenPanel* panel = [NSOpenPanel openPanel];
     [panel setCanChooseFiles:chooseFiles ? YES : NO];
     [panel setCanChooseDirectories:chooseDirectories ? YES : NO];
-    [panel setAllowsMultipleSelection:NO];
+    [panel setAllowsMultipleSelection:allowMultipleSelection ? YES : NO];
     [panel setCanCreateDirectories:chooseDirectories ? YES : NO];
     if (NSString* nsTitle = _glintNSStringFromUtf8(title))
       [panel setTitle:nsTitle];
@@ -1310,10 +1311,13 @@ static std::string _glintRunOpenPanel(bool chooseFiles,
       [panel setAllowedFileTypes:fileTypes];
 
     if ([panel runModal] != NSModalResponseOK) return;
-    NSString* path = [[panel URL] path];
-    if (!path) return;
-    const char* utf8 = [path UTF8String];
-    if (utf8) result = utf8;
+    for (NSURL* url in [panel URLs])
+    {
+      NSString* path = [url path];
+      if (!path) continue;
+      const char* utf8 = [path UTF8String];
+      if (utf8) result.emplace_back(utf8);
+    }
   };
 
   if ([NSThread isMainThread]) run();
@@ -1325,7 +1329,15 @@ std::string showOpenFileDialog(const std::vector<std::string>& extensions,
                                const std::string& title,
                                bool allowDirectories)
 {
-  return _glintRunOpenPanel(true, allowDirectories, extensions, title);
+  const auto results = _glintRunOpenPanel(true, allowDirectories, false, extensions, title);
+  return results.empty() ? std::string{} : results.front();
+}
+
+std::vector<std::string> showOpenFilesDialog(const std::vector<std::string>& extensions,
+                                             const std::string& title,
+                                             bool allowDirectories)
+{
+  return _glintRunOpenPanel(true, allowDirectories, true, extensions, title);
 }
 
 std::string showSaveFileDialog(const std::vector<std::string>& extensions,
@@ -1411,7 +1423,8 @@ std::string showSaveFileDialog(const std::vector<std::string>& extensions,
 
 std::string showOpenFolderDialog(const std::string& title)
 {
-  return _glintRunOpenPanel(false, true, {}, title);
+  const auto results = _glintRunOpenPanel(false, true, false, {}, title);
+  return results.empty() ? std::string{} : results.front();
 }
 
 void showAlertDialog(const std::string& title, const std::string& message)

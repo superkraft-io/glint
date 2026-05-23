@@ -1596,7 +1596,15 @@ inline std::string showOpenFileDialog(const std::vector<std::string>& extensions
                                       const std::string& title,
                                       bool /*allowDirectories*/)
 {
-  wchar_t path[MAX_PATH] = {};
+  const auto paths = showOpenFilesDialog(extensions, title, false);
+  return paths.empty() ? std::string{} : paths.front();
+}
+
+inline std::vector<std::string> showOpenFilesDialog(const std::vector<std::string>& extensions,
+                                                    const std::string& title,
+                                                    bool /*allowDirectories*/)
+{
+  std::vector<wchar_t> pathBuffer(65536, L'\0');
   const std::wstring filter = glintBuildDialogFilter(extensions);
   const std::wstring wideTitle = glintWideFromUtf8(title);
 
@@ -1604,12 +1612,32 @@ inline std::string showOpenFileDialog(const std::vector<std::string>& extensions
   ofn.lStructSize = sizeof(ofn);
   ofn.hwndOwner = ::GetForegroundWindow();
   ofn.lpstrFilter = filter.c_str();
-  ofn.lpstrFile = path;
-  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFile = pathBuffer.data();
+  ofn.nMaxFile = static_cast<DWORD>(pathBuffer.size());
   ofn.lpstrTitle = wideTitle.empty() ? nullptr : wideTitle.c_str();
-  ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+  ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
 
-  return ::GetOpenFileNameW(&ofn) ? glintUtf8FromWide(path) : std::string{};
+  if (!::GetOpenFileNameW(&ofn)) return {};
+
+  std::vector<std::string> results;
+  const wchar_t* cursor = pathBuffer.data();
+  std::wstring directory = cursor;
+  cursor += directory.size() + 1;
+  if (*cursor == L'\0')
+  {
+    results.push_back(glintUtf8FromWide(directory.c_str()));
+    return results;
+  }
+
+  while (*cursor)
+  {
+    std::filesystem::path fullPath(directory);
+    fullPath /= cursor;
+    results.push_back(glintUtf8FromWide(fullPath.c_str()));
+    cursor += std::wcslen(cursor) + 1;
+  }
+
+  return results;
 }
 
 inline std::string showSaveFileDialog(const std::vector<std::string>& extensions,

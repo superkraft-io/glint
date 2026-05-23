@@ -121,6 +121,12 @@ struct glint_form_value
 {
   std::string name;
   std::string value;
+  struct file_entry
+  {
+    std::string name;
+    std::string path;
+  };
+  std::vector<file_entry> files;
   glint_element* control = nullptr;
 };
 
