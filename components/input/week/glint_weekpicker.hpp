@@ -18,6 +18,7 @@ class glint_weekpicker : public glint_element
 {
 public:
   std::function<void(int, int)> onChange;
+  std::function<void()> onDismiss;
 
   int navYear = 2024;
   int navMonth = 1;
@@ -45,22 +46,22 @@ public:
 
   void setWeek(int weekYear, int week)
   {
-    const glint_ymd monday = glint_ymd_from_iso_week(weekYear, week, 1);
-    selWeekYear = weekYear;
-    selWeek = week;
-    navYear = monday.year;
-    navMonth = monday.month;
-    _refresh();
+    _setWeek(weekYear, week);
   }
 
   bool OnKeyDown(const glint_key_press& key) override
   {
+    if (key.vk == 0x1B)
+    {
+      if (onDismiss) onDismiss();
+      return true;
+    }
     if (key.vk == 0x25 || key.vk == 0x26) { _moveSelWeek(-1); return true; }
     if (key.vk == 0x27 || key.vk == 0x28) { _moveSelWeek(+1); return true; }
     if (key.vk == 0x21) { _prevMonth(); return true; }
     if (key.vk == 0x22) { _nextMonth(); return true; }
-    if (key.vk == 0x24) { _pickVisibleRow(0); return true; }
-    if (key.vk == 0x23) { _pickVisibleRow(5); return true; }
+    if (key.vk == 0x24) { _setVisibleRow(0); return true; }
+    if (key.vk == 0x23) { _setVisibleRow(5); return true; }
     if (key.vk == 0x0D && selWeek > 0) { if (onChange) onChange(selWeekYear, selWeek); return true; }
     return false;
   }
@@ -145,7 +146,7 @@ private:
     {
       auto* rowEl = new glint_element();
       rowEl->className = "wp-row";
-      rowEl->addEventListener("click", [this, row](glint_event&) { _pickVisibleRow(row); });
+      rowEl->addEventListener("click", [this, row](glint_event&) { _commitVisibleRow(row); });
       rowEl->addEventListener("mouseenter", [this, row](glint_event&) { _onRowEnter(row); });
       rowEl->addEventListener("mouseleave", [this, row](glint_event&) { _onRowLeave(row); });
       mRows[row] = rowEl;
@@ -186,7 +187,7 @@ private:
       const std::time_t now = std::time(nullptr);
       const std::tm* lt = std::localtime(&now);
       const glint_iso_week_value iso = glint_iso_week_from_ymd(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday);
-      _pickWeek(iso.weekYear, iso.week);
+      _commitWeek(iso.weekYear, iso.week);
     });
     addChild(mThisWeekBtn);
 
@@ -262,12 +263,20 @@ private:
     setDirty(false);
   }
 
-  void _pickVisibleRow(int row)
+  void _setVisibleRow(int row)
   {
     auto* rowEl = mRows[row];
     if (!rowEl) return;
     const int enc = rowEl->tag;
-    _pickWeek(enc / 100, enc % 100);
+    _setWeek(enc / 100, enc % 100);
+  }
+
+  void _commitVisibleRow(int row)
+  {
+    auto* rowEl = mRows[row];
+    if (!rowEl) return;
+    const int enc = rowEl->tag;
+    _commitWeek(enc / 100, enc % 100);
   }
 
   void _onRowEnter(int row)
@@ -298,7 +307,7 @@ private:
     }
   }
 
-  void _pickWeek(int weekYear, int week)
+  void _setWeek(int weekYear, int week)
   {
     selWeekYear = weekYear;
     selWeek = week;
@@ -306,6 +315,11 @@ private:
     navYear = monday.year;
     navMonth = monday.month;
     _refresh();
+  }
+
+  void _commitWeek(int weekYear, int week)
+  {
+    _setWeek(weekYear, week);
     if (onChange) onChange(weekYear, week);
   }
 
@@ -328,7 +342,7 @@ private:
     const glint_iso_week_value shifted = glint_shift_iso_week(selWeekYear > 0 ? selWeekYear : navYear,
                                                               selWeek > 0 ? selWeek : 1,
                                                               delta);
-    _pickWeek(shifted.weekYear, shifted.week);
+    _setWeek(shifted.weekYear, shifted.week);
   }
 
   glint_ymd _firstVisibleMonday() const

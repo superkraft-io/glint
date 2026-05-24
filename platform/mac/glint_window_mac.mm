@@ -1043,6 +1043,8 @@ void glint_window_mac::_createPanelAndView()
   // the user clicks elsewhere (enabling auto-dismiss).  Framed inspector
   // windows also benefit from makeKeyAndOrderFront:.
   [panel makeKeyAndOrderFront:nil];
+  if (mViewHandle)
+    [panel makeFirstResponder:(__bridge NSView*)mViewHandle];
 
   // Now that the panel is on screen, correct the Metal layer's contentsScale
   // and drawableSize to match the actual HiDPI backing scale factor.
@@ -1215,13 +1217,21 @@ void glint_window_mac::showPanel()
 {
   if ([NSThread isMainThread]) {
     mSuppressAutoClose = false;   // re-enable outside-click auto-dismiss
-    if (mPanelHandle)
-      [(__bridge NSWindow*)mPanelHandle makeKeyAndOrderFront:nil];
+    if (mPanelHandle) {
+      NSWindow* panel = (__bridge NSWindow*)mPanelHandle;
+      [panel makeKeyAndOrderFront:nil];
+      if (mViewHandle)
+        [panel makeFirstResponder:(__bridge NSView*)mViewHandle];
+    }
   } else {
     _dispatchMain([this] {
       mSuppressAutoClose = false;
-      if (mPanelHandle)
-        [(__bridge NSWindow*)mPanelHandle makeKeyAndOrderFront:nil];
+      if (mPanelHandle) {
+        NSWindow* panel = (__bridge NSWindow*)mPanelHandle;
+        [panel makeKeyAndOrderFront:nil];
+        if (mViewHandle)
+          [panel makeFirstResponder:(__bridge NSView*)mViewHandle];
+      }
     });
   }
 }

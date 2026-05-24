@@ -141,6 +141,8 @@ public:
   {
     if (key.vk == 0x1B && mPickerOpen) { _closePicker(); return true; }
     if ((key.alt && key.vk == 0x28) || key.vk == 0x73) { _togglePicker(); return true; }
+    if (mPickerOpen && _shouldRouteKeyToPicker(key) && _sharedWindow()->handleKey(key))
+      return true;
 
     if (mActiveField < 0)
     {
@@ -148,6 +150,12 @@ public:
         { _setActiveField(kWeek); return true; }
       if (key.vk == 0x09)
         { _setActiveField(key.shift ? kYear : kWeek); return true; }
+      if (key.vk >= '0' && key.vk <= '9')
+      {
+        _setActiveField(kWeek);
+        _handleDigit((char)key.vk);
+        return true;
+      }
       return false;
     }
 
@@ -383,6 +391,25 @@ private:
 
     _refreshDisplay();
     if (onChange) onChange(mWeekYear, mWeek);
+  }
+
+  static bool _shouldRouteKeyToPicker(const glint_key_press& key)
+  {
+    switch (key.vk)
+    {
+      case 0x25: // left
+      case 0x26: // up
+      case 0x27: // right
+      case 0x28: // down
+      case 0x21: // page up
+      case 0x22: // page down
+      case 0x24: // home
+      case 0x23: // end
+      case 0x0D: // enter
+        return true;
+      default:
+        return false;
+    }
   }
 
   void _handleDigit(char ch)

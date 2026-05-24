@@ -100,6 +100,8 @@ public:
       ::PostMessage(h, WM_SKUI_HIDE_WP, 0, 0);
   }
 
+  bool handleKey(const glint_key_press&) { return false; }
+
   void destroy() { stopThread(); }
 
 protected:
@@ -135,6 +137,7 @@ protected:
       if (mPicker) mPicker->setWeek(weekYear, week);
       ::ShowWindow(mHWND, SW_SHOW);
       ::SetForegroundWindow(mHWND);
+      if (mOwnRoot && mPicker) mOwnRoot->SetFocus(mPicker);
       ::PostMessage(mHWND, WM_SKUI_REDRAW, 0, 0);
       return 0;
     }
@@ -184,6 +187,10 @@ protected:
       std::function<void(int, int)> cb;
       { std::lock_guard<std::mutex> lk(mMtx); cb = mOnChange; }
       if (cb) cb(weekYear, week);
+      if (HWND h = mHWNDAtom.load()) ::PostMessage(h, WM_SKUI_HIDE_WP, 0, 0);
+    };
+    mPicker->onDismiss = [this]()
+    {
       if (HWND h = mHWNDAtom.load()) ::PostMessage(h, WM_SKUI_HIDE_WP, 0, 0);
     };
     wrap->addChild(mPicker);
@@ -275,6 +282,7 @@ public:
     if (mPicker) mPicker->setWeek(mWeekYear, mWeek);
     requestRedraw();
     showPanel();
+    if (mOwnRoot && mPicker) mOwnRoot->SetFocus(mPicker);
   }
 
   void hide()
@@ -288,6 +296,15 @@ public:
   }
 
   bool isVisible() const { return !mSuppressAutoClose; }
+
+  bool handleKey(const glint_key_press& key)
+  {
+    if (!mOwnRoot || !mPicker) return false;
+    mOwnRoot->SetFocus(mPicker);
+    const bool handled = mOwnRoot->OnKeyDown(key);
+    if (handled) requestRedraw();
+    return handled;
+  }
 
   void destroy()
   {
@@ -326,6 +343,7 @@ protected:
       if (mOnChange) mOnChange(weekYear, week);
       hide();
     };
+    mPicker->onDismiss = [this]() { hide(); };
     wrap->addChild(mPicker);
   }
 
@@ -434,6 +452,7 @@ public:
   void hide() {}
   void destroy() {}
   bool isVisible() const { return false; }
+  bool handleKey(const glint_key_press&) { return false; }
 };
 
 #else
@@ -479,6 +498,7 @@ public:
     if (mPicker) mPicker->setWeek(mWeekYear, mWeek);
     requestRedraw();
     showPanel();
+    if (mOwnRoot && mPicker) mOwnRoot->SetFocus(mPicker);
   }
 
   void hide()
@@ -492,6 +512,15 @@ public:
   }
 
   bool isVisible() const { return !mSuppressAutoClose; }
+
+  bool handleKey(const glint_key_press& key)
+  {
+    if (!mOwnRoot || !mPicker) return false;
+    mOwnRoot->SetFocus(mPicker);
+    const bool handled = mOwnRoot->OnKeyDown(key);
+    if (handled) requestRedraw();
+    return handled;
+  }
 
   void destroy()
   {
@@ -529,6 +558,7 @@ protected:
       if (mOnChange) mOnChange(weekYear, week);
       hide();
     };
+    mPicker->onDismiss = [this]() { hide(); };
     wrap->addChild(mPicker);
   }
 
