@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../glint_graphics.hpp"
-#include "../platform/glint_platform_rect.hpp"
+#include "../../../glint_graphics.hpp"
+#include "../../../platform/glint_platform_rect.hpp"
 
 #include <functional>
 

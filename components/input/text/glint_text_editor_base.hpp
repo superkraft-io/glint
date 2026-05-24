@@ -23,9 +23,9 @@
  *   };
  */
 
-#include "../glint_element.hpp"
+#include "../../../glint_element.hpp"
 #if defined(__APPLE__)
-#include "../platform/glint_platform.hpp"
+#include "../../../platform/glint_platform.hpp"
 #endif
 
 #include <algorithm>

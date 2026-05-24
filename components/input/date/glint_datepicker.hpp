@@ -14,8 +14,8 @@
  * For a native OS popup window see glint_datepicker_window.hpp.
  */
 
-#include "../glint_element.hpp"
-#include "../default_style.hpp"
+#include "../../../glint_element.hpp"
+#include "../../../default_style.hpp"
 #include <algorithm>
 #include <cstring>
 #include <ctime>

@@ -1,8 +1,8 @@
-#include "../render/glint_tree_node.hpp"
-#include "../glint_document.hpp"
-#include "../platform/glint_platform_colorpicker.hpp"
+#include "../../../render/glint_tree_node.hpp"
+#include "../../../glint_document.hpp"
+#include "../../../platform/glint_platform_colorpicker.hpp"
 #include "glint_input_colorpicker_bridge.hpp"
-#include "glint_colorpicker_window.hpp"
+#include "../../glint_colorpicker_window.hpp"
 
 struct glint_input_colorpicker_bridge
 {

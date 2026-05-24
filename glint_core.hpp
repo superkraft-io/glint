@@ -27,5 +27,5 @@
 #include "glint_document.hpp"
 #include "components/glint_button.hpp"
 #include "components/glint_image.hpp"
-#include "components/glint_input.hpp"
+#include "components/input/glint_input.hpp"
 #include "components/glint_scrollbar/glint_scrollbar.hpp"

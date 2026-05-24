@@ -15,10 +15,11 @@
  */
 
 #include "glint_datepicker_window.hpp"
-#include "../default_style.hpp"
-#include "../platform/glint_apple_platform.hpp"
+#include "../../../default_style.hpp"
+#include "../../../platform/glint_apple_platform.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <functional>
@@ -96,8 +97,45 @@ public:
     mYear  = year;
     mMonth = std::max(1, std::min(12, month));
     mDay   = std::max(1, std::min(_daysInMonth(mYear, mMonth), day));
+    mHasValue = true;
     mTypedStr.clear();
     _refreshDisplay();
+  }
+
+  void clear()
+  {
+    mHasValue = false;
+    mActiveField = -1;
+    mTypedStr.clear();
+    _refreshDisplay();
+  }
+
+  std::string getValue() const
+  {
+    if (!mHasValue)
+      return {};
+
+    char buffer[16];
+    std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", mYear, mMonth, mDay);
+    return buffer;
+  }
+
+  bool setValue(const std::string& value)
+  {
+    if (value.empty())
+    {
+      clear();
+      return true;
+    }
+
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    if (!_tryParseIsoDate(value, year, month, day))
+      return false;
+
+    setDate(year, month, day);
+    return true;
   }
 
   int year()  const { return mYear;  }
@@ -178,6 +216,7 @@ public:
 private:
   static constexpr int kMonth = 0, kDay = 1, kYear = 2;
   int  mYear = 2024, mMonth = 1, mDay = 1;
+  bool mHasValue = false;
   int  mActiveField   = -1;
   bool mCalendarOpen  = false;
   float mLastRectL = 0.f, mLastRectT = 0.f;
@@ -253,6 +292,8 @@ private:
     char bufY[8]; std::snprintf(bufY, sizeof(bufY), "%04d", mYear);
 
     const char* bufs[3] = { bufM, bufD, bufY };
+    if (!mHasValue)
+      bufs[0] = bufs[1] = bufs[2] = "";
 
     for (int i = 0; i < 3; ++i)
     {
@@ -350,6 +391,8 @@ private:
   // ── Step / type ────────────────────────────────────────────────────────────
   void _stepField(int f, int delta)
   {
+    if (!mHasValue)
+      mHasValue = true;
     mTypedStr.clear();
     if (f == kMonth)
     {
@@ -376,6 +419,8 @@ private:
 
   void _handleDigit(char ch)
   {
+    if (!mHasValue)
+      mHasValue = true;
     const int digit = ch - '0';
     if (mActiveField == kMonth)
     {
@@ -414,5 +459,17 @@ private:
     static const int kD[] = { 0,31,28,31,30,31,30,31,31,30,31,30,31 };
     if (m == 2) { bool l = (y%4==0 && y%100!=0) || (y%400==0); return l ? 29 : 28; }
     return (m >= 1 && m <= 12) ? kD[m] : 30;
+  }
+
+  static bool _tryParseIsoDate(const std::string& value, int& year, int& month, int& day)
+  {
+    char trailing = 0;
+    if (std::sscanf(value.c_str(), "%d-%d-%d%c", &year, &month, &day, &trailing) != 3)
+      return false;
+    if (year < 1 || month < 1 || month > 12)
+      return false;
+    if (day < 1 || day > _daysInMonth(year, month))
+      return false;
+    return true;
   }
 };

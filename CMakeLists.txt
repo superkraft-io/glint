@@ -256,7 +256,8 @@ set_target_properties(glint_host_win32 PROPERTIES EXPORT_NAME host_win32)
 if(WIN32)
   add_library(glint_host_win32_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/components/glint_input_colorpicker_bridge.cpp")
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp")
   set_property(TARGET glint_host_win32_support PROPERTY
     MSVC_RUNTIME_LIBRARY "${GLINT_MSVC_RUNTIME_LIBRARY_EXPR}")
   target_link_libraries(glint_host_win32_support PRIVATE glint::host)
@@ -283,7 +284,8 @@ target_link_libraries(glint_host_win32 INTERFACE
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   add_library(glint_host_mac_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/components/glint_input_colorpicker_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_cursor_mac.mm"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_window_mac.mm"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_view_mac.mm")
@@ -333,7 +335,8 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   add_library(glint_host_ios_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/components/glint_input_colorpicker_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/platform/ios/glint_view_ios.mm")
   set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/platform/ios/glint_view_ios.mm"
@@ -376,7 +379,8 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_library(glint_host_linux_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/components/glint_input_colorpicker_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/platform/linux/glint_window_linux.cpp")
   target_compile_options(glint_host_linux_support PRIVATE
     -Wall -Wextra -Wno-unused-parameter)

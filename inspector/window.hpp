@@ -33,7 +33,7 @@
 
 #include "../platform/glint_window.hpp"   // glint_window base (platform-dispatching umbrella)
 #include "../components/glint_image.hpp"
-#include "../components/glint_input.hpp"
+#include "../components/input/glint_input.hpp"
 #include "../components/glint_tree.hpp"
 #include "style_editor.hpp"      // glint_style_set_by_name, glint_style_is_valid_by_name, InspStylePanel
 #include "image_preview_popup.hpp" // InspImagePreviewPopup hover thumbnail overlay

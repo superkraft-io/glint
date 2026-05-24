@@ -375,10 +375,10 @@ Relevant source:
 - `components/glint_dial.hpp`
 - `components/glint_gradient_editor.hpp`
 - `components/glint_image.hpp`
-- `components/glint_input.hpp`
+- `components/input/glint_input.hpp`
 - `components/glint_scrollbar/glint_scrollbar.hpp`
 - `components/glint_select.hpp`
-- `components/glint_text_editor_base.hpp`
+- `components/input/text/glint_text_editor_base.hpp`
 - `components/glint_tree.hpp`
 - `components/glint_list/`
 

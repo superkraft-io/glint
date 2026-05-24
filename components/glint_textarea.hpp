@@ -21,7 +21,7 @@
  *   });
  */
 
-#include "glint_text_editor_base.hpp"
+#include "input/text/glint_text_editor_base.hpp"
 #include "glint_scrollbar/glint_scrollbar.hpp"
 #include "../default_style.hpp"
 

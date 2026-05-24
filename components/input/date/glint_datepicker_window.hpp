@@ -23,7 +23,7 @@
  * there is not enough space underneath.
  */
 
-#include "../platform/glint_apple_platform.hpp"
+#include "../../../platform/glint_apple_platform.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Windows implementation
@@ -31,7 +31,7 @@
 
 #if defined(_WIN32) || defined(OS_WIN)
 
-#include "../glint_window.hpp"   // glint_window_win32 + all components
+#include "../../../glint_window.hpp"   // glint_window_win32 + all components
 #include "glint_datepicker.hpp"
 
 #include <functional>
@@ -275,7 +275,7 @@ private:
 
 #elif defined(__linux__)
 
-#include "../platform/glint_window.hpp"   // glint_window_linux + all components
+#include "../../../platform/glint_window.hpp"   // glint_window_linux + all components
 #include "glint_datepicker.hpp"
 
 #include <functional>
@@ -493,7 +493,7 @@ public:
 
 #else
 
-#include "../platform/glint_window.hpp"   // glint_window_mac + all components
+#include "../../../platform/glint_window.hpp"   // glint_window_mac + all components
 #include "glint_datepicker.hpp"
 
 #include <functional>

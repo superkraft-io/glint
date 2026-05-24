@@ -13,7 +13,7 @@
 #include "../glint_platform.hpp"
 #include "../glint_platform_colorpicker.hpp"
 #include "../../i18n/glint_i18n.hpp"
-#include "../../components/glint_input.hpp"
+#include "../../components/input/glint_input.hpp"
 #include "../../components/glint_textarea.hpp"
 
 #include <algorithm>
@@ -119,6 +119,145 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
 bool glint_inputmode_is_none(std::string_view inputmode)
 {
   return inputmode == "none";
+}
+
+enum glint_temporal_input_kind
+{
+  glint_temporal_input_kind_none = 0,
+  glint_temporal_input_kind_date,
+  glint_temporal_input_kind_time,
+  glint_temporal_input_kind_datetime_local,
+};
+
+glint_temporal_input_kind glint_temporal_kind_for_input(const glint_text_input& input)
+{
+  if (input.type == "date") return glint_temporal_input_kind_date;
+  if (input.type == "time") return glint_temporal_input_kind_time;
+  if (input.type == "datetime-local") return glint_temporal_input_kind_datetime_local;
+  return glint_temporal_input_kind_none;
+}
+
+int glint_temporal_minute_interval_for_step(float step)
+{
+  if (!(step > 0.f))
+    return 1;
+
+  const double seconds = static_cast<double>(step);
+  const double roundedSeconds = std::round(seconds);
+  if (std::abs(seconds - roundedSeconds) > 1e-6)
+    return 1;
+  if (static_cast<int>(roundedSeconds) % 60 != 0)
+    return 1;
+
+  const int minutes = static_cast<int>(roundedSeconds) / 60;
+  if (minutes < 1 || minutes > 30)
+    return 1;
+  if (60 % minutes != 0)
+    return 1;
+  return minutes;
+}
+
+NSDate* glint_temporal_date_from_value(glint_temporal_input_kind kind, std::string_view value)
+{
+  if (value.empty())
+    return nil;
+
+  NSCalendar* calendar = [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian] autorelease];
+  calendar.timeZone = NSTimeZone.localTimeZone;
+
+  const std::string utf8(value);
+  NSDateComponents* components = [[[NSDateComponents alloc] init] autorelease];
+  components.calendar = calendar;
+  components.timeZone = calendar.timeZone;
+
+  if (kind == glint_temporal_input_kind_date)
+  {
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    if (std::sscanf(utf8.c_str(), "%d-%d-%d", &year, &month, &day) != 3)
+      return nil;
+    components.year = year;
+    components.month = month;
+    components.day = day;
+    components.hour = 12;
+    return [calendar dateFromComponents:components];
+  }
+
+  if (kind == glint_temporal_input_kind_time)
+  {
+    NSDateComponents* today = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay
+                                          fromDate:NSDate.date];
+    int hour = 0;
+    int minute = 0;
+    if (std::sscanf(utf8.c_str(), "%d:%d", &hour, &minute) < 2)
+      return nil;
+    components.year = today.year;
+    components.month = today.month;
+    components.day = today.day;
+    components.hour = hour;
+    components.minute = minute;
+    return [calendar dateFromComponents:components];
+  }
+
+  if (kind == glint_temporal_input_kind_datetime_local)
+  {
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    if (std::sscanf(utf8.c_str(), "%d-%d-%dT%d:%d", &year, &month, &day, &hour, &minute) < 5)
+      return nil;
+    components.year = year;
+    components.month = month;
+    components.day = day;
+    components.hour = hour;
+    components.minute = minute;
+    return [calendar dateFromComponents:components];
+  }
+
+  return nil;
+}
+
+std::string glint_temporal_value_from_date(glint_temporal_input_kind kind, NSDate* date)
+{
+  if (!date)
+    return {};
+
+  NSCalendar* calendar = [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian] autorelease];
+  calendar.timeZone = NSTimeZone.localTimeZone;
+  NSDateComponents* components = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay
+                                             | NSCalendarUnitHour | NSCalendarUnitMinute
+                                             fromDate:date];
+
+  char buffer[32] = {};
+  switch (kind)
+  {
+    case glint_temporal_input_kind_date:
+      std::snprintf(buffer, sizeof(buffer), "%04ld-%02ld-%02ld",
+                    static_cast<long>(components.year),
+                    static_cast<long>(components.month),
+                    static_cast<long>(components.day));
+      return buffer;
+    case glint_temporal_input_kind_time:
+      std::snprintf(buffer, sizeof(buffer), "%02ld:%02ld",
+                    static_cast<long>(components.hour),
+                    static_cast<long>(components.minute));
+      return buffer;
+    case glint_temporal_input_kind_datetime_local:
+      std::snprintf(buffer, sizeof(buffer), "%04ld-%02ld-%02ldT%02ld:%02ld",
+                    static_cast<long>(components.year),
+                    static_cast<long>(components.month),
+                    static_cast<long>(components.day),
+                    static_cast<long>(components.hour),
+                    static_cast<long>(components.minute));
+      return buffer;
+    case glint_temporal_input_kind_none:
+      break;
+  }
+
+  return {};
 }
 
 UITextAutocapitalizationType glint_autocapitalization_for_traits(int keyboardType, bool secureEntry)
@@ -536,9 +675,11 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
   BOOL lastSuppressesSoftwareKeyboard;
   BOOL lastUsesSearchResponder;
   BOOL suppressKeyboardFieldSync;
+  UIDatePicker* keyboardTemporalPicker;
   BOOL keyboardPrewarmScheduled;
   BOOL keyboardPrewarmActive;
   BOOL keyboardPrewarmDone;
+  int lastTemporalInputKind;
 }
 - (instancetype)initWithView:(glint_view_ios*)view frame:(CGRect)frame;
 - (void)displayLinkFired:(CADisplayLink*)displayLink;
@@ -547,12 +688,16 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 - (void)handleKeyboardFieldTextDidChangeNotification:(NSNotification*)notification;
 - (void)prewarmKeyboardHostIfNeeded;
 - (void)syncKeyboardFocus;
+- (UIView*)activeKeyboardInputView;
+- (void)syncTemporalPickerState;
+- (void)handleTemporalPickerValueChanged:(UIDatePicker*)sender;
 @end
 
 @interface GlintKeyboardProxyField : UITextField
 {
 @public
   glint_view_ios* cppView;
+  GlintIOSView* ownerView;
 }
 @end
 
@@ -719,6 +864,9 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 
 - (UIView*)inputView
 {
+  if (ownerView)
+    return [ownerView activeKeyboardInputView];
+
   if (!cppView || !cppView->_focusedSuppressesSoftwareKeyboard())
     return nil;
 
@@ -1702,6 +1850,7 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
 
     keyboardProxyField = [[GlintKeyboardProxyField alloc] initWithFrame:CGRectMake(0.0, 0.0, 1.0, 1.0)];
     keyboardProxyField->cppView = view;
+    keyboardProxyField->ownerView = self;
     keyboardProxyField.alpha = 1.0;
     keyboardProxyField.backgroundColor = UIColor.clearColor;
     keyboardProxyField.borderStyle = UITextBorderStyleNone;
@@ -1750,9 +1899,11 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
     lastSuppressesSoftwareKeyboard = NO;
     lastUsesSearchResponder = NO;
     suppressKeyboardFieldSync = NO;
+    keyboardTemporalPicker = nil;
     keyboardPrewarmScheduled = NO;
     keyboardPrewarmActive = NO;
     keyboardPrewarmDone = NO;
+    lastTemporalInputKind = glint_temporal_input_kind_none;
   }
   return self;
 }
@@ -1762,8 +1913,11 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   [NSNotificationCenter.defaultCenter removeObserver:self name:UITextFieldTextDidChangeNotification object:keyboardProxyField];
   [NSNotificationCenter.defaultCenter removeObserver:self name:UITextFieldTextDidChangeNotification object:keyboardSearchBar.searchTextField];
   keyboardProxyField->cppView = nullptr;
+  keyboardProxyField->ownerView = nil;
   glint_set_keyboard_cpp_view(keyboardSearchBar.searchTextField, nullptr);
   [lastTextContentType release];
+  [keyboardTemporalPicker removeTarget:self action:@selector(handleTemporalPickerValueChanged:) forControlEvents:UIControlEventValueChanged];
+  [keyboardTemporalPicker release];
   [keyboardProxyField release];
   [keyboardSearchBar release];
   [pinchRecognizer release];
@@ -2102,6 +2256,90 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   [self handleKeyboardFieldEditingChanged:textField];
 }
 
+- (UIView*)activeKeyboardInputView
+{
+  if (!cppView)
+    return nil;
+
+  if (cppView->_focusedTemporalInputKind() != glint_temporal_input_kind_none)
+  {
+    [self syncTemporalPickerState];
+    return keyboardTemporalPicker;
+  }
+
+  if (!cppView->_focusedSuppressesSoftwareKeyboard())
+    return nil;
+
+  static UIView* emptyInputView = nil;
+  if (!emptyInputView)
+    emptyInputView = [[UIView alloc] initWithFrame:CGRectZero];
+  return emptyInputView;
+}
+
+- (void)syncTemporalPickerState
+{
+  if (!cppView)
+    return;
+
+  const glint_temporal_input_kind kind = (glint_temporal_input_kind) cppView->_focusedTemporalInputKind();
+  if (kind == glint_temporal_input_kind_none)
+    return;
+
+  if (!keyboardTemporalPicker)
+  {
+    keyboardTemporalPicker = [[UIDatePicker alloc] initWithFrame:CGRectZero];
+    if (@available(iOS 13.4, *))
+      keyboardTemporalPicker.preferredDatePickerStyle = UIDatePickerStyleWheels;
+    keyboardTemporalPicker.locale = NSLocale.currentLocale;
+    keyboardTemporalPicker.calendar = [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian] autorelease];
+    keyboardTemporalPicker.timeZone = NSTimeZone.localTimeZone;
+    [keyboardTemporalPicker addTarget:self action:@selector(handleTemporalPickerValueChanged:) forControlEvents:UIControlEventValueChanged];
+  }
+
+  switch (kind)
+  {
+    case glint_temporal_input_kind_date:
+      keyboardTemporalPicker.datePickerMode = UIDatePickerModeDate;
+      keyboardTemporalPicker.minuteInterval = 1;
+      break;
+    case glint_temporal_input_kind_time:
+      keyboardTemporalPicker.datePickerMode = UIDatePickerModeTime;
+      keyboardTemporalPicker.minuteInterval = cppView->_focusedTemporalMinuteInterval();
+      break;
+    case glint_temporal_input_kind_datetime_local:
+      keyboardTemporalPicker.datePickerMode = UIDatePickerModeDateAndTime;
+      keyboardTemporalPicker.minuteInterval = cppView->_focusedTemporalMinuteInterval();
+      break;
+    case glint_temporal_input_kind_none:
+      return;
+  }
+
+  NSDate* date = glint_temporal_date_from_value(kind, cppView->_focusedTextValue());
+  if (!date)
+    date = NSDate.date;
+  [keyboardTemporalPicker setDate:date animated:NO];
+}
+
+- (void)handleTemporalPickerValueChanged:(UIDatePicker*)sender
+{
+  if (!cppView || !sender)
+    return;
+
+  const glint_temporal_input_kind kind = (glint_temporal_input_kind) cppView->_focusedTemporalInputKind();
+  if (kind == glint_temporal_input_kind_none)
+    return;
+
+  const std::string value = glint_temporal_value_from_date(kind, sender.date);
+  if (value.empty())
+    return;
+
+  cppView->_replaceFocusedTextFromPlatform(value);
+
+  suppressKeyboardFieldSync = YES;
+  keyboardProxyField.text = glint_nsstring_from_utf8(value);
+  suppressKeyboardFieldSync = NO;
+}
+
 - (void)syncKeyboardFocus
 {
   if (!cppView)
@@ -2111,8 +2349,10 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
     keyboardPrewarmActive = NO;
 
   const bool wantsKeyboard = cppView->_focusedNodeWantsKeyboard();
-  const bool wantsNativeResponder = wantsKeyboard && cppView->_focusedNeedsNativeTextServices();
-  const BOOL wantsSearchResponder = wantsKeyboard && cppView->_focusedReturnKeyType() == UIReturnKeySearch;
+  const int temporalInputKind = cppView->_focusedTemporalInputKind();
+  const bool wantsTemporalPicker = wantsKeyboard && temporalInputKind != glint_temporal_input_kind_none;
+  const bool wantsNativeResponder = wantsKeyboard && (wantsTemporalPicker || cppView->_focusedNeedsNativeTextServices());
+  const BOOL wantsSearchResponder = wantsKeyboard && !wantsTemporalPicker && cppView->_focusedReturnKeyType() == UIReturnKeySearch;
   const bool viewResponder = [self isFirstResponder];
   const bool proxyFieldResponder = [keyboardProxyField isFirstResponder];
   UISearchTextField* searchField = keyboardSearchBar.searchTextField;
@@ -2168,7 +2408,8 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
                           || textContentTypeChanged
                           || lastSecureEntry != secureEntry
                           || lastSuppressesSoftwareKeyboard != suppressesSoftwareKeyboard
-                          || lastUsesSearchResponder != wantsSearchResponder;
+                          || lastUsesSearchResponder != wantsSearchResponder
+                          || lastTemporalInputKind != temporalInputKind;
 
   auto syncHiddenField = ^(UITextField* field) {
     suppressKeyboardFieldSync = YES;
@@ -2205,6 +2446,7 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
         [self resignFirstResponder];
 
       syncHiddenField(keyboardProxyField);
+      [self syncTemporalPickerState];
 
       if (!proxyFieldResponder)
         [keyboardProxyField becomeFirstResponder];
@@ -2245,6 +2487,7 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   lastSecureEntry = secureEntry;
   lastSuppressesSoftwareKeyboard = suppressesSoftwareKeyboard;
   lastUsesSearchResponder = wantsSearchResponder;
+  lastTemporalInputKind = temporalInputKind;
 }
 
 @end
@@ -2463,6 +2706,30 @@ bool glint_view_ios::_focusedSuppressesSoftwareKeyboard() const
   return false;
 }
 
+int glint_view_ios::_focusedTemporalInputKind() const
+{
+  if (!mDocument)
+    return glint_temporal_input_kind_none;
+
+  const glint_element* focused = mDocument->getFocusedNode();
+  if (const auto* input = dynamic_cast<const glint_text_input*>(focused))
+    return static_cast<int>(glint_temporal_kind_for_input(*input));
+
+  return glint_temporal_input_kind_none;
+}
+
+int glint_view_ios::_focusedTemporalMinuteInterval() const
+{
+  if (!mDocument)
+    return 1;
+
+  const glint_element* focused = mDocument->getFocusedNode();
+  if (const auto* input = dynamic_cast<const glint_text_input*>(focused))
+    return glint_temporal_minute_interval_for_step(input->step);
+
+  return 1;
+}
+
 bool glint_view_ios::_focusedNodeHasText() const
 {
   if (const auto* editor = glint_focused_text_editor(mDocument.get()))
@@ -2478,6 +2745,8 @@ bool glint_view_ios::_focusedNeedsNativeTextServices() const
   const glint_element* focused = mDocument->getFocusedNode();
   if (const auto* input = dynamic_cast<const glint_text_input*>(focused))
   {
+    if (glint_temporal_kind_for_input(*input) != glint_temporal_input_kind_none)
+      return true;
     if (input->type == "number")
       return false;
     return !input->autocomplete.empty() || !input->autocapitalize.empty() || !input->spellcheck.empty();

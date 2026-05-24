@@ -55,6 +55,8 @@ public:
   void _syncKeyboardFocus();
   bool _focusedNodeWantsKeyboard() const;
   bool _focusedSuppressesSoftwareKeyboard() const;
+  int _focusedTemporalInputKind() const;
+  int _focusedTemporalMinuteInterval() const;
   bool _focusedNodeHasText() const;
   bool _focusedNeedsNativeTextServices() const;
   std::string _focusedTextValue() const;
