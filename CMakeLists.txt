@@ -257,6 +257,7 @@ if(WIN32)
   add_library(glint_host_win32_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp")
   set_property(TARGET glint_host_win32_support PROPERTY
     MSVC_RUNTIME_LIBRARY "${GLINT_MSVC_RUNTIME_LIBRARY_EXPR}")
@@ -285,6 +286,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   add_library(glint_host_mac_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_cursor_mac.mm"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_window_mac.mm"
@@ -336,6 +338,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   add_library(glint_host_ios_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/platform/ios/glint_view_ios.mm")
   set_source_files_properties(
@@ -380,6 +383,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_library(glint_host_linux_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/platform/linux/glint_window_linux.cpp")
   target_compile_options(glint_host_linux_support PRIVATE

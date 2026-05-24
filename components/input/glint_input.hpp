@@ -30,6 +30,7 @@
 
 #include "text/glint_text_editor_base.hpp"
 #include "date/glint_date_input_bridge.hpp"
+#include "month/glint_month_input_bridge.hpp"
 #include "../glint_form.hpp"
 #include "color/glint_input_colorpicker_bridge.hpp"
 #include "../glint_image.hpp"
@@ -1197,6 +1198,7 @@ public:
     if (mRadio)    return mRadio->value;
     if (mColorButton) return _resolvedColorValue();
     if (mDateInput) return glint_date_input_delegate_get_value(mDateInput);
+    if (mMonthInput) return glint_month_input_delegate_get_value(mMonthInput);
     if (mTextInput) return mTextInput->getValue();
     if (mButton) return _resolvedButtonLabel();
     if (mSlider)
@@ -1234,6 +1236,7 @@ public:
 
     mPendingValue = v;   // buffer for pre-Layout calls
     if (mDateInput) { glint_date_input_delegate_set_value(mDateInput, v); return; }
+    if (mMonthInput) { glint_month_input_delegate_set_value(mMonthInput, v); return; }
     if (mTextInput) { mTextInput->setValue(v); return; }
     if (mButton)    { mButton->SetLabel(_resolvedButtonLabel()); return; }
     if (mSlider)    { try { mSlider->SetValue(std::stof(v)); } catch (...) {} }
@@ -1532,6 +1535,7 @@ public:
     if (mColorButton) return mColorButton;
     if (mImageInput) return mImageInput;
     if (mDateInput) return mDateInput;
+    if (mMonthInput) return mMonthInput;
     if (mTextInput) return mTextInput;
     if (mSlider)    return mSlider;
     if (mCheckbox)  return mCheckbox;
@@ -1563,6 +1567,11 @@ public:
     if (mDateInput && mRoot)
     {
       mRoot->SetFocus(mDateInput);
+      return;
+    }
+    if (mMonthInput && mRoot)
+    {
+      mRoot->SetFocus(mMonthInput);
       return;
     }
     mFocusPending = true;   // delegate not yet built; forward on first _buildDelegate()
@@ -1688,6 +1697,7 @@ private:
     if (inputType == "color")    return "color";
 #if !GLINT_PLATFORM_IOS
     if (inputType == "date")     return "date";
+  if (inputType == "month")    return "month";
 #endif
     return "text";
   }
@@ -1904,6 +1914,7 @@ private:
   glint_button*      mColorButton = nullptr;
   glint_image_input_delegate* mImageInput = nullptr;
   glint_element*     mDateInput  = nullptr;
+  glint_element*     mMonthInput = nullptr;
   glint_text_input*  mTextInput  = nullptr;
   glint_slider*      mSlider     = nullptr;
   glint_checkbox*    mCheckbox   = nullptr;
@@ -1934,6 +1945,7 @@ private:
     if (mColorButton) { removeChild(mColorButton); mColorButton = nullptr; }
     if (mImageInput) { removeChild(mImageInput); mImageInput = nullptr; }
     if (mDateInput) { removeChild(mDateInput); mDateInput = nullptr; }
+    if (mMonthInput) { removeChild(mMonthInput); mMonthInput = nullptr; }
     if (mTextInput) { removeChild(mTextInput); mTextInput = nullptr; }
     if (mSlider)    { removeChild(mSlider);    mSlider    = nullptr; }
     if (mCheckbox)  { removeChild(mCheckbox);  mCheckbox  = nullptr; }
@@ -2091,6 +2103,23 @@ private:
         mRoot->SetFocus(mDateInput);
       }
     }
+    else if (type == "month")
+    {
+      auto* mi = glint_create_month_input_delegate([this](int, int)
+      {
+        mPendingValue = getValue();
+        if (onChange) onChange(mPendingValue);
+      });
+      addChild(mi);
+      applyAttachedUserAgentStyle(mi);
+      mMonthInput = mi;
+      if (!mPendingValue.empty()) glint_month_input_delegate_set_value(mMonthInput, mPendingValue);
+      if (mFocusPending && mRoot)
+      {
+        mFocusPending = false;
+        mRoot->SetFocus(mMonthInput);
+      }
+    }
     else
     {
       auto* ti            = new glint_text_input();
@@ -2134,7 +2163,7 @@ private:
       }
       style.display = "none";
 
-      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == mDateInput || mRoot->getFocusedNode() == this))
+      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == mDateInput || mRoot->getFocusedNode() == mMonthInput || mRoot->getFocusedNode() == this))
         mRoot->SetFocus(nullptr);
     }
     else if (mHiddenDisplayApplied)
@@ -2152,7 +2181,7 @@ private:
       }
       style.opacity = mEnabledOpacity * 0.5f;
 
-      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == mDateInput || mRoot->getFocusedNode() == this))
+      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == mDateInput || mRoot->getFocusedNode() == mMonthInput || mRoot->getFocusedNode() == this))
         mRoot->SetFocus(nullptr);
     }
     else if (mDisabledOpacityApplied)
@@ -2192,6 +2221,13 @@ private:
       mDateInput->mTabStop = !disabled && !isHiddenType;
       if (mPendingValue.empty()) glint_date_input_delegate_clear(mDateInput);
       else                       glint_date_input_delegate_set_value(mDateInput, mPendingValue);
+    }
+    if (mMonthInput)
+    {
+      mMonthInput->mAcceptsFocus = !disabled && !isHiddenType && !readonly;
+      mMonthInput->mTabStop = !disabled && !isHiddenType;
+      if (mPendingValue.empty()) glint_month_input_delegate_clear(mMonthInput);
+      else                        glint_month_input_delegate_set_value(mMonthInput, mPendingValue);
     }
     if (mButton)
     {

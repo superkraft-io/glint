@@ -338,6 +338,112 @@ datepicker {
   color: #d9d9d9;
 }
 
+monthpicker {
+  display: flex;
+  flex-direction: column;
+  width: 224px;
+  height: 208px;
+  background-color: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  padding: 8px;
+  overflow: hidden;
+  user-select: none;
+}
+
+.mp-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 100%;
+  height: 32px;
+}
+
+.mp-nav-btn {
+  display: flex;
+  flex-direction: column;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.mp-nav-btn-label {
+  font-size: 13px;
+  color: #b4b4b4;
+}
+
+.mp-header-label {
+  display: flex;
+  flex-direction: column;
+  height: 32px;
+  flex-grow: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+.mp-header-text {
+  font-size: 13px;
+  color: #e6e6e6;
+}
+
+.mp-grid {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.mp-row {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  height: 34px;
+  gap: 4px;
+}
+
+.mp-cell {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.mp-cell-label {
+  font-size: 12px;
+}
+
+.mp-spacer {
+  width: 100%;
+  height: 8px;
+}
+
+.mp-today-btn {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.mp-today-btn:hover {
+  background-color: #505050;
+}
+
+.mp-today-label {
+  font-size: 12px;
+  color: #d9d9d9;
+}
+
 date-input {
   display: flex;
   flex-direction: row;
@@ -386,6 +492,64 @@ date-input {
 }
 
 .di-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+month-input {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 140px;
+  height: 28px;
+  background-color: #202020;
+  border: 1px solid #414141;
+  border-radius: 6px;
+  padding-left: 8px;
+  padding-right: 4px;
+  user-select: none;
+}
+
+.mi-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.mi-sep {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+}
+
+.mi-sep-label {
+  font-size: 13px;
+  color: #646464;
+}
+
+.mi-field-text {
+  font-size: 13px;
+  color: #dcdcdc;
+}
+
+.mi-spacer {
+  flex-grow: 1;
+}
+
+.mi-icon {
   display: flex;
   flex-direction: column;
   align-items: center;
