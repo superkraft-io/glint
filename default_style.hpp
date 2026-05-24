@@ -444,6 +444,152 @@ monthpicker {
   color: #d9d9d9;
 }
 
+weekpicker {
+  display: flex;
+  flex-direction: column;
+  width: 272px;
+  height: 278px;
+  background-color: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  padding: 8px;
+  overflow: hidden;
+  user-select: none;
+}
+
+.wp-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 100%;
+  height: 32px;
+}
+
+.wp-nav-btn {
+  display: flex;
+  flex-direction: column;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.wp-nav-btn-label {
+  font-size: 13px;
+  color: #b4b4b4;
+}
+
+.wp-header-label {
+  display: flex;
+  flex-direction: column;
+  height: 32px;
+  flex-grow: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+.wp-header-text {
+  font-size: 13px;
+  color: #e6e6e6;
+}
+
+.wp-dow-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 100%;
+  height: 20px;
+  gap: 2px;
+}
+
+.wp-weeknum-cell {
+  display: flex;
+  flex-direction: column;
+  width: 36px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid #3a3a3a;
+  margin-right: 4px;
+}
+
+.wp-weeknum-label {
+  font-size: 10px;
+  color: #787878;
+}
+
+.wp-dow-cell {
+  display: flex;
+  flex-direction: column;
+  width: 30px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+}
+
+.wp-dow-label {
+  font-size: 10px;
+  color: #787878;
+}
+
+.wp-grid {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 2px;
+}
+
+.wp-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 100%;
+  height: 28px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.wp-day-cell {
+  display: flex;
+  flex-direction: column;
+  width: 30px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+}
+
+.wp-day-label {
+  font-size: 12px;
+}
+
+.wp-spacer {
+  width: 100%;
+  height: 8px;
+}
+
+.wp-today-btn {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.wp-today-btn:hover {
+  background-color: #505050;
+}
+
+.wp-today-label {
+  font-size: 12px;
+  color: #d9d9d9;
+}
+
 date-input {
   display: flex;
   flex-direction: row;
@@ -550,6 +696,77 @@ month-input {
 }
 
 .mi-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+week-input {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 156px;
+  height: 28px;
+  background-color: #202020;
+  border: 1px solid #414141;
+  border-radius: 6px;
+  padding-left: 6px;
+  padding-right: 4px;
+  user-select: none;
+}
+
+.wi-prefix {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+}
+
+.wi-prefix-label {
+  font-size: 13px;
+  color: #646464;
+}
+
+.wi-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.wi-sep {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+}
+
+.wi-sep-label {
+  font-size: 13px;
+  color: #646464;
+}
+
+.wi-field-text {
+  font-size: 13px;
+  color: #dcdcdc;
+}
+
+.wi-spacer {
+  flex-grow: 1;
+}
+
+.wi-icon {
   display: flex;
   flex-direction: column;
   align-items: center;
