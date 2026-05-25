@@ -130,7 +130,6 @@ public:
 
   bool OnKeyDown(const glint_key_press& key) override
   {
-    if (key.vk == 0x1B && mPickerOpen) { _closePicker(); return true; }
     if ((key.alt && key.vk == 0x28) || key.vk == 0x73) { _togglePicker(); return true; }
     if (mPickerOpen && _shouldRouteKeyToPicker(key) && _sharedWindow()->handleKey(key))
       return true;
@@ -378,6 +377,7 @@ private:
       case 0x23:
       case 0x09:
       case 0x0D:
+      case 0x1B:
         return true;
       default:
         return false;

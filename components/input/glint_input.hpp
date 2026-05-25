@@ -1975,6 +1975,8 @@ private:
     if (mCheckbox)  { removeChild(mCheckbox);  mCheckbox  = nullptr; }
     if (mRadio)     { removeChild(mRadio);     mRadio     = nullptr; }
 
+    const std::string delegateKind = _delegateKindForType(type);
+
     if (_delegateKindForType(type) != "color" && mColorPickerBridge)
     {
       glint_input_colorpicker_destroy(mColorPickerBridge);
@@ -2110,7 +2112,7 @@ private:
       mSlider = sl;
       mSlider->SetValue(mInitialFloatValue);
     }
-    else if (type == "date")
+    else if (delegateKind == "date")
     {
       auto* di = glint_create_date_input_delegate([this](int, int, int)
       {
@@ -2127,7 +2129,7 @@ private:
         mRoot->SetFocus(mDateInput);
       }
     }
-    else if (type == "month")
+    else if (delegateKind == "month")
     {
       auto* mi = glint_create_month_input_delegate([this](int, int)
       {
@@ -2144,7 +2146,7 @@ private:
         mRoot->SetFocus(mMonthInput);
       }
     }
-    else if (type == "week")
+    else if (delegateKind == "week")
     {
       auto* wi = glint_create_week_input_delegate([this](int, int)
       {
@@ -2161,7 +2163,7 @@ private:
         mRoot->SetFocus(mWeekInput);
       }
     }
-    else if (type == "time")
+    else if (delegateKind == "time")
     {
       auto* ti = glint_create_time_input_delegate([this](int, int)
       {
@@ -2205,7 +2207,7 @@ private:
         mRoot->SetFocus(mTextInput);
       }
     }
-    mActiveDelegateKind = _delegateKindForType(type);
+    mActiveDelegateKind = delegateKind;
   }
 
   void _syncDelegateProps()

@@ -17,6 +17,8 @@ struct glint_key_press;
 class glint_timepicker_window : public glint_window_win32
 {
 public:
+  static constexpr bool kHideOnUnfocus = true;
+
   static glint_timepicker_window* open(
     int hour, int minute,
     RECT anchorScreenRect,
@@ -41,7 +43,7 @@ public:
     _unregisterActive(nullptr);
     sActiveInstance = w;
     sDocCanvas = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
+    if (kHideOnUnfocus && docCanvas && sWheelListenerId < 0)
     {
       sWheelListenerId = docCanvas->addEventListener(
         "wheel",
@@ -75,6 +77,8 @@ public:
       std::lock_guard<std::mutex> lk(mMtx);
       mHour = hour;
       mMinute = minute;
+      mInitialHour = hour;
+      mInitialMinute = minute;
       mAnchorRect = anchorScreenRect;
       mPendingOnChange = std::move(onChange);
       mPendingOnClosed = std::move(onClosed);
@@ -96,7 +100,14 @@ public:
       ::PostMessage(h, WM_SKUI_HIDE_TP, 0, 0);
   }
 
-  bool handleKey(const glint_key_press&) { return false; }
+  bool handleKey(const glint_key_press& key)
+  {
+    if (!mOwnRoot || !mPicker) return false;
+    mOwnRoot->SetFocus(mPicker);
+    const bool handled = mOwnRoot->OnKeyDown(key);
+    if (handled) ::PostMessage(mHWND, WM_SKUI_REDRAW, 0, 0);
+    return handled;
+  }
 
   void destroy() { stopThread(); }
 
@@ -130,7 +141,11 @@ protected:
       }
       _registerActive(this, docCanvas);
       _reposition(anchor);
-      if (mPicker) mPicker->setTime(hour, minute);
+      if (mPicker)
+      {
+        mPicker->setTime(hour, minute);
+        mPicker->focusHourList();
+      }
       ::ShowWindow(mHWND, SW_SHOW);
       ::SetForegroundWindow(mHWND);
       if (mOwnRoot && mPicker) mOwnRoot->SetFocus(mPicker);
@@ -138,7 +153,7 @@ protected:
       return 0;
     }
 
-    if (msg == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE)
+    if (kHideOnUnfocus && msg == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE)
     {
       ::PostMessage(mHWND, WM_SKUI_HIDE_TP, 0, 0);
       return 0;
@@ -185,6 +200,35 @@ protected:
       if (cb) cb(hour, minute);
       ::PostMessage(mHWND, WM_SKUI_REDRAW, 0, 0);
     };
+    mPicker->onApply = [this](int hour, int minute)
+    {
+      std::function<void(int, int)> cb;
+      { std::lock_guard<std::mutex> lk(mMtx); cb = mOnChange; }
+      if (cb) cb(hour, minute);
+      if (HWND h = mHWNDAtom.load()) ::PostMessage(h, WM_SKUI_HIDE_TP, 0, 0);
+    };
+    mPicker->onRestore = [this]()
+    {
+      int hour = 0;
+      int minute = 0;
+      bool unchanged = false;
+      std::function<void(int, int)> cb;
+      {
+        std::lock_guard<std::mutex> lk(mMtx);
+        hour = mInitialHour;
+        minute = mInitialMinute;
+        cb = mOnChange;
+      }
+      unchanged = mPicker && mPicker->hour() == hour && mPicker->minute() == minute;
+      if (unchanged)
+      {
+        if (HWND h = mHWNDAtom.load()) ::PostMessage(h, WM_SKUI_HIDE_TP, 0, 0);
+        return;
+      }
+      if (mPicker) mPicker->setTime(hour, minute);
+      if (cb) cb(hour, minute);
+      if (HWND h = mHWNDAtom.load()) ::PostMessage(h, WM_SKUI_REDRAW, 0, 0);
+    };
     mPicker->onDismiss = [this]()
     {
       if (HWND h = mHWNDAtom.load()) ::PostMessage(h, WM_SKUI_HIDE_TP, 0, 0);
@@ -209,6 +253,8 @@ private:
   std::mutex mMtx;
   int mHour = 0;
   int mMinute = 0;
+  int mInitialHour = 0;
+  int mInitialMinute = 0;
   RECT mAnchorRect = { 100, 100, 114, 114 };
   glint_element* mDocCanvas = nullptr;
   std::function<void(int, int)> mOnChange;
@@ -243,6 +289,8 @@ private:
 class glint_timepicker_window : public glint_window_linux
 {
 public:
+  static constexpr bool kHideOnUnfocus = true;
+
   static glint_timepicker_window* open(
     int hour, int minute,
     RECT anchorScreenRect,
@@ -268,6 +316,8 @@ public:
   {
     mHour = hour;
     mMinute = minute;
+    mInitialHour = hour;
+    mInitialMinute = minute;
     mAnchorRect = anchorScreenRect;
     mOnChange = std::move(onChange);
     mOnClosed = std::move(onClosed);
@@ -275,7 +325,11 @@ public:
 
     _registerActive(this, docCanvas);
     _reposition(mAnchorRect);
-    if (mPicker) mPicker->setTime(mHour, mMinute);
+    if (mPicker)
+    {
+      mPicker->setTime(mHour, mMinute);
+      mPicker->focusHourList();
+    }
     showPanel();
     requestRedraw();
     if (mOwnRoot && mPicker) mOwnRoot->SetFocus(mPicker);
@@ -339,6 +393,22 @@ protected:
       if (mOnChange) mOnChange(hour, minute);
       requestRedraw();
     };
+    mPicker->onApply = [this](int hour, int minute)
+    {
+      if (mOnChange) mOnChange(hour, minute);
+      hide();
+    };
+    mPicker->onRestore = [this]()
+    {
+      if (mPicker && mPicker->hour() == mInitialHour && mPicker->minute() == mInitialMinute)
+      {
+        hide();
+        return;
+      }
+      if (mPicker) mPicker->setTime(mInitialHour, mInitialMinute);
+      if (mOnChange) mOnChange(mInitialHour, mInitialMinute);
+      requestRedraw();
+    };
     mPicker->onDismiss = [this]() { hide(); };
     wrap->addChild(mPicker);
   }
@@ -368,7 +438,7 @@ private:
     _unregisterActive(nullptr);
     sActiveInstance = w;
     sDocCanvas = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
+    if (kHideOnUnfocus && docCanvas && sWheelListenerId < 0)
     {
       sWheelListenerId = docCanvas->addEventListener(
         "wheel",
@@ -393,6 +463,8 @@ private:
 
   int mHour = 0;
   int mMinute = 0;
+  int mInitialHour = 0;
+  int mInitialMinute = 0;
   RECT mAnchorRect = { 100, 100, 114, 114 };
   std::function<void(int, int)> mOnChange;
   std::function<void()> mOnClosed;
@@ -459,6 +531,8 @@ public:
 class glint_timepicker_window : public glint_window_mac
 {
 public:
+  static constexpr bool kHideOnUnfocus = true;
+
   static glint_timepicker_window* open(
     int hour, int minute,
     RECT anchorScreenRect,
@@ -484,6 +558,8 @@ public:
   {
     mHour = hour;
     mMinute = minute;
+    mInitialHour = hour;
+    mInitialMinute = minute;
     mAnchorRect = anchorScreenRect;
     mOnChange = std::move(onChange);
     mOnClosed = std::move(onClosed);
@@ -491,7 +567,11 @@ public:
 
     _registerActive(this, docCanvas);
     _reposition(mAnchorRect);
-    if (mPicker) mPicker->setTime(mHour, mMinute);
+    if (mPicker)
+    {
+      mPicker->setTime(mHour, mMinute);
+      mPicker->focusHourList();
+    }
     showPanel();
     requestRedraw();
     if (mOwnRoot && mPicker) mOwnRoot->SetFocus(mPicker);
@@ -541,7 +621,7 @@ protected:
     wrap->style.width = "100%";
     wrap->style.height = "100%";
     wrap->style.backgroundColor = glint_color(255, 30, 30, 30);
-    wrap->style.borderRadius = 8.f;
+    wrap->style.borderRadius = 16.f;
     wrap->style.overflow = "hidden";
     mOwnRoot->mCanvas.addChild(wrap);
 
@@ -552,6 +632,22 @@ protected:
     mPicker->onChange = [this](int hour, int minute)
     {
       if (mOnChange) mOnChange(hour, minute);
+      requestRedraw();
+    };
+    mPicker->onApply = [this](int hour, int minute)
+    {
+      if (mOnChange) mOnChange(hour, minute);
+      hide();
+    };
+    mPicker->onRestore = [this]()
+    {
+      if (mPicker && mPicker->hour() == mInitialHour && mPicker->minute() == mInitialMinute)
+      {
+        hide();
+        return;
+      }
+      if (mPicker) mPicker->setTime(mInitialHour, mInitialMinute);
+      if (mOnChange) mOnChange(mInitialHour, mInitialMinute);
       requestRedraw();
     };
     mPicker->onDismiss = [this]() { hide(); };
@@ -583,7 +679,7 @@ private:
     _unregisterActive(nullptr);
     sActiveInstance = w;
     sDocCanvas = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
+    if (kHideOnUnfocus && docCanvas && sWheelListenerId < 0)
     {
       sWheelListenerId = docCanvas->addEventListener(
         "wheel",
@@ -608,6 +704,8 @@ private:
 
   int mHour = 0;
   int mMinute = 0;
+  int mInitialHour = 0;
+  int mInitialMinute = 0;
   RECT mAnchorRect = { 100, 100, 114, 114 };
   std::function<void(int, int)> mOnChange;
   std::function<void()> mOnClosed;

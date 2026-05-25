@@ -597,27 +597,28 @@ timepicker {
   height: 252px;
   background-color: #1e1e1e;
   border: 1px solid #3c3c3c;
-  border-radius: 8px;
+  border-radius: 16px;
   padding: 8px;
   overflow: hidden;
   user-select: none;
 }
 
-.tp-columns {
+.glint-tp-columns {
   display: flex;
   flex-direction: row;
   width: 100%;
+  height: 100%;
   flex-grow: 1;
   gap: 8px;
 }
 
-.tp-col {
+.glint-tp-col {
   display: flex;
   flex-direction: column;
   flex-grow: 1;
 }
 
-.tp-col-header {
+.glint-tp-col-header {
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -626,25 +627,26 @@ timepicker {
   justify-content: center;
 }
 
-.tp-col-header-text {
+.glint-tp-col-header-text {
   font-size: 11px;
   color: #8c8c8c;
 }
 
-.tp-list {
+.glint-tp-list {
   display: flex;
   flex-direction: column;
   width: 100%;
+  height: 100%;
   flex-grow: 1;
   border: 1px solid #414141;
-  border-radius: 6px;
+  border-radius: 8px;
   overflow-x: hidden;
   overflow-y: scroll;
   scrollbar-width: none;
   background-color: #222222;
 }
 
-.tp-row {
+.glint-tp-row {
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -654,12 +656,20 @@ timepicker {
   cursor: pointer;
 }
 
-.tp-row-label {
+.glint-tp-row-selected {
+  background-color: #1a73e8;
+}
+
+.glint-tp-row-label {
   font-size: 13px;
   color: #dcdcdc;
 }
 
-.tp-now-btn {
+.glint-tp-row-label-selected {
+  color: #ffffff;
+}
+
+.glint-tp-now-btn {
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -675,11 +685,11 @@ timepicker {
   cursor: pointer;
 }
 
-.tp-now-btn:hover {
+.glint-tp-now-btn:hover {
   background-color: #353535;
 }
 
-.tp-now-btn:active {
+.glint-tp-now-btn:active {
   background-color: #3f3f3f;
 }
 
