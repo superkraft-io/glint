@@ -1,10 +1,7 @@
 #pragma once
-/**
- * glint_month_input.hpp
- * <input type="month"> spinner backed by child elements (CSS-styleable).
- */
 
-#include "glint_monthpicker_window.hpp"
+#include "glint_time_value.hpp"
+#include "glint_timepicker_window.hpp"
 #include "../../../default_style.hpp"
 #include "../../../platform/glint_apple_platform.hpp"
 
@@ -14,7 +11,7 @@
 #include <functional>
 #include <string>
 
-class glint_month_input : public glint_element
+class glint_time_input : public glint_element
 {
   struct _IconElem : glint_element
   {
@@ -22,27 +19,23 @@ class glint_month_input : public glint_element
 
     _IconElem()
     {
-      className = "mi-icon";
+      className = "ti-icon";
       addEventListener("mouseenter", [this](glint_event&) { hovered = true; setDirty(false); });
       addEventListener("mouseleave", [this](glint_event&) { hovered = false; setDirty(false); });
     }
 
-    const char* typeName() const override { return "month-input-icon-elem"; }
+    const char* typeName() const override { return "time-input-icon-elem"; }
 
     void drawContent(glint_canvas& g) override
     {
       const glint_color col = hovered
         ? glint_color{255, 180, 180, 180}
         : glint_color{255, 110, 110, 110};
-      const float cx = mRect.MW(), cy = mRect.MH(), iW = 14.f, iH = 12.f;
-      const glint_rect box(cx - iW * .5f, cy - iH * .5f, cx + iW * .5f, cy + iH * .5f);
-      g.DrawRoundRect(col, box, 1.5f, nullptr, 1.f);
-      g.DrawLine(col, box.L, box.T + 3.5f, box.R, box.T + 3.5f, nullptr, 1.f);
-      g.DrawLine(col, box.L + 3.f, box.T - 1.f, box.L + 3.f, box.T + 2.f, nullptr, 1.5f);
-      g.DrawLine(col, box.R - 3.f, box.T - 1.f, box.R - 3.f, box.T + 2.f, nullptr, 1.5f);
-      for (int row = 0; row < 2; ++row)
-        for (int col2 = 0; col2 < 3; ++col2)
-          g.FillCircle(col, box.L + 2.5f + col2 * 4.f, box.T + 5.5f + row * 3.f, 0.8f);
+      const float cx = mRect.MW();
+      const float cy = mRect.MH();
+      g.DrawCircle(col, cx, cy, 6.5f, nullptr, 1.2f);
+      g.DrawLine(col, cx, cy, cx, cy - 3.5f, nullptr, 1.2f);
+      g.DrawLine(col, cx, cy, cx + 2.8f, cy + 1.8f, nullptr, 1.2f);
     }
 
     void DrawContentToCanvas(SkCanvas* canvas) override
@@ -55,12 +48,12 @@ class glint_month_input : public glint_element
 public:
   std::function<void(int, int)> onChange;
 
-  glint_month_input()
+  glint_time_input()
   {
     const std::time_t now = std::time(nullptr);
     const std::tm* lt = std::localtime(&now);
-    mYear = lt->tm_year + 1900;
-    mMonth = lt->tm_mon + 1;
+    mHour = lt->tm_hour;
+    mMinute = lt->tm_min;
 
     mAcceptsFocus = true;
     setCssStyleLayer(glint_default_user_agent_style_for(*this));
@@ -72,15 +65,15 @@ public:
     if (!_sharedWindow())
     {
       RECT dummy{};
-      _sharedWindow() = glint_monthpicker_window::open(mYear, mMonth, dummy, nullptr, nullptr);
+      _sharedWindow() = glint_timepicker_window::open(mHour, mMinute, dummy, nullptr, nullptr);
     }
 #endif
   }
 
-  void setMonth(int year, int month)
+  void setTime(int hour, int minute)
   {
-    mYear = std::max(1, year);
-    mMonth = std::max(1, std::min(12, month));
+    mHour = glint_clamp_time_hour(hour);
+    mMinute = glint_clamp_time_minute(minute);
     mHasValue = true;
     mTypedStr.clear();
     _refreshDisplay();
@@ -98,10 +91,7 @@ public:
   {
     if (!mHasValue)
       return {};
-
-    char buffer[16];
-    std::snprintf(buffer, sizeof(buffer), "%04d-%02d", mYear, mMonth);
-    return buffer;
+    return glint_format_time_value(mHour, mMinute);
   }
 
   bool setValue(const std::string& value)
@@ -112,19 +102,19 @@ public:
       return true;
     }
 
-    int year = 0;
-    int month = 0;
-    if (!_tryParseIsoMonth(value, year, month))
+    int hour = 0;
+    int minute = 0;
+    if (!glint_parse_time_value(value, hour, minute))
       return false;
 
-    setMonth(year, month);
+    setTime(hour, minute);
     return true;
   }
 
-  int year() const { return mYear; }
-  int month() const { return mMonth; }
+  int hour() const { return mHour; }
+  int minute() const { return mMinute; }
 
-  const char* typeName() const override { return "month-input"; }
+  const char* typeName() const override { return "time-input"; }
 
   void Layout(glint_canvas* g) override
   {
@@ -142,13 +132,21 @@ public:
   {
     if (key.vk == 0x1B && mPickerOpen) { _closePicker(); return true; }
     if ((key.alt && key.vk == 0x28) || key.vk == 0x73) { _togglePicker(); return true; }
+    if (mPickerOpen && _shouldRouteKeyToPicker(key) && _sharedWindow()->handleKey(key))
+      return true;
 
     if (mActiveField < 0)
     {
       if (key.vk == 0x26 || key.vk == 0x28 || key.vk == 0x25 || key.vk == 0x27)
-        { _setActiveField(kMonth); return true; }
+        { _setActiveField(kHour); return true; }
       if (key.vk == 0x09)
-        { _setActiveField(key.shift ? kYear : kMonth); return true; }
+        { _setActiveField(key.shift ? kMinute : kHour); return true; }
+      if (key.vk >= '0' && key.vk <= '9')
+      {
+        _setActiveField(kHour);
+        _handleDigit((char)key.vk);
+        return true;
+      }
       return false;
     }
 
@@ -157,19 +155,19 @@ public:
 
     if (key.vk == 0x25)
     {
-      if (mActiveField > kMonth) { mTypedStr.clear(); _setActiveField(mActiveField - 1); return true; }
+      if (mActiveField > kHour) { mTypedStr.clear(); _setActiveField(mActiveField - 1); return true; }
       mActiveField = -1; mTypedStr.clear(); _refreshDisplay(); return false;
     }
     if (key.vk == 0x27)
     {
-      if (mActiveField < kYear) { mTypedStr.clear(); _setActiveField(mActiveField + 1); return true; }
+      if (mActiveField < kMinute) { mTypedStr.clear(); _setActiveField(mActiveField + 1); return true; }
       mActiveField = -1; mTypedStr.clear(); _refreshDisplay(); return false;
     }
     if (key.vk == 0x09)
     {
-      if (!key.shift && mActiveField < kYear)
+      if (!key.shift && mActiveField < kMinute)
         { mTypedStr.clear(); _setActiveField(mActiveField + 1); return true; }
-      if (key.shift && mActiveField > kMonth)
+      if (key.shift && mActiveField > kHour)
         { mTypedStr.clear(); _setActiveField(mActiveField - 1); return true; }
       mActiveField = -1; mTypedStr.clear(); _refreshDisplay(); return false;
     }
@@ -193,10 +191,10 @@ public:
   }
 
 private:
-  static constexpr int kMonth = 0, kYear = 1;
+  static constexpr int kHour = 0, kMinute = 1;
 
-  int mYear = 2024;
-  int mMonth = 1;
+  int mHour = 0;
+  int mMinute = 0;
   bool mHasValue = false;
   int mActiveField = -1;
   bool mPickerOpen = false;
@@ -207,9 +205,9 @@ private:
   glint_element* mFieldTexts[2] = {};
   _IconElem* mIconEl = nullptr;
 
-  static glint_monthpicker_window*& _sharedWindow()
+  static glint_timepicker_window*& _sharedWindow()
   {
-    static glint_monthpicker_window* sInstance = nullptr;
+    static glint_timepicker_window* sInstance = nullptr;
     return sInstance;
   }
 
@@ -217,12 +215,11 @@ private:
   {
     auto makeField = [this](int idx) {
       auto* el = new glint_element();
-      el->className = "mi-field";
-      if (idx == kYear) el->style.width = 40.f;
+      el->className = "ti-field";
       mFieldEls[idx] = el;
 
       auto* txt = new glint_element();
-      txt->className = "mi-field-text";
+      txt->className = "ti-field-text";
       mFieldTexts[idx] = txt;
       el->addChild(txt);
 
@@ -233,22 +230,20 @@ private:
       addChild(el);
     };
 
-    auto makeSep = [this]() {
-      auto* sep = new glint_element();
-      sep->className = "mi-sep";
-      auto* lbl = new glint_element();
-      lbl->className = "mi-sep-label";
-      lbl->innerText = "/";
-      sep->addChild(lbl);
-      addChild(sep);
-    };
+    makeField(kHour);
 
-    makeField(kMonth);
-    makeSep();
-    makeField(kYear);
+    auto* sep = new glint_element();
+    sep->className = "ti-sep";
+    auto* sepLbl = new glint_element();
+    sepLbl->className = "ti-sep-label";
+    sepLbl->innerText = ":";
+    sep->addChild(sepLbl);
+    addChild(sep);
+
+    makeField(kMinute);
 
     auto* spacer = new glint_element();
-    spacer->className = "mi-spacer";
+    spacer->className = "ti-spacer";
     addChild(spacer);
 
     mIconEl = new _IconElem();
@@ -263,17 +258,16 @@ private:
 
   void _refreshDisplay()
   {
-    char bufM[8]; std::snprintf(bufM, sizeof(bufM), "%02d", mMonth);
-    char bufY[8]; std::snprintf(bufY, sizeof(bufY), "%04d", mYear);
+    char bufH[8]; std::snprintf(bufH, sizeof(bufH), "%02d", mHour);
+    char bufM[8]; std::snprintf(bufM, sizeof(bufM), "%02d", mMinute);
 
-    const char* bufs[2] = { bufM, bufY };
+    const char* bufs[2] = { bufH, bufM };
     if (!mHasValue)
       bufs[0] = bufs[1] = "";
 
     for (int i = 0; i < 2; ++i)
     {
       if (mFieldTexts[i]) mFieldTexts[i]->innerText = bufs[i];
-
       if (!mFieldEls[i]) continue;
       if (i == mActiveField)
       {
@@ -332,16 +326,14 @@ private:
     mPickerOpen = true;
     const RECT anchor = _anchorScreenRect();
 
-    auto onPicked = [this](int y, int m)
+    auto onChanged = [this](int hour, int minute)
     {
-      setMonth(y, m);
-      mPickerOpen = false;
-      if (mRoot) mRoot->SetFocus(this);
-      if (onChange) onChange(mYear, mMonth);
+      setTime(hour, minute);
+      if (onChange) onChange(mHour, mMinute);
     };
     auto onClosed = [this]() { mPickerOpen = false; };
 
-    _sharedWindow()->reopen(mYear, mMonth, anchor, onPicked, onClosed,
+    _sharedWindow()->reopen(mHour, mMinute, anchor, onChanged, onClosed,
                             mRoot ? &mRoot->mCanvas : nullptr);
   }
 
@@ -363,19 +355,33 @@ private:
       mHasValue = true;
     mTypedStr.clear();
 
-    if (field == kMonth)
-    {
-      mMonth += delta;
-      while (mMonth < 1) { mMonth += 12; mYear = std::max(1, mYear - 1); }
-      while (mMonth > 12) { mMonth -= 12; ++mYear; }
-    }
+    if (field == kHour)
+      mHour = (mHour + delta + 24) % 24;
     else
-    {
-      mYear = std::max(1, mYear + delta);
-    }
+      mMinute = (mMinute + delta + 60) % 60;
 
     _refreshDisplay();
-    if (onChange) onChange(mYear, mMonth);
+    if (onChange) onChange(mHour, mMinute);
+  }
+
+  static bool _shouldRouteKeyToPicker(const glint_key_press& key)
+  {
+    switch (key.vk)
+    {
+      case 0x25:
+      case 0x26:
+      case 0x27:
+      case 0x28:
+      case 0x21:
+      case 0x22:
+      case 0x24:
+      case 0x23:
+      case 0x09:
+      case 0x0D:
+        return true;
+      default:
+        return false;
+    }
   }
 
   void _handleDigit(char ch)
@@ -384,46 +390,40 @@ private:
       mHasValue = true;
     const int digit = ch - '0';
 
-    if (mActiveField == kMonth)
+    if (mActiveField == kHour)
     {
       mTypedStr += ch;
-      if (mTypedStr.size() == 1 && digit > 1)
+      if (mTypedStr.size() == 1 && digit > 2)
       {
-        mMonth = digit;
+        mHour = digit;
         mTypedStr.clear();
-        _setActiveField(kYear);
+        _setActiveField(kMinute);
       }
       else if (mTypedStr.size() == 2)
       {
-        int value = std::stoi(mTypedStr);
-        if (value >= 1 && value <= 12) mMonth = value;
+        const int value = std::stoi(mTypedStr);
+        if (value >= 0 && value <= 23) mHour = value;
         mTypedStr.clear();
-        _setActiveField(kYear);
+        _setActiveField(kMinute);
       }
     }
-    else if (mActiveField == kYear)
+    else if (mActiveField == kMinute)
     {
-      if (mTypedStr.size() >= 4) mTypedStr.clear();
       mTypedStr += ch;
-      if (mTypedStr.size() == 4)
+      if (mTypedStr.size() == 1 && digit > 5)
       {
-        int value = std::stoi(mTypedStr);
-        if (value >= 1) mYear = value;
+        mMinute = digit;
+        mTypedStr.clear();
+      }
+      else if (mTypedStr.size() == 2)
+      {
+        const int value = std::stoi(mTypedStr);
+        if (value >= 0 && value <= 59) mMinute = value;
         mTypedStr.clear();
       }
     }
 
     _refreshDisplay();
-    if (onChange) onChange(mYear, mMonth);
-  }
-
-  static bool _tryParseIsoMonth(const std::string& value, int& year, int& month)
-  {
-    char trailing = 0;
-    if (std::sscanf(value.c_str(), "%d-%d%c", &year, &month, &trailing) != 2)
-      return false;
-    if (year < 1 || month < 1 || month > 12)
-      return false;
-    return true;
+    if (onChange) onChange(mHour, mMinute);
   }
 };

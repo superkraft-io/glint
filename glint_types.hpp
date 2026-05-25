@@ -35,6 +35,17 @@ struct glint_key_press
   bool alt      = false;
 };
 
+// ── glint_point ──────────────────────────────────────────────────────────────
+// Lightweight float point used for layout-space geometry queries.
+struct glint_point
+{
+  float x = 0.f;
+  float y = 0.f;
+
+  glint_point() = default;
+  glint_point(float px, float py) : x(px), y(py) {}
+};
+
 // ── Sentinel values ───────────────────────────────────────────────────────────
 // Standalone-owned sentinels used throughout the scene graph.
 

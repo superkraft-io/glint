@@ -590,6 +590,99 @@ weekpicker {
   color: #d9d9d9;
 }
 
+timepicker {
+  display: flex;
+  flex-direction: column;
+  width: 168px;
+  height: 252px;
+  background-color: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  padding: 8px;
+  overflow: hidden;
+  user-select: none;
+}
+
+.tp-columns {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  flex-grow: 1;
+  gap: 8px;
+}
+
+.tp-col {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+}
+
+.tp-col-header {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+}
+
+.tp-col-header-text {
+  font-size: 11px;
+  color: #8c8c8c;
+}
+
+.tp-list {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  flex-grow: 1;
+  border: 1px solid #414141;
+  border-radius: 6px;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-width: none;
+  background-color: #222222;
+}
+
+.tp-row {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.tp-row-label {
+  font-size: 13px;
+  color: #dcdcdc;
+}
+
+.tp-now-btn {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 28px;
+  margin-top: 8px;
+  align-items: center;
+  justify-content: center;
+  background-color: #2a2a2a;
+  border: 1px solid #414141;
+  border-radius: 6px;
+  color: #dcdcdc;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tp-now-btn:hover {
+  background-color: #353535;
+}
+
+.tp-now-btn:active {
+  background-color: #3f3f3f;
+}
+
 date-input {
   display: flex;
   flex-direction: row;
@@ -767,6 +860,64 @@ week-input {
 }
 
 .wi-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+time-input {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 118px;
+  height: 28px;
+  background-color: #202020;
+  border: 1px solid #414141;
+  border-radius: 6px;
+  padding-left: 8px;
+  padding-right: 4px;
+  user-select: none;
+}
+
+.ti-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.ti-sep {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+}
+
+.ti-sep-label {
+  font-size: 13px;
+  color: #646464;
+}
+
+.ti-field-text {
+  font-size: 13px;
+  color: #dcdcdc;
+}
+
+.ti-spacer {
+  flex-grow: 1;
+}
+
+.ti-icon {
   display: flex;
   flex-direction: column;
   align-items: center;

@@ -326,11 +326,9 @@ private:
 
   RECT _anchorScreenRect() const
   {
-    float cl = mRect.L, ct = mRect.T;
-    for (glint_element* p = mParent; p; p = p->mParent) {
-      cl -= p->mScrollLeft;
-      ct -= p->mScrollTop;
-    }
+    const glint_point pos = mRoot ? getPosition(&mRoot->mCanvas) : getPosition();
+    const float cl = pos.x;
+    const float ct = pos.y;
     const float bW = mRect.W(), bH = mRect.H();
 
 #if defined(_WIN32) || defined(OS_WIN)

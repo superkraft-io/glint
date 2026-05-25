@@ -304,6 +304,67 @@ public:
   glint_html_element::sk_scroll_prop& scrollTop;
   glint_html_element::sk_scroll_prop& scrollLeft;
 
+  // Convenience helpers mirroring DOM-style scrollTo behavior.
+  // `left` controls horizontal scroll, `top` controls vertical scroll.
+  void scrollTo(float left, float top)
+  {
+    const float sbW = computedStyle.scrollbarWidth;
+    const bool hasSV = mScrollbarV && mScrollbarV->style.display != "none";
+    const bool hasSH = mScrollbarH && mScrollbarH->style.display != "none";
+    const float viewW = GetPaintRECT().W() - (hasSV ? sbW : 0.f);
+    const float viewH = GetPaintRECT().H() - (hasSH ? sbW : 0.f);
+    const float nextLeft = std::max(0.f, std::min(left, std::max(0.f, mScrollWidth - viewW)));
+    const float nextTop = std::max(0.f, std::min(top, std::max(0.f, mScrollHeight - viewH)));
+
+    if (std::fabs(nextLeft - mScrollLeft) <= 0.5f && std::fabs(nextTop - mScrollTop) <= 0.5f)
+      return;
+
+    mScrollLeft = nextLeft;
+    mScrollTop = nextTop;
+
+    glint_event se;
+    se.type = "scroll";
+    se.bubbles = false;
+    se.cancelable = false;
+    dispatchDOMEvent(se);
+    _refreshRootHoverFromPointer();
+    setDirty(false);
+  }
+
+  void scrollTo(const glint_point& point)
+  {
+    scrollTo(point.x, point.y);
+  }
+
+  void scrollToX(float left)
+  {
+    scrollTo(left, mScrollTop);
+  }
+
+  void scrollToY(float top)
+  {
+    scrollTo(mScrollLeft, top);
+  }
+
+  void scrollIntoView()
+  {
+    if (!mParent) return;
+
+    glint_element* parent = mParent;
+    const float sbW = parent->computedStyle.scrollbarWidth;
+    const bool hasSV = parent->mScrollbarV && parent->mScrollbarV->style.display != "none";
+    const bool hasSH = parent->mScrollbarH && parent->mScrollbarH->style.display != "none";
+    const float viewW = parent->GetPaintRECT().W() - (hasSV ? sbW : 0.f);
+    const float viewH = parent->GetPaintRECT().H() - (hasSH ? sbW : 0.f);
+    if (viewW <= 0.f || viewH <= 0.f) return;
+
+    const glint_point pos = getPosition(parent);
+    const glint_rect rect = GetPaintRECT();
+    const float targetLeft = parent->mScrollLeft + pos.x + rect.W() * 0.5f - viewW * 0.5f;
+    const float targetTop = parent->mScrollTop + pos.y + rect.H() * 0.5f - viewH * 0.5f;
+    parent->scrollTo(targetLeft, targetTop);
+  }
+
   // Computed style — what Draw, getContent and HitTest actually read.
   // Synced from `style` each frame by tickTransitions(). During a transition,
   // animated properties are interpolated between the captured "from" value and
@@ -561,6 +622,25 @@ public:
   /** Returns the full rect (may be inflated by filter pad). */
   glint_rect GetRECT() const { return mRect; }
 
+  /**
+   * Returns this element's top-left position relative to another element in the
+   * same tree, subtracting ancestor scroll offsets along the way.
+   *
+   * Passing nullptr returns the position inside the parent viewport, which means
+   * the parent's current scroll offset is accounted for. If this element has no
+   * parent, nullptr falls back to the root client-space position.
+   */
+  glint_point getPosition(const glint_element* relativeTo = nullptr) const
+  {
+    const glint_point self = _positionInClientSpace();
+    const glint_element* target = relativeTo ? relativeTo : mParent;
+    if (!target) return self;
+    if (mRoot && target->mRoot && mRoot != target->mRoot) return self;
+
+    const glint_point base = target->_positionInClientSpace();
+    return glint_point(self.x - base.x, self.y - base.y);
+  }
+
   /** Returns the inner rect after subtracting padding and border from all four sides. */
   glint_rect getContent() const
   {
@@ -598,6 +678,19 @@ public:
   }
 
   // ── Tree mechanics ─────────────────────────────────────────────────────────
+
+  glint_point _positionInClientSpace() const
+  {
+    const glint_rect rect = GetPaintRECT();
+    float x = rect.L;
+    float y = rect.T;
+    for (const glint_element* p = mParent; p; p = p->mParent)
+    {
+      x -= p->mScrollLeft;
+      y -= p->mScrollTop;
+    }
+    return glint_point(x, y);
+  }
 
   bool isInspectorRemoved() const { return mInspectorRemoved; }
 
