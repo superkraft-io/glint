@@ -13,6 +13,7 @@ inline const std::unordered_map<std::string_view, std::string_view> glint_i18n_s
   {"glint.common.ok", "OK"},
   {"glint.common.no", "Nej"},
   {"glint.common.cancel", "Avbryt"},
+  {"glint.common.reset", "Nollställ"},
   {"glint.common.options", "Alternativ"},
   {"glint.edit.cut", "Klipp ut"},
   {"glint.edit.copy", "Kopiera"},

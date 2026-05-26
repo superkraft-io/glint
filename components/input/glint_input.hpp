@@ -1713,11 +1713,11 @@ private:
     if (inputType == "radio")    return "radio";
     if (inputType == "range")    return "range";
     if (inputType == "color")    return "color";
+    if (inputType == "time")     return "time";
+    if (inputType == "week")     return "week";
 #if !GLINT_PLATFORM_IOS
     if (inputType == "date")     return "date";
     if (inputType == "month")    return "month";
-    if (inputType == "week")     return "week";
-    if (inputType == "time")     return "time";
 #endif
     return "text";
   }

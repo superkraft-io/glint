@@ -22,6 +22,7 @@ enum class glint_i18n_key
   common_ok,
   common_no,
   common_cancel,
+  common_reset,
   common_options,
   edit_cut,
   edit_copy,
@@ -80,6 +81,8 @@ private:
         return "glint.common.no";
       case glint_i18n_key::common_cancel:
         return "glint.common.cancel";
+      case glint_i18n_key::common_reset:
+        return "glint.common.reset";
       case glint_i18n_key::common_options:
         return "glint.common.options";
       case glint_i18n_key::edit_cut:

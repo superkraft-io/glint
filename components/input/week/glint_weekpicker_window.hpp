@@ -10,6 +10,7 @@
 #include <functional>
 
 class glint_element;
+struct glint_key_press;
 
 #if defined(_WIN32) || defined(OS_WIN)
 

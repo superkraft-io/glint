@@ -6,6 +6,7 @@
 
 #include "glint_monthpicker_window.hpp"
 #include "../../../default_style.hpp"
+#include "../../../glint_document.hpp"
 #include "../../../platform/glint_apple_platform.hpp"
 
 #include <algorithm>

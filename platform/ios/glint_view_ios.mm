@@ -12,8 +12,11 @@
 #include "glint_view_ios.hpp"
 #include "../glint_platform.hpp"
 #include "../glint_platform_colorpicker.hpp"
+#include "../glint_platform_timepicker.hpp"
+#include "../glint_platform_weekpicker.hpp"
 #include "../../i18n/glint_i18n.hpp"
 #include "../../components/input/glint_input.hpp"
+#include "../../components/input/week/glint_iso_week.hpp"
 #include "../../components/glint_textarea.hpp"
 
 #include <algorithm>
@@ -570,11 +573,11 @@ CGRect glint_source_rect_for_point(UIView* sourceView, CGPoint point)
   if (!sourceView)
     return CGRectMake(point.x, point.y, 1.0, 1.0);
 
-    const CGFloat maxX = std::max<CGFloat>(0.0, CGRectGetWidth(sourceView.bounds) - 1.0);
-    const CGFloat maxY = std::max<CGFloat>(0.0, CGRectGetHeight(sourceView.bounds) - 1.0);
-    const CGFloat clampedX = std::clamp(point.x, static_cast<CGFloat>(0.0), maxX);
-    const CGFloat clampedY = std::clamp(point.y, static_cast<CGFloat>(0.0), maxY);
-    return CGRectMake(clampedX, clampedY, 1.0, 1.0);
+  const CGFloat maxX = std::max<CGFloat>(0.0, CGRectGetWidth(sourceView.bounds) - 1.0);
+  const CGFloat maxY = std::max<CGFloat>(0.0, CGRectGetHeight(sourceView.bounds) - 1.0);
+  const CGFloat clampedX = std::clamp(point.x, static_cast<CGFloat>(0.0), maxX);
+  const CGFloat clampedY = std::clamp(point.y, static_cast<CGFloat>(0.0), maxY);
+  return CGRectMake(clampedX, clampedY, 1.0, 1.0);
 }
 
 CGFloat glint_display_scale_for_view(UIView* view)
@@ -653,6 +656,29 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 @class GlintIOSSelectPickerCoordinator;
 @class GlintIOSSelectMenuControl;
 @class GlintIOSColorPickerCoordinator;
+@class GlintIOSTimePickerCoordinator;
+@class GlintIOSWeekPickerCoordinator;
+
+@interface GlintIOSTimePickerViewController : UIViewController
+{
+@public
+  GlintIOSTimePickerCoordinator* coordinator;
+  UIDatePicker* picker;
+}
+- (void)handleResetButtonPressed:(id)sender;
+- (void)handleConfirmButtonPressed:(id)sender;
+@end
+
+@interface GlintIOSWeekPickerViewController : UIViewController <UICalendarViewDelegate, UICalendarSelectionWeekOfYearDelegate>
+{
+@public
+  GlintIOSWeekPickerCoordinator* coordinator;
+  UICalendarView* calendarView;
+  UICalendarSelectionWeekOfYear* selection;
+}
+- (void)handleResetButtonPressed:(id)sender;
+- (void)handleConfirmButtonPressed:(id)sender;
+@end
 
 @interface GlintIOSView : UIView <UIGestureRecognizerDelegate, UIKeyInput, UITextInputTraits, UITextFieldDelegate>
 {
@@ -795,6 +821,55 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 - (void)destroy;
 @end
 
+@interface GlintIOSTimePickerCoordinator : NSObject <UIPopoverPresentationControllerDelegate, UIAdaptivePresentationControllerDelegate>
+{
+@public
+  UIViewController* presenter;
+  UIView* sourceView;
+  CGRect sourceRect;
+  UINavigationController* navigationController;
+  GlintIOSTimePickerViewController* contentController;
+  int initialHour;
+  int initialMinute;
+  std::function<void(int, int)> onConfirm;
+  std::function<void()> onReset;
+  std::function<void()> onClosed;
+  BOOL closedNotified;
+}
+- (void)presentWithHour:(int)hour minute:(int)minute anchorScreenRect:(RECT)anchorScreenRect;
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed;
+- (void)destroy;
+- (void)cancel:(id)sender;
+- (void)reset:(id)sender;
+- (void)confirm:(id)sender;
+@end
+
+@interface GlintIOSWeekPickerCoordinator : NSObject <UIPopoverPresentationControllerDelegate, UIAdaptivePresentationControllerDelegate>
+{
+@public
+  UIViewController* presenter;
+  UIView* sourceView;
+  CGRect sourceRect;
+  UINavigationController* navigationController;
+  GlintIOSWeekPickerViewController* contentController;
+  int initialWeekYear;
+  int initialWeek;
+  int selectedWeekYear;
+  int selectedWeek;
+  std::function<void(int, int)> onChange;
+  std::function<void(int, int)> onConfirm;
+  std::function<void()> onReset;
+  std::function<void()> onClosed;
+  BOOL closedNotified;
+}
+- (void)presentWithWeekYear:(int)weekYear week:(int)week anchorScreenRect:(RECT)anchorScreenRect;
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed;
+- (void)destroy;
+- (void)cancel:(id)sender;
+- (void)reset:(id)sender;
+- (void)confirm:(id)sender;
+@end
+
 @interface GlintIOSFilePickerTracker : NSObject <UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate>
 {
 @public
@@ -925,6 +1000,240 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 - (void)deleteBackward
 {
   [super deleteBackward];
+}
+
+@end
+
+@implementation GlintIOSTimePickerViewController
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  coordinator = nil;
+  picker = nil;
+  self.preferredContentSize = CGSizeMake(320.0f, 316.0f);
+  return self;
+}
+
+- (void)dealloc
+{
+  [picker release];
+  [super dealloc];
+}
+
+- (void)loadView
+{
+  UIView* root = [[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, 320.0f, 316.0f)];
+  root.backgroundColor = UIColor.systemBackgroundColor;
+
+  UIView* footer = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
+  footer.translatesAutoresizingMaskIntoConstraints = NO;
+
+  picker = [[UIDatePicker alloc] initWithFrame:CGRectZero];
+  picker.translatesAutoresizingMaskIntoConstraints = NO;
+  if (@available(iOS 13.4, *))
+    picker.preferredDatePickerStyle = UIDatePickerStyleWheels;
+  picker.datePickerMode = UIDatePickerModeTime;
+  picker.locale = NSLocale.currentLocale;
+  picker.calendar = [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian] autorelease];
+  picker.timeZone = NSTimeZone.localTimeZone;
+
+  UIButton* resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  resetButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [resetButton setTitle:glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::common_reset)) forState:UIControlStateNormal];
+  [resetButton setTitleColor:UIColor.blackColor forState:UIControlStateNormal];
+  resetButton.backgroundColor = [UIColor colorWithWhite:0.93f alpha:1.0f];
+  resetButton.layer.cornerRadius = 18.0f;
+  resetButton.layer.masksToBounds = YES;
+  [resetButton addTarget:self action:@selector(handleResetButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+
+  UIButton* confirmButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  confirmButton.translatesAutoresizingMaskIntoConstraints = NO;
+  if (@available(iOS 13.0, *))
+  {
+    [confirmButton setImage:[UIImage systemImageNamed:@"checkmark"] forState:UIControlStateNormal];
+  }
+  else
+  {
+    [confirmButton setTitle:@"✓" forState:UIControlStateNormal];
+  }
+  [confirmButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+  confirmButton.tintColor = UIColor.whiteColor;
+  confirmButton.backgroundColor = UIColor.systemBlueColor;
+  confirmButton.layer.cornerRadius = 22.0f;
+  confirmButton.layer.masksToBounds = YES;
+  [confirmButton addTarget:self action:@selector(handleConfirmButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+
+  [root addSubview:picker];
+  [root addSubview:footer];
+  [footer addSubview:resetButton];
+  [footer addSubview:confirmButton];
+
+  UILayoutGuide* safeArea = root.safeAreaLayoutGuide;
+  [NSLayoutConstraint activateConstraints:@[
+    [picker.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
+    [picker.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
+    [picker.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:8.0f],
+    [picker.bottomAnchor constraintEqualToAnchor:footer.topAnchor constant:-16.0f],
+
+    [footer.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:16.0f],
+    [footer.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-16.0f],
+    [footer.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor constant:-12.0f],
+    [footer.heightAnchor constraintEqualToConstant:44.0f],
+
+    [resetButton.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor],
+    [resetButton.centerYAnchor constraintEqualToAnchor:footer.centerYAnchor],
+    [resetButton.heightAnchor constraintEqualToConstant:36.0f],
+    [resetButton.widthAnchor constraintGreaterThanOrEqualToConstant:96.0f],
+
+    [confirmButton.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor],
+    [confirmButton.centerYAnchor constraintEqualToAnchor:footer.centerYAnchor],
+    [confirmButton.widthAnchor constraintEqualToConstant:44.0f],
+    [confirmButton.heightAnchor constraintEqualToConstant:44.0f],
+  ]];
+
+  self.view = root;
+  [root release];
+}
+
+- (void)handleResetButtonPressed:(id)sender
+{
+  [coordinator reset:sender];
+}
+
+- (void)handleConfirmButtonPressed:(id)sender
+{
+  [coordinator confirm:sender];
+}
+
+@end
+
+@implementation GlintIOSWeekPickerViewController
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  coordinator = nil;
+  calendarView = nil;
+  selection = nil;
+  self.preferredContentSize = CGSizeMake(340.0f, 420.0f);
+  return self;
+}
+
+- (void)dealloc
+{
+  [selection release];
+  [calendarView release];
+  [super dealloc];
+}
+
+- (void)loadView
+{
+  UIView* root = [[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, 340.0f, 420.0f)];
+  root.backgroundColor = UIColor.systemBackgroundColor;
+
+  UIView* footer = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
+  footer.translatesAutoresizingMaskIntoConstraints = NO;
+
+  calendarView = [[UICalendarView alloc] initWithFrame:CGRectZero];
+  calendarView.translatesAutoresizingMaskIntoConstraints = NO;
+  calendarView.locale = NSLocale.currentLocale;
+  calendarView.calendar = [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierISO8601] autorelease];
+  calendarView.timeZone = NSTimeZone.localTimeZone;
+  calendarView.tintColor = UIColor.systemBlueColor;
+  calendarView.delegate = self;
+
+  selection = [[UICalendarSelectionWeekOfYear alloc] initWithDelegate:self];
+  calendarView.selectionBehavior = selection;
+
+  UIButton* resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  resetButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [resetButton setTitle:glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::common_reset)) forState:UIControlStateNormal];
+  [resetButton setTitleColor:UIColor.blackColor forState:UIControlStateNormal];
+  resetButton.backgroundColor = [UIColor colorWithWhite:0.93f alpha:1.0f];
+  resetButton.layer.cornerRadius = 18.0f;
+  resetButton.layer.masksToBounds = YES;
+  [resetButton addTarget:self action:@selector(handleResetButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+
+  UIButton* confirmButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  confirmButton.translatesAutoresizingMaskIntoConstraints = NO;
+  if (@available(iOS 13.0, *))
+  {
+    [confirmButton setImage:[UIImage systemImageNamed:@"checkmark"] forState:UIControlStateNormal];
+  }
+  else
+  {
+    [confirmButton setTitle:@"✓" forState:UIControlStateNormal];
+  }
+  [confirmButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+  confirmButton.tintColor = UIColor.whiteColor;
+  confirmButton.backgroundColor = UIColor.systemBlueColor;
+  confirmButton.layer.cornerRadius = 22.0f;
+  confirmButton.layer.masksToBounds = YES;
+  [confirmButton addTarget:self action:@selector(handleConfirmButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+
+  [root addSubview:calendarView];
+  [root addSubview:footer];
+  [footer addSubview:resetButton];
+  [footer addSubview:confirmButton];
+
+  UILayoutGuide* safeArea = root.safeAreaLayoutGuide;
+  [NSLayoutConstraint activateConstraints:@[
+    [calendarView.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:8.0f],
+    [calendarView.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-8.0f],
+    [calendarView.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:8.0f],
+    [calendarView.bottomAnchor constraintEqualToAnchor:footer.topAnchor constant:-16.0f],
+
+    [footer.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:16.0f],
+    [footer.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-16.0f],
+    [footer.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor constant:-12.0f],
+    [footer.heightAnchor constraintEqualToConstant:44.0f],
+
+    [resetButton.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor],
+    [resetButton.centerYAnchor constraintEqualToAnchor:footer.centerYAnchor],
+    [resetButton.heightAnchor constraintEqualToConstant:36.0f],
+    [resetButton.widthAnchor constraintGreaterThanOrEqualToConstant:96.0f],
+
+    [confirmButton.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor],
+    [confirmButton.centerYAnchor constraintEqualToAnchor:footer.centerYAnchor],
+    [confirmButton.widthAnchor constraintEqualToConstant:44.0f],
+    [confirmButton.heightAnchor constraintEqualToConstant:44.0f],
+  ]];
+
+  self.view = root;
+  [root release];
+}
+
+- (void)handleResetButtonPressed:(id)sender
+{
+  [coordinator reset:sender];
+}
+
+- (void)handleConfirmButtonPressed:(id)sender
+{
+  [coordinator confirm:sender];
+}
+
+- (void)weekOfYearSelection:(UICalendarSelectionWeekOfYear*)weekSelection didSelectWeekOfYear:(NSDateComponents*)weekOfYearComponents
+{
+  (void)weekSelection;
+  if (!coordinator || !weekOfYearComponents)
+    return;
+
+  coordinator->selectedWeekYear = (int)weekOfYearComponents.yearForWeekOfYear;
+  coordinator->selectedWeek = (int)weekOfYearComponents.weekOfYear;
+  if (coordinator->onChange)
+    coordinator->onChange(coordinator->selectedWeekYear, coordinator->selectedWeek);
+}
+
+- (BOOL)weekOfYearSelection:(UICalendarSelectionWeekOfYear*)weekSelection canSelectWeekOfYear:(NSDateComponents*)weekOfYearComponents
+{
+  (void)weekSelection;
+  return weekOfYearComponents != nil;
 }
 
 @end
@@ -1461,6 +1770,404 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
 {
   (void)presentationController;
   [self notifyClosedIfNeeded];
+}
+
+@end
+
+@implementation GlintIOSTimePickerCoordinator
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  presenter = nil;
+  sourceView = nil;
+  sourceRect = CGRectZero;
+  navigationController = nil;
+  contentController = nil;
+  initialHour = 0;
+  initialMinute = 0;
+  closedNotified = YES;
+  return self;
+}
+
+- (void)dealloc
+{
+  [presenter release];
+  [sourceView release];
+  [navigationController release];
+  [contentController release];
+  [super dealloc];
+}
+
+- (void)notifyClosedIfNeeded
+{
+  if (closedNotified)
+    return;
+  closedNotified = YES;
+  if (onClosed)
+    onClosed();
+}
+
+- (NSDate*)dateForHour:(int)hour minute:(int)minute
+{
+  NSCalendar* calendar = [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian] autorelease];
+  calendar.timeZone = NSTimeZone.localTimeZone;
+  NSDateComponents* today = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay
+                                        fromDate:NSDate.date];
+  NSDateComponents* components = [[[NSDateComponents alloc] init] autorelease];
+  components.calendar = calendar;
+  components.timeZone = calendar.timeZone;
+  components.year = today.year;
+  components.month = today.month;
+  components.day = today.day;
+  components.hour = hour;
+  components.minute = minute;
+  return [calendar dateFromComponents:components] ?: NSDate.date;
+}
+
+- (void)ensureControllers
+{
+  if (!contentController)
+  {
+    contentController = [[GlintIOSTimePickerViewController alloc] init];
+    contentController->coordinator = self;
+  }
+
+  [contentController loadViewIfNeeded];
+
+  if (!navigationController)
+  {
+    navigationController = [[UINavigationController alloc] initWithRootViewController:contentController];
+    navigationController.modalPresentationStyle = UIModalPresentationPopover;
+    navigationController.navigationBarHidden = YES;
+  }
+
+  navigationController.preferredContentSize = contentController.preferredContentSize;
+}
+
+- (void)presentWithHour:(int)hour minute:(int)minute anchorScreenRect:(RECT)anchorScreenRect
+{
+  UIWindow* window = glint_active_window();
+  UIViewController* top = glint_top_view_controller(window.rootViewController);
+  if (!top)
+    top = window.rootViewController;
+  if (!top)
+  {
+    [self notifyClosedIfNeeded];
+    return;
+  }
+
+  [self ensureControllers];
+
+  [presenter release];
+  presenter = [top retain];
+
+  UIView* resolvedSourceView = presenter.view ?: window;
+  [sourceView release];
+  sourceView = [resolvedSourceView retain];
+  sourceRect = glint_colorpicker_source_rect(sourceView, anchorScreenRect);
+  initialHour = hour;
+  initialMinute = minute;
+
+  [contentController->picker setDate:[self dateForHour:hour minute:minute] animated:NO];
+  closedNotified = NO;
+
+  UIPopoverPresentationController* popover = navigationController.popoverPresentationController;
+  popover.delegate = self;
+  popover.sourceView = sourceView;
+  popover.sourceRect = sourceRect;
+  popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+
+  if (navigationController.presentingViewController)
+    return;
+
+  [presenter presentViewController:navigationController animated:YES completion:nil];
+}
+
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed
+{
+  if (notifyClosed)
+    closedNotified = NO;
+
+  if (navigationController.presentingViewController)
+  {
+    [navigationController.presentingViewController dismissViewControllerAnimated:animated completion:^{
+      if (notifyClosed)
+        [self notifyClosedIfNeeded];
+    }];
+    return;
+  }
+
+  if (notifyClosed)
+    [self notifyClosedIfNeeded];
+}
+
+- (void)destroy
+{
+  onConfirm = nullptr;
+  onReset = nullptr;
+  onClosed = nullptr;
+  if (navigationController.popoverPresentationController)
+    navigationController.popoverPresentationController.delegate = nil;
+  [self hideAnimated:NO notifyClosed:NO];
+}
+
+- (void)cancel:(id)sender
+{
+  (void)sender;
+  [self hideAnimated:YES notifyClosed:YES];
+}
+
+- (void)reset:(id)sender
+{
+  (void)sender;
+  [contentController->picker setDate:[self dateForHour:initialHour minute:initialMinute] animated:YES];
+}
+
+- (void)confirm:(id)sender
+{
+  (void)sender;
+  if (onConfirm)
+  {
+    NSCalendar* calendar = contentController->picker.calendar ?: [NSCalendar currentCalendar];
+    NSDateComponents* components = [calendar components:NSCalendarUnitHour | NSCalendarUnitMinute
+                                               fromDate:contentController->picker.date ?: NSDate.date];
+    onConfirm((int)components.hour, (int)components.minute);
+  }
+  [self hideAnimated:YES notifyClosed:YES];
+}
+
+- (void)popoverPresentationControllerDidDismissPopover:(UIPopoverPresentationController*)popoverPresentationController
+{
+  (void)popoverPresentationController;
+  [self notifyClosedIfNeeded];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController
+{
+  (void)presentationController;
+  [self notifyClosedIfNeeded];
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller
+{
+  (void)controller;
+  return UIModalPresentationNone;
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller traitCollection:(UITraitCollection*)traitCollection
+{
+  (void)controller;
+  (void)traitCollection;
+  return UIModalPresentationNone;
+}
+
+@end
+
+@implementation GlintIOSWeekPickerCoordinator
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  presenter = nil;
+  sourceView = nil;
+  sourceRect = CGRectZero;
+  navigationController = nil;
+  contentController = nil;
+  initialWeekYear = 1;
+  initialWeek = 1;
+  selectedWeekYear = 1;
+  selectedWeek = 1;
+  closedNotified = YES;
+  return self;
+}
+
+- (void)dealloc
+{
+  [presenter release];
+  [sourceView release];
+  [navigationController release];
+  [contentController release];
+  [super dealloc];
+}
+
+- (void)notifyClosedIfNeeded
+{
+  if (closedNotified)
+    return;
+  closedNotified = YES;
+  if (onClosed)
+    onClosed();
+}
+
+- (NSDateComponents*)weekOfYearComponentsForWeekYear:(int)weekYear week:(int)week
+{
+  NSDateComponents* components = [[[NSDateComponents alloc] init] autorelease];
+  components.calendar = contentController->calendarView.calendar ?: [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierISO8601] autorelease];
+  components.timeZone = NSTimeZone.localTimeZone;
+  components.yearForWeekOfYear = weekYear;
+  components.weekOfYear = week;
+  return components;
+}
+
+- (NSDateComponents*)visibleDateComponentsForWeekYear:(int)weekYear week:(int)week
+{
+  const glint_ymd monday = glint_ymd_from_iso_week(weekYear, week, 1);
+  NSDateComponents* components = [[[NSDateComponents alloc] init] autorelease];
+  components.calendar = contentController->calendarView.calendar ?: [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierISO8601] autorelease];
+  components.timeZone = NSTimeZone.localTimeZone;
+  components.year = monday.year;
+  components.month = monday.month;
+  components.day = monday.day;
+  return components;
+}
+
+- (void)ensureControllers
+{
+  if (!contentController)
+  {
+    contentController = [[GlintIOSWeekPickerViewController alloc] init];
+    contentController->coordinator = self;
+  }
+
+  [contentController loadViewIfNeeded];
+
+  if (!navigationController)
+  {
+    navigationController = [[UINavigationController alloc] initWithRootViewController:contentController];
+    navigationController.modalPresentationStyle = UIModalPresentationPopover;
+    navigationController.navigationBarHidden = YES;
+  }
+
+  navigationController.preferredContentSize = contentController.preferredContentSize;
+}
+
+- (void)presentWithWeekYear:(int)weekYear week:(int)week anchorScreenRect:(RECT)anchorScreenRect
+{
+  UIWindow* window = glint_active_window();
+  UIViewController* top = glint_top_view_controller(window.rootViewController);
+  if (!top)
+    top = window.rootViewController;
+  if (!top)
+  {
+    [self notifyClosedIfNeeded];
+    return;
+  }
+
+  [self ensureControllers];
+
+  [presenter release];
+  presenter = [top retain];
+
+  UIView* resolvedSourceView = presenter.view ?: window;
+  [sourceView release];
+  sourceView = [resolvedSourceView retain];
+  sourceRect = glint_colorpicker_source_rect(sourceView, anchorScreenRect);
+  initialWeekYear = weekYear;
+  initialWeek = week;
+  selectedWeekYear = weekYear;
+  selectedWeek = week;
+
+  [contentController->calendarView setVisibleDateComponents:[self visibleDateComponentsForWeekYear:weekYear week:week] animated:NO];
+  [contentController->selection setSelectedWeekOfYear:[self weekOfYearComponentsForWeekYear:weekYear week:week] animated:NO];
+  closedNotified = NO;
+
+  UIPopoverPresentationController* popover = navigationController.popoverPresentationController;
+  popover.delegate = self;
+  popover.sourceView = sourceView;
+  popover.sourceRect = sourceRect;
+  popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+
+  if (navigationController.presentingViewController)
+    return;
+
+  [presenter presentViewController:navigationController animated:YES completion:nil];
+}
+
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed
+{
+  if (notifyClosed)
+    closedNotified = NO;
+
+  if (navigationController.presentingViewController)
+  {
+    [navigationController.presentingViewController dismissViewControllerAnimated:animated completion:^{
+      if (notifyClosed)
+        [self notifyClosedIfNeeded];
+    }];
+    return;
+  }
+
+  if (notifyClosed)
+    [self notifyClosedIfNeeded];
+}
+
+- (void)destroy
+{
+  onChange = nullptr;
+  onConfirm = nullptr;
+  onReset = nullptr;
+  onClosed = nullptr;
+  if (navigationController.popoverPresentationController)
+    navigationController.popoverPresentationController.delegate = nil;
+  [self hideAnimated:NO notifyClosed:NO];
+}
+
+- (void)cancel:(id)sender
+{
+  (void)sender;
+  [self hideAnimated:YES notifyClosed:YES];
+}
+
+- (void)reset:(id)sender
+{
+  (void)sender;
+  const bool changed = selectedWeekYear != initialWeekYear || selectedWeek != initialWeek;
+  selectedWeekYear = initialWeekYear;
+  selectedWeek = initialWeek;
+  [contentController->selection setSelectedWeekOfYear:[self weekOfYearComponentsForWeekYear:initialWeekYear week:initialWeek] animated:YES];
+  [contentController->calendarView setVisibleDateComponents:[self visibleDateComponentsForWeekYear:initialWeekYear week:initialWeek] animated:YES];
+  if (onReset)
+    onReset();
+  if (changed && onChange)
+    onChange(selectedWeekYear, selectedWeek);
+}
+
+- (void)confirm:(id)sender
+{
+  (void)sender;
+  if (onConfirm)
+    onConfirm(selectedWeekYear, selectedWeek);
+  [self hideAnimated:YES notifyClosed:YES];
+}
+
+- (void)popoverPresentationControllerDidDismissPopover:(UIPopoverPresentationController*)popoverPresentationController
+{
+  (void)popoverPresentationController;
+  [self notifyClosedIfNeeded];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController
+{
+  (void)presentationController;
+  [self notifyClosedIfNeeded];
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller
+{
+  (void)controller;
+  return UIModalPresentationNone;
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller traitCollection:(UITraitCollection*)traitCollection
+{
+  (void)controller;
+  (void)traitCollection;
+  return UIModalPresentationNone;
 }
 
 @end
@@ -3163,6 +3870,16 @@ struct colorpicker_handle
   GlintIOSColorPickerCoordinator* coordinator = nil;
 };
 
+struct timepicker_handle
+{
+  GlintIOSTimePickerCoordinator* coordinator = nil;
+};
+
+struct weekpicker_handle
+{
+  GlintIOSWeekPickerCoordinator* coordinator = nil;
+};
+
 colorpicker_handle* showColorPicker(const glint_color& initialColor,
                                     const RECT& anchorScreenRect,
                                     std::function<void(glint_color)> onChange,
@@ -3216,6 +3933,186 @@ void hideColorPicker(colorpicker_handle* handle)
 }
 
 void destroyColorPicker(colorpicker_handle* handle)
+{
+  if (!handle)
+    return;
+
+  void (^run)(void) = ^{
+    if (handle->coordinator)
+    {
+      [handle->coordinator destroy];
+      [handle->coordinator release];
+      handle->coordinator = nil;
+    }
+  };
+
+  if ([NSThread isMainThread])
+
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  delete handle;
+}
+
+timepicker_handle* showTimePicker(int initialHour,
+                                  int initialMinute,
+                                  const RECT& anchorScreenRect,
+                                  std::function<void(int, int)> onConfirm,
+                                  std::function<void()> onReset,
+                                  std::function<void()> onClosed)
+{
+  return reopenTimePicker(nullptr,
+                          initialHour,
+                          initialMinute,
+                          anchorScreenRect,
+                          std::move(onConfirm),
+                          std::move(onReset),
+                          std::move(onClosed));
+}
+
+timepicker_handle* reopenTimePicker(timepicker_handle* handle,
+                                    int initialHour,
+                                    int initialMinute,
+                                    const RECT& anchorScreenRect,
+                                    std::function<void(int, int)> onConfirm,
+                                    std::function<void()> onReset,
+                                    std::function<void()> onClosed)
+{
+  __block timepicker_handle* result = handle;
+  __block std::function<void(int, int)> confirmCb = std::move(onConfirm);
+  __block std::function<void()> resetCb = std::move(onReset);
+  __block std::function<void()> closedCb = std::move(onClosed);
+
+  void (^run)(void) = ^{
+    if (!result)
+      result = new timepicker_handle();
+    if (!result->coordinator)
+      result->coordinator = [[GlintIOSTimePickerCoordinator alloc] init];
+    result->coordinator->onConfirm = std::move(confirmCb);
+    result->coordinator->onReset = std::move(resetCb);
+    result->coordinator->onClosed = std::move(closedCb);
+    [result->coordinator presentWithHour:initialHour
+                                  minute:initialMinute
+                        anchorScreenRect:anchorScreenRect];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+void hideTimePicker(timepicker_handle* handle)
+{
+  if (!handle || !handle->coordinator)
+    return;
+
+  void (^run)(void) = ^{
+    [handle->coordinator hideAnimated:YES notifyClosed:YES];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+}
+
+void destroyTimePicker(timepicker_handle* handle)
+{
+  if (!handle)
+    return;
+
+  void (^run)(void) = ^{
+    if (handle->coordinator)
+    {
+      [handle->coordinator destroy];
+      [handle->coordinator release];
+      handle->coordinator = nil;
+    }
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  delete handle;
+}
+
+weekpicker_handle* showWeekPicker(int initialWeekYear,
+                                  int initialWeek,
+                                  const RECT& anchorScreenRect,
+                                  std::function<void(int, int)> onChange,
+                                  std::function<void(int, int)> onConfirm,
+                                  std::function<void()> onReset,
+                                  std::function<void()> onClosed)
+{
+  return reopenWeekPicker(nullptr,
+                          initialWeekYear,
+                          initialWeek,
+                          anchorScreenRect,
+                          std::move(onChange),
+                          std::move(onConfirm),
+                          std::move(onReset),
+                          std::move(onClosed));
+}
+
+weekpicker_handle* reopenWeekPicker(weekpicker_handle* handle,
+                                    int initialWeekYear,
+                                    int initialWeek,
+                                    const RECT& anchorScreenRect,
+                                    std::function<void(int, int)> onChange,
+                                    std::function<void(int, int)> onConfirm,
+                                    std::function<void()> onReset,
+                                    std::function<void()> onClosed)
+{
+  __block weekpicker_handle* result = handle;
+  __block std::function<void(int, int)> changeCb = std::move(onChange);
+  __block std::function<void(int, int)> confirmCb = std::move(onConfirm);
+  __block std::function<void()> resetCb = std::move(onReset);
+  __block std::function<void()> closedCb = std::move(onClosed);
+
+  void (^run)(void) = ^{
+    if (!result)
+      result = new weekpicker_handle();
+    if (!result->coordinator)
+      result->coordinator = [[GlintIOSWeekPickerCoordinator alloc] init];
+    result->coordinator->onChange = std::move(changeCb);
+    result->coordinator->onConfirm = std::move(confirmCb);
+    result->coordinator->onReset = std::move(resetCb);
+    result->coordinator->onClosed = std::move(closedCb);
+    [result->coordinator presentWithWeekYear:initialWeekYear
+                                        week:initialWeek
+                            anchorScreenRect:anchorScreenRect];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+void hideWeekPicker(weekpicker_handle* handle)
+{
+  if (!handle || !handle->coordinator)
+    return;
+
+  void (^run)(void) = ^{
+    [handle->coordinator hideAnimated:YES notifyClosed:YES];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+}
+
+void destroyWeekPicker(weekpicker_handle* handle)
 {
   if (!handle)
     return;

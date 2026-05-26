@@ -38,6 +38,7 @@
 #if defined(__APPLE__)
 #include "platform/glint_platform.hpp"
 #endif
+#include "render/glint_tree_node.hpp"
 #include "render/glint_filter.hpp"
 #include "render/glint_mask.hpp"
 #include "include/core/SkBlurTypes.h"

@@ -867,6 +867,8 @@ week-input {
 
 .wi-spacer {
   flex-grow: 1;
+  align-self: stretch;
+  cursor: pointer;
 }
 
 .wi-icon {
@@ -925,6 +927,8 @@ time-input {
 
 .ti-spacer {
   flex-grow: 1;
+  align-self: stretch;
+  cursor: pointer;
 }
 
 .ti-icon {

@@ -3,7 +3,9 @@
 #include "glint_time_value.hpp"
 #include "glint_timepicker_window.hpp"
 #include "../../../default_style.hpp"
+#include "../../../glint_document.hpp"
 #include "../../../platform/glint_apple_platform.hpp"
+#include "../../../platform/glint_platform_timepicker.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -47,6 +49,14 @@ class glint_time_input : public glint_element
 
 public:
   std::function<void(int, int)> onChange;
+
+  ~glint_time_input() override
+  {
+#if GLINT_PLATFORM_IOS
+    glint_platform::destroyTimePicker(mPlatformPicker_);
+    mPlatformPicker_ = nullptr;
+#endif
+  }
 
   glint_time_input()
   {
@@ -128,6 +138,22 @@ public:
     mLastRectT = mRect.T;
   }
 
+  void OnMouseDown(float x, float y, const glint_mouse_mod& mod) override
+  {
+    (void)x;
+    (void)y;
+#if GLINT_PLATFORM_IOS
+    if (mod.R)
+      return;
+    if (mRoot)
+      mRoot->SetFocus(this);
+    _openPicker();
+    return;
+#else
+    glint_element::OnMouseDown(x, y, mod);
+#endif
+  }
+
   bool OnKeyDown(const glint_key_press& key) override
   {
     if ((key.alt && key.vk == 0x28) || key.vk == 0x73) { _togglePicker(); return true; }
@@ -178,6 +204,9 @@ public:
   void onFocusGained() override
   {
     style.borderColor = glint_color{255, 74, 144, 217};
+#if GLINT_PLATFORM_IOS
+    _openPicker();
+#endif
     setDirty(false);
   }
 
@@ -203,6 +232,9 @@ private:
   glint_element* mFieldEls[2] = {};
   glint_element* mFieldTexts[2] = {};
   _IconElem* mIconEl = nullptr;
+#if GLINT_PLATFORM_IOS
+  glint_platform::timepicker_handle* mPlatformPicker_ = nullptr;
+#endif
 
   static glint_timepicker_window*& _sharedWindow()
   {
@@ -224,7 +256,12 @@ private:
 
       el->addEventListener("mousedown", [this, idx](glint_event&) {
         if (mRoot) mRoot->SetFocus(this);
+#if GLINT_PLATFORM_IOS
+        (void)idx;
+        _openPicker();
+#else
         _setActiveField(idx);
+#endif
       });
       addChild(el);
     };
@@ -237,12 +274,24 @@ private:
     sepLbl->className = "ti-sep-label";
     sepLbl->innerText = ":";
     sep->addChild(sepLbl);
+#if GLINT_PLATFORM_IOS
+    sep->addEventListener("mousedown", [this](glint_event&) {
+      if (mRoot) mRoot->SetFocus(this);
+      _openPicker();
+    });
+#endif
     addChild(sep);
 
     makeField(kMinute);
 
     auto* spacer = new glint_element();
     spacer->className = "ti-spacer";
+#if GLINT_PLATFORM_IOS
+    spacer->addEventListener("mousedown", [this](glint_event&) {
+      if (mRoot) mRoot->SetFocus(this);
+      _openPicker();
+    });
+#endif
     addChild(spacer);
 
     mIconEl = new _IconElem();
@@ -319,6 +368,28 @@ private:
   void _openPicker()
   {
 #if GLINT_PLATFORM_IOS
+    if (mPickerOpen)
+      return;
+
+    mPickerOpen = true;
+    const RECT popupAnchor = _anchorScreenRect();
+    mPlatformPicker_ = glint_platform::reopenTimePicker(
+      mPlatformPicker_,
+      mHour,
+      mMinute,
+      popupAnchor,
+      [this](int hour, int minute) {
+        setTime(hour, minute);
+        if (onChange) onChange(mHour, mMinute);
+      },
+      [this]() {
+        clear();
+        if (onChange) onChange(mHour, mMinute);
+      },
+      [this]() {
+        mPickerOpen = false;
+        setDirty(false);
+      });
     return;
 #endif
 
@@ -339,6 +410,7 @@ private:
   void _closePicker()
   {
 #if GLINT_PLATFORM_IOS
+    glint_platform::hideTimePicker(mPlatformPicker_);
     mPickerOpen = false;
     return;
 #endif
