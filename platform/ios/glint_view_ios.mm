@@ -1002,6 +1002,7 @@ int glint_days_in_calendar_month(NSCalendar* calendar, int year, int month)
 - (void)presentWithWeekYear:(int)weekYear week:(int)week anchorScreenRect:(RECT)anchorScreenRect;
 - (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed;
 - (void)destroy;
+- (NSDateComponents*)handleVisibleMonthChangeYear:(int)year month:(int)month day:(int)day;
 - (void)cancel:(id)sender;
 - (void)reset:(id)sender;
 - (void)confirm:(id)sender;
@@ -1044,24 +1045,6 @@ int glint_days_in_calendar_month(NSCalendar* calendar, int year, int month)
 {
   (void)bounds;
   return CGRectZero;
-}
-
-- (CGRect)placeholderRectForBounds:(CGRect)bounds
-{
-  (void)bounds;
-  return CGRectZero;
-}
-
-- (CGRect)caretRectForPosition:(UITextPosition*)position
-{
-  (void)position;
-  return CGRectZero;
-}
-
-- (NSArray<UITextSelectionRect*>*)selectionRectsForRange:(UITextRange*)range
-{
-  (void)range;
-  return @[];
 }
 
 - (void)drawRect:(CGRect)rect
@@ -1951,6 +1934,25 @@ int glint_days_in_calendar_month(NSCalendar* calendar, int year, int month)
 {
   (void)weekSelection;
   return weekOfYearComponents != nil;
+}
+
+- (void)calendarView:(UICalendarView*)calendarView didChangeVisibleDateComponentsFrom:(NSDateComponents*)previousDateComponents
+{
+  (void)previousDateComponents;
+  if (!coordinator)
+    return;
+
+  NSDateComponents* visibleDate = calendarView.visibleDateComponents;
+  if (!visibleDate)
+    return;
+
+  NSDateComponents* selectedWeek = [coordinator handleVisibleMonthChangeYear:(int)visibleDate.year
+                                                                       month:(int)visibleDate.month
+                                                                         day:(int)visibleDate.day];
+  if (!selectedWeek)
+    return;
+
+  [selection setSelectedWeekOfYear:selectedWeek animated:NO];
 }
 
 @end
@@ -3558,6 +3560,23 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
   if (navigationController.popoverPresentationController)
     navigationController.popoverPresentationController.delegate = nil;
   [self hideAnimated:NO notifyClosed:NO];
+}
+
+- (NSDateComponents*)handleVisibleMonthChangeYear:(int)year month:(int)month day:(int)day
+{
+  year = std::max(1, year);
+  month = std::max(1, std::min(12, month));
+  day = std::max(1, day);
+
+  const glint_iso_week_value isoWeek = glint_iso_week_from_ymd(year, month, day);
+  if (selectedWeekYear == isoWeek.weekYear && selectedWeek == isoWeek.week)
+    return nil;
+
+  selectedWeekYear = isoWeek.weekYear;
+  selectedWeek = isoWeek.week;
+  if (onChange)
+    onChange(selectedWeekYear, selectedWeek);
+  return [self weekOfYearComponentsForWeekYear:selectedWeekYear week:selectedWeek];
 }
 
 - (void)cancel:(id)sender
