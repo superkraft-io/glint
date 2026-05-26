@@ -12,6 +12,7 @@
 #include "glint_view_ios.hpp"
 #include "../glint_platform.hpp"
 #include "../glint_platform_colorpicker.hpp"
+#include "../glint_platform_datepicker.hpp"
 #include "../glint_platform_monthpicker.hpp"
 #include "../glint_platform_timepicker.hpp"
 #include "../glint_platform_weekpicker.hpp"
@@ -130,14 +131,12 @@ enum glint_temporal_input_kind
   glint_temporal_input_kind_none = 0,
   glint_temporal_input_kind_date,
   glint_temporal_input_kind_time,
-  glint_temporal_input_kind_datetime_local,
 };
 
 glint_temporal_input_kind glint_temporal_kind_for_input(const glint_text_input& input)
 {
   if (input.type == "date") return glint_temporal_input_kind_date;
   if (input.type == "time") return glint_temporal_input_kind_time;
-  if (input.type == "datetime-local") return glint_temporal_input_kind_datetime_local;
   return glint_temporal_input_kind_none;
 }
 
@@ -204,23 +203,6 @@ NSDate* glint_temporal_date_from_value(glint_temporal_input_kind kind, std::stri
     return [calendar dateFromComponents:components];
   }
 
-  if (kind == glint_temporal_input_kind_datetime_local)
-  {
-    int year = 0;
-    int month = 0;
-    int day = 0;
-    int hour = 0;
-    int minute = 0;
-    if (std::sscanf(utf8.c_str(), "%d-%d-%dT%d:%d", &year, &month, &day, &hour, &minute) < 5)
-      return nil;
-    components.year = year;
-    components.month = month;
-    components.day = day;
-    components.hour = hour;
-    components.minute = minute;
-    return [calendar dateFromComponents:components];
-  }
-
   return nil;
 }
 
@@ -246,14 +228,6 @@ std::string glint_temporal_value_from_date(glint_temporal_input_kind kind, NSDat
       return buffer;
     case glint_temporal_input_kind_time:
       std::snprintf(buffer, sizeof(buffer), "%02ld:%02ld",
-                    static_cast<long>(components.hour),
-                    static_cast<long>(components.minute));
-      return buffer;
-    case glint_temporal_input_kind_datetime_local:
-      std::snprintf(buffer, sizeof(buffer), "%04ld-%02ld-%02ldT%02ld:%02ld",
-                    static_cast<long>(components.year),
-                    static_cast<long>(components.month),
-                    static_cast<long>(components.day),
                     static_cast<long>(components.hour),
                     static_cast<long>(components.minute));
       return buffer;
@@ -657,9 +631,21 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 @class GlintIOSSelectPickerCoordinator;
 @class GlintIOSSelectMenuControl;
 @class GlintIOSColorPickerCoordinator;
+@class GlintIOSDatePickerCoordinator;
 @class GlintIOSMonthPickerCoordinator;
 @class GlintIOSTimePickerCoordinator;
 @class GlintIOSWeekPickerCoordinator;
+
+@interface GlintIOSDatePickerViewController : UIViewController <UICalendarViewDelegate, UICalendarSelectionSingleDateDelegate>
+{
+@public
+  GlintIOSDatePickerCoordinator* coordinator;
+  UICalendarView* calendarView;
+  UICalendarSelectionSingleDate* selection;
+}
+- (void)handleResetButtonPressed:(id)sender;
+- (void)handleConfirmButtonPressed:(id)sender;
+@end
 
 @interface GlintIOSMonthPickerViewController : UIViewController <UIPickerViewDataSource, UIPickerViewDelegate>
 {
@@ -833,6 +819,34 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 - (void)presentWithColor:(UIColor*)color anchorScreenRect:(RECT)anchorScreenRect;
 - (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed;
 - (void)destroy;
+@end
+
+@interface GlintIOSDatePickerCoordinator : NSObject <UIPopoverPresentationControllerDelegate, UIAdaptivePresentationControllerDelegate>
+{
+@public
+  UIViewController* presenter;
+  UIView* sourceView;
+  CGRect sourceRect;
+  UINavigationController* navigationController;
+  GlintIOSDatePickerViewController* contentController;
+  int initialYear;
+  int initialMonth;
+  int initialDay;
+  int selectedYear;
+  int selectedMonth;
+  int selectedDay;
+  std::function<void(int, int, int)> onChange;
+  std::function<void(int, int, int)> onConfirm;
+  std::function<void()> onReset;
+  std::function<void()> onClosed;
+  BOOL closedNotified;
+}
+- (void)presentWithYear:(int)year month:(int)month day:(int)day anchorScreenRect:(RECT)anchorScreenRect;
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed;
+- (void)destroy;
+- (void)selectionDidChangeYear:(int)year month:(int)month day:(int)day;
+- (void)reset:(id)sender;
+- (void)confirm:(id)sender;
 @end
 
 @interface GlintIOSTimePickerCoordinator : NSObject <UIPopoverPresentationControllerDelegate, UIAdaptivePresentationControllerDelegate>
@@ -1040,6 +1054,133 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 - (void)deleteBackward
 {
   [super deleteBackward];
+}
+
+@end
+
+@implementation GlintIOSDatePickerViewController
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  coordinator = nil;
+  calendarView = nil;
+  selection = nil;
+  self.preferredContentSize = CGSizeMake(340.0f, 420.0f);
+  return self;
+}
+
+- (void)dealloc
+{
+  [selection release];
+  [calendarView release];
+  [super dealloc];
+}
+
+- (void)loadView
+{
+  UIView* root = [[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, 340.0f, 420.0f)];
+  root.backgroundColor = UIColor.systemBackgroundColor;
+
+  UIView* footer = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
+  footer.translatesAutoresizingMaskIntoConstraints = NO;
+
+  calendarView = [[UICalendarView alloc] initWithFrame:CGRectZero];
+  calendarView.translatesAutoresizingMaskIntoConstraints = NO;
+  calendarView.locale = NSLocale.currentLocale;
+  calendarView.calendar = [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian] autorelease];
+  calendarView.timeZone = NSTimeZone.localTimeZone;
+  calendarView.tintColor = UIColor.systemBlueColor;
+  calendarView.delegate = self;
+
+  selection = [[UICalendarSelectionSingleDate alloc] initWithDelegate:self];
+  calendarView.selectionBehavior = selection;
+
+  UIButton* resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  resetButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [resetButton setTitle:glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::common_reset)) forState:UIControlStateNormal];
+  [resetButton setTitleColor:UIColor.blackColor forState:UIControlStateNormal];
+  resetButton.backgroundColor = [UIColor colorWithWhite:0.93f alpha:1.0f];
+  resetButton.layer.cornerRadius = 18.0f;
+  resetButton.layer.masksToBounds = YES;
+  [resetButton addTarget:self action:@selector(handleResetButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+
+  UIButton* confirmButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  confirmButton.translatesAutoresizingMaskIntoConstraints = NO;
+  if (@available(iOS 13.0, *))
+  {
+    [confirmButton setImage:[UIImage systemImageNamed:@"checkmark"] forState:UIControlStateNormal];
+  }
+  else
+  {
+    [confirmButton setTitle:@"✓" forState:UIControlStateNormal];
+  }
+  [confirmButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+  confirmButton.tintColor = UIColor.whiteColor;
+  confirmButton.backgroundColor = UIColor.systemBlueColor;
+  confirmButton.layer.cornerRadius = 22.0f;
+  confirmButton.layer.masksToBounds = YES;
+  [confirmButton addTarget:self action:@selector(handleConfirmButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+
+  [root addSubview:calendarView];
+  [root addSubview:footer];
+  [footer addSubview:resetButton];
+  [footer addSubview:confirmButton];
+
+  UILayoutGuide* safeArea = root.safeAreaLayoutGuide;
+  [NSLayoutConstraint activateConstraints:@[
+    [calendarView.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:8.0f],
+    [calendarView.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-8.0f],
+    [calendarView.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:8.0f],
+    [calendarView.bottomAnchor constraintEqualToAnchor:footer.topAnchor constant:-16.0f],
+
+    [footer.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:16.0f],
+    [footer.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-16.0f],
+    [footer.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor constant:-12.0f],
+    [footer.heightAnchor constraintEqualToConstant:44.0f],
+
+    [resetButton.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor],
+    [resetButton.centerYAnchor constraintEqualToAnchor:footer.centerYAnchor],
+    [resetButton.heightAnchor constraintEqualToConstant:36.0f],
+    [resetButton.widthAnchor constraintGreaterThanOrEqualToConstant:96.0f],
+
+    [confirmButton.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor],
+    [confirmButton.centerYAnchor constraintEqualToAnchor:footer.centerYAnchor],
+    [confirmButton.widthAnchor constraintEqualToConstant:44.0f],
+    [confirmButton.heightAnchor constraintEqualToConstant:44.0f],
+  ]];
+
+  self.view = root;
+  [root release];
+}
+
+- (void)handleResetButtonPressed:(id)sender
+{
+  [coordinator reset:sender];
+}
+
+- (void)handleConfirmButtonPressed:(id)sender
+{
+  [coordinator confirm:sender];
+}
+
+- (void)dateSelection:(UICalendarSelectionSingleDate*)dateSelection didSelectDate:(NSDateComponents*)dateComponents
+{
+  (void)dateSelection;
+  if (!coordinator || !dateComponents)
+    return;
+
+  [coordinator selectionDidChangeYear:(int)dateComponents.year
+                                month:(int)dateComponents.month
+                                  day:(int)dateComponents.day];
+}
+
+- (BOOL)dateSelection:(UICalendarSelectionSingleDate*)dateSelection canSelectDate:(NSDateComponents*)dateComponents
+{
+  (void)dateSelection;
+  return dateComponents != nil;
 }
 
 @end
@@ -2354,6 +2495,215 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
 
 @end
 
+@implementation GlintIOSDatePickerCoordinator
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  presenter = nil;
+  sourceView = nil;
+  sourceRect = CGRectZero;
+  navigationController = nil;
+  contentController = nil;
+  initialYear = 1;
+  initialMonth = 1;
+  initialDay = 1;
+  selectedYear = 1;
+  selectedMonth = 1;
+  selectedDay = 1;
+  closedNotified = YES;
+  return self;
+}
+
+- (void)dealloc
+{
+  [presenter release];
+  [sourceView release];
+  [navigationController release];
+  [contentController release];
+  [super dealloc];
+}
+
+- (void)notifyClosedIfNeeded
+{
+  if (closedNotified)
+    return;
+  closedNotified = YES;
+  if (onClosed)
+    onClosed();
+}
+
+- (NSDateComponents*)dateComponentsForYear:(int)year month:(int)month day:(int)day
+{
+  NSCalendar* calendar = contentController->calendarView.calendar ?: [[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian] autorelease];
+  NSDateComponents* components = [[[NSDateComponents alloc] init] autorelease];
+  components.calendar = calendar;
+  components.timeZone = NSTimeZone.localTimeZone;
+  components.year = year;
+  components.month = month;
+  components.day = day;
+  return components;
+}
+
+- (void)ensureControllers
+{
+  if (!contentController)
+  {
+    contentController = [[GlintIOSDatePickerViewController alloc] init];
+    contentController->coordinator = self;
+  }
+
+  [contentController loadViewIfNeeded];
+
+  if (!navigationController)
+  {
+    navigationController = [[UINavigationController alloc] initWithRootViewController:contentController];
+    navigationController.modalPresentationStyle = UIModalPresentationPopover;
+    navigationController.navigationBarHidden = YES;
+  }
+
+  navigationController.preferredContentSize = contentController.preferredContentSize;
+}
+
+- (void)presentWithYear:(int)year month:(int)month day:(int)day anchorScreenRect:(RECT)anchorScreenRect
+{
+  UIWindow* window = glint_active_window();
+  UIViewController* top = glint_top_view_controller(window.rootViewController);
+  if (!top)
+    top = window.rootViewController;
+  if (!top)
+  {
+    [self notifyClosedIfNeeded];
+    return;
+  }
+
+  [self ensureControllers];
+
+  [presenter release];
+  presenter = [top retain];
+
+  UIView* resolvedSourceView = presenter.view ?: window;
+  [sourceView release];
+  sourceView = [resolvedSourceView retain];
+  sourceRect = glint_colorpicker_source_rect(sourceView, anchorScreenRect);
+  initialYear = std::max(1, year);
+  initialMonth = std::max(1, std::min(12, month));
+  initialDay = std::max(1, day);
+  selectedYear = initialYear;
+  selectedMonth = initialMonth;
+  selectedDay = initialDay;
+
+  NSDateComponents* selectedDate = [self dateComponentsForYear:selectedYear month:selectedMonth day:selectedDay];
+  [contentController->calendarView setVisibleDateComponents:selectedDate animated:NO];
+  [contentController->selection setSelectedDate:selectedDate animated:NO];
+  closedNotified = NO;
+
+  UIPopoverPresentationController* popover = navigationController.popoverPresentationController;
+  popover.delegate = self;
+  popover.sourceView = sourceView;
+  popover.sourceRect = sourceRect;
+  popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+
+  if (navigationController.presentingViewController)
+    return;
+
+  [presenter presentViewController:navigationController animated:YES completion:nil];
+}
+
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed
+{
+  if (notifyClosed)
+    closedNotified = NO;
+
+  if (navigationController.presentingViewController)
+  {
+    [navigationController.presentingViewController dismissViewControllerAnimated:animated completion:^{
+      if (notifyClosed)
+        [self notifyClosedIfNeeded];
+    }];
+    return;
+  }
+
+  if (notifyClosed)
+    [self notifyClosedIfNeeded];
+}
+
+- (void)destroy
+{
+  onChange = nullptr;
+  onConfirm = nullptr;
+  onReset = nullptr;
+  onClosed = nullptr;
+  if (navigationController.popoverPresentationController)
+    navigationController.popoverPresentationController.delegate = nil;
+  [self hideAnimated:NO notifyClosed:NO];
+}
+
+- (void)selectionDidChangeYear:(int)year month:(int)month day:(int)day
+{
+  if (selectedYear == year && selectedMonth == month && selectedDay == day)
+    return;
+
+  selectedYear = year;
+  selectedMonth = month;
+  selectedDay = day;
+  if (onChange)
+    onChange(selectedYear, selectedMonth, selectedDay);
+}
+
+- (void)reset:(id)sender
+{
+  (void)sender;
+  const bool changed = selectedYear != initialYear || selectedMonth != initialMonth || selectedDay != initialDay;
+  selectedYear = initialYear;
+  selectedMonth = initialMonth;
+  selectedDay = initialDay;
+  NSDateComponents* selectedDate = [self dateComponentsForYear:selectedYear month:selectedMonth day:selectedDay];
+  [contentController->selection setSelectedDate:selectedDate animated:YES];
+  [contentController->calendarView setVisibleDateComponents:selectedDate animated:YES];
+  if (onReset)
+    onReset();
+  if (changed && onChange)
+    onChange(selectedYear, selectedMonth, selectedDay);
+}
+
+- (void)confirm:(id)sender
+{
+  (void)sender;
+  if (onConfirm)
+    onConfirm(selectedYear, selectedMonth, selectedDay);
+  [self hideAnimated:YES notifyClosed:YES];
+}
+
+- (void)popoverPresentationControllerDidDismissPopover:(UIPopoverPresentationController*)popoverPresentationController
+{
+  (void)popoverPresentationController;
+  [self notifyClosedIfNeeded];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController
+{
+  (void)presentationController;
+  [self notifyClosedIfNeeded];
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller
+{
+  (void)controller;
+  return UIModalPresentationNone;
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller traitCollection:(UITraitCollection*)traitCollection
+{
+  (void)controller;
+  (void)traitCollection;
+  return UIModalPresentationNone;
+}
+
+@end
+
 @implementation GlintIOSWeekPickerCoordinator
 
 - (instancetype)init
@@ -3401,10 +3751,6 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
       keyboardTemporalPicker.datePickerMode = UIDatePickerModeTime;
       keyboardTemporalPicker.minuteInterval = cppView->_focusedTemporalMinuteInterval();
       break;
-    case glint_temporal_input_kind_datetime_local:
-      keyboardTemporalPicker.datePickerMode = UIDatePickerModeDateAndTime;
-      keyboardTemporalPicker.minuteInterval = cppView->_focusedTemporalMinuteInterval();
-      break;
     case glint_temporal_input_kind_none:
       return;
   }
@@ -4258,6 +4604,11 @@ struct colorpicker_handle
   GlintIOSColorPickerCoordinator* coordinator = nil;
 };
 
+struct datepicker_handle
+{
+  GlintIOSDatePickerCoordinator* coordinator = nil;
+};
+
 struct timepicker_handle
 {
   GlintIOSTimePickerCoordinator* coordinator = nil;
@@ -4341,6 +4692,102 @@ void destroyColorPicker(colorpicker_handle* handle)
 
   if ([NSThread isMainThread])
 
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  delete handle;
+}
+
+datepicker_handle* showDatePicker(int initialYear,
+                                  int initialMonth,
+                                  int initialDay,
+                                  const RECT& anchorScreenRect,
+                                  std::function<void(int, int, int)> onChange,
+                                  std::function<void(int, int, int)> onConfirm,
+                                  std::function<void()> onReset,
+                                  std::function<void()> onClosed)
+{
+  return reopenDatePicker(nullptr,
+                          initialYear,
+                          initialMonth,
+                          initialDay,
+                          anchorScreenRect,
+                          std::move(onChange),
+                          std::move(onConfirm),
+                          std::move(onReset),
+                          std::move(onClosed));
+}
+
+datepicker_handle* reopenDatePicker(datepicker_handle* handle,
+                                    int initialYear,
+                                    int initialMonth,
+                                    int initialDay,
+                                    const RECT& anchorScreenRect,
+                                    std::function<void(int, int, int)> onChange,
+                                    std::function<void(int, int, int)> onConfirm,
+                                    std::function<void()> onReset,
+                                    std::function<void()> onClosed)
+{
+  __block datepicker_handle* result = handle;
+  __block std::function<void(int, int, int)> changeCb = std::move(onChange);
+  __block std::function<void(int, int, int)> confirmCb = std::move(onConfirm);
+  __block std::function<void()> resetCb = std::move(onReset);
+  __block std::function<void()> closedCb = std::move(onClosed);
+
+  void (^run)(void) = ^{
+    if (!result)
+      result = new datepicker_handle();
+    if (!result->coordinator)
+      result->coordinator = [[GlintIOSDatePickerCoordinator alloc] init];
+    result->coordinator->onChange = std::move(changeCb);
+    result->coordinator->onConfirm = std::move(confirmCb);
+    result->coordinator->onReset = std::move(resetCb);
+    result->coordinator->onClosed = std::move(closedCb);
+    [result->coordinator presentWithYear:initialYear
+                                   month:initialMonth
+                                     day:initialDay
+                        anchorScreenRect:anchorScreenRect];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+void hideDatePicker(datepicker_handle* handle)
+{
+  if (!handle || !handle->coordinator)
+    return;
+
+  void (^run)(void) = ^{
+    [handle->coordinator hideAnimated:YES notifyClosed:YES];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+}
+
+void destroyDatePicker(datepicker_handle* handle)
+{
+  if (!handle)
+    return;
+
+  void (^run)(void) = ^{
+    if (handle->coordinator)
+    {
+      [handle->coordinator destroy];
+      [handle->coordinator release];
+      handle->coordinator = nil;
+    }
+  };
+
+  if ([NSThread isMainThread])
     run();
   else
     dispatch_sync(dispatch_get_main_queue(), run);

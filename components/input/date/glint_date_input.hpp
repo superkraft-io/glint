@@ -18,6 +18,7 @@
 #include "../../../default_style.hpp"
 #include "../../../glint_document.hpp"
 #include "../../../platform/glint_apple_platform.hpp"
+#include "../../../platform/glint_platform_datepicker.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -67,6 +68,14 @@ class glint_date_input : public glint_element
 
 public:
   std::function<void(int /*year*/, int /*month*/, int /*day*/)> onChange;
+
+  ~glint_date_input() override
+  {
+#if GLINT_PLATFORM_IOS
+    glint_platform::destroyDatePicker(mPlatformPicker_);
+    mPlatformPicker_ = nullptr;
+#endif
+  }
 
   glint_date_input()
   {
@@ -158,6 +167,22 @@ public:
     mLastRectT = mRect.T;
   }
 
+  void OnMouseDown(float x, float y, const glint_mouse_mod& mod) override
+  {
+    (void)x;
+    (void)y;
+#if GLINT_PLATFORM_IOS
+    if (mod.R)
+      return;
+    if (mRoot)
+      mRoot->SetFocus(this);
+    _openCalendar();
+    return;
+#else
+    glint_element::OnMouseDown(x, y, mod);
+#endif
+  }
+
   // -- Keyboard ---------------------------------------------------------------
   bool OnKeyDown(const glint_key_press& key) override
   {
@@ -203,6 +228,9 @@ public:
   void onFocusGained() override
   {
     style.borderColor = glint_color{255, 74, 144, 217};
+#if GLINT_PLATFORM_IOS
+    _openCalendar();
+#endif
     setDirty(false);
   }
 
@@ -226,6 +254,9 @@ private:
   glint_element* mFieldEls  [3] = {};  // month, day, year container
   glint_element* mFieldTexts[3] = {};  // text child of each field
   _IconElem*     mIconEl        = nullptr;
+#if GLINT_PLATFORM_IOS
+  glint_platform::datepicker_handle* mPlatformPicker_ = nullptr;
+#endif
 
   static glint_datepicker_window*& _sharedWindow()
   {
@@ -249,7 +280,12 @@ private:
 
       el->addEventListener("mousedown", [this, idx](glint_event&) {
         if (mRoot) mRoot->SetFocus(this);
+#if GLINT_PLATFORM_IOS
+        (void)idx;
+        _openCalendar();
+#else
         _setActiveField(idx);
+#endif
       });
       addChild(el);
     };
@@ -261,6 +297,12 @@ private:
       lbl->className = "di-sep-label";
       lbl->innerText = "/";
       sep->addChild(lbl);
+#if GLINT_PLATFORM_IOS
+      sep->addEventListener("mousedown", [this](glint_event&) {
+        if (mRoot) mRoot->SetFocus(this);
+        _openCalendar();
+      });
+#endif
       addChild(sep);
     };
 
@@ -273,12 +315,22 @@ private:
     // Spacer pushes icon to the right end.
     auto* spacer = new glint_element();
     spacer->className = "di-spacer";
+#if GLINT_PLATFORM_IOS
+    spacer->addEventListener("mousedown", [this](glint_event&) {
+      if (mRoot) mRoot->SetFocus(this);
+      _openCalendar();
+    });
+#endif
     addChild(spacer);
 
     mIconEl = new _IconElem();
     mIconEl->addEventListener("mousedown", [this](glint_event&) {
       if (mRoot) mRoot->SetFocus(this);
+#if GLINT_PLATFORM_IOS
+      _openCalendar();
+#else
       _toggleCalendar();
+#endif
     });
     addChild(mIconEl);
 
@@ -356,6 +408,27 @@ private:
   void _openCalendar()
   {
 #if GLINT_PLATFORM_IOS
+    if (mCalendarOpen)
+      return;
+
+    mCalendarOpen = true;
+    const RECT popupAnchor = _anchorScreenRect();
+    mPlatformPicker_ = glint_platform::reopenDatePicker(
+      mPlatformPicker_,
+      mYear,
+      mMonth,
+      mDay,
+      popupAnchor,
+      [this](int year, int month, int day) {
+        setDate(year, month, day);
+        if (onChange) onChange(mYear, mMonth, mDay);
+      },
+      nullptr,
+      nullptr,
+      [this]() {
+        mCalendarOpen = false;
+        setDirty(false);
+      });
     return;
 #endif
 
@@ -378,6 +451,7 @@ private:
   void _closeCalendar()
   {
 #if GLINT_PLATFORM_IOS
+    glint_platform::hideDatePicker(mPlatformPicker_);
     mCalendarOpen = false;
     return;
 #endif
