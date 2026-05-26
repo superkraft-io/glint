@@ -30,6 +30,7 @@
 
 #include "text/glint_text_editor_base.hpp"
 #include "date/glint_date_input_bridge.hpp"
+#include "datetime_local/glint_datetime_local_input_bridge.hpp"
 #include "month/glint_month_input_bridge.hpp"
 #include "week/glint_week_input_bridge.hpp"
 #include "time/glint_time_input_bridge.hpp"
@@ -1200,6 +1201,7 @@ public:
     if (mRadio)    return mRadio->value;
     if (mColorButton) return _resolvedColorValue();
     if (mDateInput) return glint_date_input_delegate_get_value(mDateInput);
+    if (mDateTimeLocalInput) return glint_datetime_local_input_delegate_get_value(mDateTimeLocalInput);
     if (mMonthInput) return glint_month_input_delegate_get_value(mMonthInput);
     if (mWeekInput) return glint_week_input_delegate_get_value(mWeekInput);
     if (mTimeInput) return glint_time_input_delegate_get_value(mTimeInput);
@@ -1240,6 +1242,7 @@ public:
 
     mPendingValue = v;   // buffer for pre-Layout calls
     if (mDateInput) { glint_date_input_delegate_set_value(mDateInput, v); return; }
+    if (mDateTimeLocalInput) { glint_datetime_local_input_delegate_set_value(mDateTimeLocalInput, v); return; }
     if (mMonthInput) { glint_month_input_delegate_set_value(mMonthInput, v); return; }
     if (mWeekInput) { glint_week_input_delegate_set_value(mWeekInput, v); return; }
     if (mTimeInput) { glint_time_input_delegate_set_value(mTimeInput, v); return; }
@@ -1541,6 +1544,7 @@ public:
     if (mColorButton) return mColorButton;
     if (mImageInput) return mImageInput;
     if (mDateInput) return mDateInput;
+    if (mDateTimeLocalInput) return mDateTimeLocalInput;
     if (mMonthInput) return mMonthInput;
     if (mWeekInput) return mWeekInput;
     if (mTimeInput) return mTimeInput;
@@ -1575,6 +1579,11 @@ public:
     if (mDateInput && mRoot)
     {
       mRoot->SetFocus(mDateInput);
+      return;
+    }
+    if (mDateTimeLocalInput && mRoot)
+    {
+      mRoot->SetFocus(mDateTimeLocalInput);
       return;
     }
     if (mMonthInput && mRoot)
@@ -1715,10 +1724,9 @@ private:
     if (inputType == "color")    return "color";
     if (inputType == "time")     return "time";
     if (inputType == "week")     return "week";
+    if (inputType == "datetime-local") return "datetime-local";
     if (inputType == "month")    return "month";
-#if !GLINT_PLATFORM_IOS
     if (inputType == "date")     return "date";
-#endif
     return "text";
   }
 
@@ -1934,6 +1942,7 @@ private:
   glint_button*      mColorButton = nullptr;
   glint_image_input_delegate* mImageInput = nullptr;
   glint_element*     mDateInput  = nullptr;
+  glint_element*     mDateTimeLocalInput = nullptr;
   glint_element*     mMonthInput = nullptr;
   glint_element*     mWeekInput  = nullptr;
   glint_element*     mTimeInput  = nullptr;
@@ -1967,6 +1976,7 @@ private:
     if (mColorButton) { removeChild(mColorButton); mColorButton = nullptr; }
     if (mImageInput) { removeChild(mImageInput); mImageInput = nullptr; }
     if (mDateInput) { removeChild(mDateInput); mDateInput = nullptr; }
+    if (mDateTimeLocalInput) { removeChild(mDateTimeLocalInput); mDateTimeLocalInput = nullptr; }
     if (mMonthInput) { removeChild(mMonthInput); mMonthInput = nullptr; }
     if (mWeekInput) { removeChild(mWeekInput); mWeekInput = nullptr; }
     if (mTimeInput) { removeChild(mTimeInput); mTimeInput = nullptr; }
@@ -2129,6 +2139,23 @@ private:
         mRoot->SetFocus(mDateInput);
       }
     }
+    else if (delegateKind == "datetime-local")
+    {
+      auto* dli = glint_create_datetime_local_input_delegate([this](int, int, int, int, int)
+      {
+        mPendingValue = getValue();
+        if (onChange) onChange(mPendingValue);
+      });
+      addChild(dli);
+      applyAttachedUserAgentStyle(dli);
+      mDateTimeLocalInput = dli;
+      if (!mPendingValue.empty()) glint_datetime_local_input_delegate_set_value(mDateTimeLocalInput, mPendingValue);
+      if (mFocusPending && mRoot)
+      {
+        mFocusPending = false;
+        mRoot->SetFocus(mDateTimeLocalInput);
+      }
+    }
     else if (delegateKind == "month")
     {
       auto* mi = glint_create_month_input_delegate([this](int, int)
@@ -2223,7 +2250,7 @@ private:
       }
       style.display = "none";
 
-      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == mDateInput || mRoot->getFocusedNode() == mMonthInput || mRoot->getFocusedNode() == mWeekInput || mRoot->getFocusedNode() == mTimeInput || mRoot->getFocusedNode() == this))
+      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == mDateInput || mRoot->getFocusedNode() == mDateTimeLocalInput || mRoot->getFocusedNode() == mMonthInput || mRoot->getFocusedNode() == mWeekInput || mRoot->getFocusedNode() == mTimeInput || mRoot->getFocusedNode() == this))
         mRoot->SetFocus(nullptr);
     }
     else if (mHiddenDisplayApplied)
@@ -2241,7 +2268,7 @@ private:
       }
       style.opacity = mEnabledOpacity * 0.5f;
 
-      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == mDateInput || mRoot->getFocusedNode() == mMonthInput || mRoot->getFocusedNode() == mWeekInput || mRoot->getFocusedNode() == mTimeInput || mRoot->getFocusedNode() == this))
+      if (mRoot && (mRoot->getFocusedNode() == mTextInput || mRoot->getFocusedNode() == mDateInput || mRoot->getFocusedNode() == mDateTimeLocalInput || mRoot->getFocusedNode() == mMonthInput || mRoot->getFocusedNode() == mWeekInput || mRoot->getFocusedNode() == mTimeInput || mRoot->getFocusedNode() == this))
         mRoot->SetFocus(nullptr);
     }
     else if (mDisabledOpacityApplied)
@@ -2281,6 +2308,13 @@ private:
       mDateInput->mTabStop = !disabled && !isHiddenType;
       if (mPendingValue.empty()) glint_date_input_delegate_clear(mDateInput);
       else                       glint_date_input_delegate_set_value(mDateInput, mPendingValue);
+    }
+    if (mDateTimeLocalInput)
+    {
+      mDateTimeLocalInput->mAcceptsFocus = !disabled && !isHiddenType && !readonly;
+      mDateTimeLocalInput->mTabStop = !disabled && !isHiddenType;
+      if (mPendingValue.empty()) glint_datetime_local_input_delegate_clear(mDateTimeLocalInput);
+      else                       glint_datetime_local_input_delegate_set_value(mDateTimeLocalInput, mPendingValue);
     }
     if (mMonthInput)
     {

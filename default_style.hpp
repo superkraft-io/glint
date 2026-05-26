@@ -944,6 +944,68 @@ time-input {
   cursor: pointer;
 }
 
+datetime-local-input {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 244px;
+  height: 28px;
+  background-color: #202020;
+  border: 1px solid #414141;
+  border-radius: 6px;
+  padding-left: 8px;
+  padding-right: 4px;
+  user-select: none;
+}
+
+.dli-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.dli-sep {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+}
+
+.dli-sep-label {
+  font-size: 13px;
+  color: #646464;
+}
+
+.dli-field-text {
+  font-size: 13px;
+  color: #dcdcdc;
+}
+
+.dli-gap {
+  width: 8px;
+}
+
+.dli-spacer {
+  flex-grow: 1;
+}
+
+.dli-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
 )css";
 
 inline const GlintCssStylesheet& glint_default_user_agent_stylesheet()

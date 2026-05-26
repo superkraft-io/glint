@@ -257,6 +257,7 @@ if(WIN32)
   add_library(glint_host_win32_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/datetime_local/glint_datetime_local_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/week/glint_week_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/time/glint_time_input_bridge.cpp"
@@ -288,6 +289,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   add_library(glint_host_mac_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/datetime_local/glint_datetime_local_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/week/glint_week_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/time/glint_time_input_bridge.cpp"
@@ -342,6 +344,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   add_library(glint_host_ios_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/datetime_local/glint_datetime_local_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/week/glint_week_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/time/glint_time_input_bridge.cpp"
@@ -389,6 +392,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_library(glint_host_linux_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/datetime_local/glint_datetime_local_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/week/glint_week_input_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/components/input/time/glint_time_input_bridge.cpp"
