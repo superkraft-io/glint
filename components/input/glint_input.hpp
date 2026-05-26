@@ -1715,9 +1715,9 @@ private:
     if (inputType == "color")    return "color";
     if (inputType == "time")     return "time";
     if (inputType == "week")     return "week";
+    if (inputType == "month")    return "month";
 #if !GLINT_PLATFORM_IOS
     if (inputType == "date")     return "date";
-    if (inputType == "month")    return "month";
 #endif
     return "text";
   }

@@ -12,6 +12,7 @@
 #include "glint_view_ios.hpp"
 #include "../glint_platform.hpp"
 #include "../glint_platform_colorpicker.hpp"
+#include "../glint_platform_monthpicker.hpp"
 #include "../glint_platform_timepicker.hpp"
 #include "../glint_platform_weekpicker.hpp"
 #include "../../i18n/glint_i18n.hpp"
@@ -656,8 +657,21 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 @class GlintIOSSelectPickerCoordinator;
 @class GlintIOSSelectMenuControl;
 @class GlintIOSColorPickerCoordinator;
+@class GlintIOSMonthPickerCoordinator;
 @class GlintIOSTimePickerCoordinator;
 @class GlintIOSWeekPickerCoordinator;
+
+@interface GlintIOSMonthPickerViewController : UIViewController <UIPickerViewDataSource, UIPickerViewDelegate>
+{
+@public
+  GlintIOSMonthPickerCoordinator* coordinator;
+  UIPickerView* picker;
+  NSArray<NSString*>* monthSymbols;
+}
+- (void)handleResetButtonPressed:(id)sender;
+- (void)handleConfirmButtonPressed:(id)sender;
+- (void)syncSelectionAnimated:(BOOL)animated;
+@end
 
 @interface GlintIOSTimePickerViewController : UIViewController
 {
@@ -844,6 +858,32 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 - (void)confirm:(id)sender;
 @end
 
+@interface GlintIOSMonthPickerCoordinator : NSObject <UIPopoverPresentationControllerDelegate, UIAdaptivePresentationControllerDelegate>
+{
+@public
+  UIViewController* presenter;
+  UIView* sourceView;
+  CGRect sourceRect;
+  UINavigationController* navigationController;
+  GlintIOSMonthPickerViewController* contentController;
+  int initialYear;
+  int initialMonth;
+  int selectedYear;
+  int selectedMonth;
+  std::function<void(int, int)> onChange;
+  std::function<void(int, int)> onConfirm;
+  std::function<void()> onReset;
+  std::function<void()> onClosed;
+  BOOL closedNotified;
+}
+- (void)presentWithYear:(int)year month:(int)month anchorScreenRect:(RECT)anchorScreenRect;
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed;
+- (void)destroy;
+- (void)selectionDidChangeYear:(int)year month:(int)month;
+- (void)reset:(id)sender;
+- (void)confirm:(id)sender;
+@end
+
 @interface GlintIOSWeekPickerCoordinator : NSObject <UIPopoverPresentationControllerDelegate, UIAdaptivePresentationControllerDelegate>
 {
 @public
@@ -1000,6 +1040,165 @@ CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 - (void)deleteBackward
 {
   [super deleteBackward];
+}
+
+@end
+
+@implementation GlintIOSMonthPickerViewController
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  coordinator = nil;
+  picker = nil;
+  monthSymbols = nil;
+  self.preferredContentSize = CGSizeMake(320.0f, 316.0f);
+  return self;
+}
+
+- (void)dealloc
+{
+  [monthSymbols release];
+  [picker release];
+  [super dealloc];
+}
+
+- (void)loadView
+{
+  UIView* root = [[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, 320.0f, 316.0f)];
+  root.backgroundColor = UIColor.systemBackgroundColor;
+
+  NSDateFormatter* formatter = [[[NSDateFormatter alloc] init] autorelease];
+  formatter.locale = NSLocale.currentLocale;
+  NSArray<NSString*>* localizedMonths = formatter.standaloneMonthSymbols;
+  if (!localizedMonths || localizedMonths.count < 12)
+    localizedMonths = formatter.monthSymbols;
+  monthSymbols = [localizedMonths copy];
+
+  UIView* footer = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
+  footer.translatesAutoresizingMaskIntoConstraints = NO;
+
+  picker = [[UIPickerView alloc] initWithFrame:CGRectZero];
+  picker.translatesAutoresizingMaskIntoConstraints = NO;
+  picker.dataSource = self;
+  picker.delegate = self;
+
+  UIButton* resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  resetButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [resetButton setTitle:glint_nsstring_from_utf8(glint_i18n::localized(glint_i18n_key::common_reset)) forState:UIControlStateNormal];
+  [resetButton setTitleColor:UIColor.blackColor forState:UIControlStateNormal];
+  resetButton.backgroundColor = [UIColor colorWithWhite:0.93f alpha:1.0f];
+  resetButton.layer.cornerRadius = 18.0f;
+  resetButton.layer.masksToBounds = YES;
+  [resetButton addTarget:self action:@selector(handleResetButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+
+  UIButton* confirmButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  confirmButton.translatesAutoresizingMaskIntoConstraints = NO;
+  if (@available(iOS 13.0, *))
+  {
+    [confirmButton setImage:[UIImage systemImageNamed:@"checkmark"] forState:UIControlStateNormal];
+  }
+  else
+  {
+    [confirmButton setTitle:@"✓" forState:UIControlStateNormal];
+  }
+  [confirmButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+  confirmButton.tintColor = UIColor.whiteColor;
+  confirmButton.backgroundColor = UIColor.systemBlueColor;
+  confirmButton.layer.cornerRadius = 22.0f;
+  confirmButton.layer.masksToBounds = YES;
+  [confirmButton addTarget:self action:@selector(handleConfirmButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+
+  [root addSubview:picker];
+  [root addSubview:footer];
+  [footer addSubview:resetButton];
+  [footer addSubview:confirmButton];
+
+  UILayoutGuide* safeArea = root.safeAreaLayoutGuide;
+  [NSLayoutConstraint activateConstraints:@[
+    [picker.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
+    [picker.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
+    [picker.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:8.0f],
+    [picker.bottomAnchor constraintEqualToAnchor:footer.topAnchor constant:-16.0f],
+
+    [footer.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:16.0f],
+    [footer.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-16.0f],
+    [footer.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor constant:-12.0f],
+    [footer.heightAnchor constraintEqualToConstant:44.0f],
+
+    [resetButton.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor],
+    [resetButton.centerYAnchor constraintEqualToAnchor:footer.centerYAnchor],
+    [resetButton.heightAnchor constraintEqualToConstant:36.0f],
+    [resetButton.widthAnchor constraintGreaterThanOrEqualToConstant:96.0f],
+
+    [confirmButton.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor],
+    [confirmButton.centerYAnchor constraintEqualToAnchor:footer.centerYAnchor],
+    [confirmButton.widthAnchor constraintEqualToConstant:44.0f],
+    [confirmButton.heightAnchor constraintEqualToConstant:44.0f],
+  ]];
+
+  self.view = root;
+  [root release];
+}
+
+- (void)handleResetButtonPressed:(id)sender
+{
+  [coordinator reset:sender];
+}
+
+- (void)handleConfirmButtonPressed:(id)sender
+{
+  [coordinator confirm:sender];
+}
+
+- (void)syncSelectionAnimated:(BOOL)animated
+{
+  const NSInteger monthRow = MAX(0, MIN(11, coordinator ? coordinator->selectedMonth - 1 : 0));
+  const NSInteger yearRow = MAX(0, MIN(9998, coordinator ? coordinator->selectedYear - 1 : 0));
+  [picker selectRow:monthRow inComponent:0 animated:animated];
+  [picker selectRow:yearRow inComponent:1 animated:animated];
+}
+
+- (NSInteger)numberOfComponentsInPickerView:(UIPickerView*)pickerView
+{
+  (void)pickerView;
+  return 2;
+}
+
+- (NSInteger)pickerView:(UIPickerView*)pickerView numberOfRowsInComponent:(NSInteger)component
+{
+  (void)pickerView;
+  return component == 0 ? 12 : 9999;
+}
+
+- (CGFloat)pickerView:(UIPickerView*)pickerView widthForComponent:(NSInteger)component
+{
+  (void)pickerView;
+  return component == 0 ? 160.0f : 100.0f;
+}
+
+- (NSString*)pickerView:(UIPickerView*)pickerView titleForRow:(NSInteger)row forComponent:(NSInteger)component
+{
+  (void)pickerView;
+  if (component == 0)
+  {
+    if (row >= 0 && row < monthSymbols.count)
+      return [monthSymbols objectAtIndex:(NSUInteger)row];
+    return @"";
+  }
+
+  return [NSString stringWithFormat:@"%ld", (long)(row + 1)];
+}
+
+- (void)pickerView:(UIPickerView*)pickerView didSelectRow:(NSInteger)row inComponent:(NSInteger)component
+{
+  (void)row;
+  (void)component;
+  const int month = (int)[pickerView selectedRowInComponent:0] + 1;
+  const int year = (int)[pickerView selectedRowInComponent:1] + 1;
+  [coordinator selectionDidChangeYear:year month:month];
 }
 
 @end
@@ -1936,6 +2135,195 @@ willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
                                                fromDate:contentController->picker.date ?: NSDate.date];
     onConfirm((int)components.hour, (int)components.minute);
   }
+  [self hideAnimated:YES notifyClosed:YES];
+}
+
+- (void)popoverPresentationControllerDidDismissPopover:(UIPopoverPresentationController*)popoverPresentationController
+{
+  (void)popoverPresentationController;
+  [self notifyClosedIfNeeded];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController
+{
+  (void)presentationController;
+  [self notifyClosedIfNeeded];
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller
+{
+  (void)controller;
+  return UIModalPresentationNone;
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController*)controller traitCollection:(UITraitCollection*)traitCollection
+{
+  (void)controller;
+  (void)traitCollection;
+  return UIModalPresentationNone;
+}
+
+@end
+
+@implementation GlintIOSMonthPickerCoordinator
+
+- (instancetype)init
+{
+  if (!(self = [super init]))
+    return nil;
+
+  presenter = nil;
+  sourceView = nil;
+  sourceRect = CGRectZero;
+  navigationController = nil;
+  contentController = nil;
+  initialYear = 1;
+  initialMonth = 1;
+  selectedYear = 1;
+  selectedMonth = 1;
+  closedNotified = YES;
+  return self;
+}
+
+- (void)dealloc
+{
+  [presenter release];
+  [sourceView release];
+  [navigationController release];
+  [contentController release];
+  [super dealloc];
+}
+
+- (void)notifyClosedIfNeeded
+{
+  if (closedNotified)
+    return;
+  closedNotified = YES;
+  if (onClosed)
+    onClosed();
+}
+
+- (void)ensureControllers
+{
+  if (!contentController)
+  {
+    contentController = [[GlintIOSMonthPickerViewController alloc] init];
+    contentController->coordinator = self;
+  }
+
+  [contentController loadViewIfNeeded];
+
+  if (!navigationController)
+  {
+    navigationController = [[UINavigationController alloc] initWithRootViewController:contentController];
+    navigationController.modalPresentationStyle = UIModalPresentationPopover;
+    navigationController.navigationBarHidden = YES;
+  }
+
+  navigationController.preferredContentSize = contentController.preferredContentSize;
+}
+
+- (void)presentWithYear:(int)year month:(int)month anchorScreenRect:(RECT)anchorScreenRect
+{
+  UIWindow* window = glint_active_window();
+  UIViewController* top = glint_top_view_controller(window.rootViewController);
+  if (!top)
+    top = window.rootViewController;
+  if (!top)
+  {
+    [self notifyClosedIfNeeded];
+    return;
+  }
+
+  [self ensureControllers];
+
+  [presenter release];
+  presenter = [top retain];
+
+  UIView* resolvedSourceView = presenter.view ?: window;
+  [sourceView release];
+  sourceView = [resolvedSourceView retain];
+  sourceRect = glint_colorpicker_source_rect(sourceView, anchorScreenRect);
+
+  initialYear = std::max(1, year);
+  initialMonth = std::max(1, std::min(12, month));
+  selectedYear = initialYear;
+  selectedMonth = initialMonth;
+  [contentController syncSelectionAnimated:NO];
+  closedNotified = NO;
+
+  UIPopoverPresentationController* popover = navigationController.popoverPresentationController;
+  popover.delegate = self;
+  popover.sourceView = sourceView;
+  popover.sourceRect = sourceRect;
+  popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+
+  if (navigationController.presentingViewController)
+    return;
+
+  [presenter presentViewController:navigationController animated:YES completion:nil];
+}
+
+- (void)hideAnimated:(BOOL)animated notifyClosed:(BOOL)notifyClosed
+{
+  if (notifyClosed)
+    closedNotified = NO;
+
+  if (navigationController.presentingViewController)
+  {
+    [navigationController.presentingViewController dismissViewControllerAnimated:animated completion:^{
+      if (notifyClosed)
+        [self notifyClosedIfNeeded];
+    }];
+    return;
+  }
+
+  if (notifyClosed)
+    [self notifyClosedIfNeeded];
+}
+
+- (void)destroy
+{
+  onChange = nullptr;
+  onConfirm = nullptr;
+  onReset = nullptr;
+  onClosed = nullptr;
+  if (navigationController.popoverPresentationController)
+    navigationController.popoverPresentationController.delegate = nil;
+  [self hideAnimated:NO notifyClosed:NO];
+}
+
+- (void)selectionDidChangeYear:(int)year month:(int)month
+{
+  year = std::max(1, year);
+  month = std::max(1, std::min(12, month));
+  if (selectedYear == year && selectedMonth == month)
+    return;
+
+  selectedYear = year;
+  selectedMonth = month;
+  if (onChange)
+    onChange(selectedYear, selectedMonth);
+}
+
+- (void)reset:(id)sender
+{
+  (void)sender;
+  const bool changed = selectedYear != initialYear || selectedMonth != initialMonth;
+  selectedYear = initialYear;
+  selectedMonth = initialMonth;
+  [contentController syncSelectionAnimated:YES];
+  if (onReset)
+    onReset();
+  if (changed && onChange)
+    onChange(selectedYear, selectedMonth);
+}
+
+- (void)confirm:(id)sender
+{
+  (void)sender;
+  if (onConfirm)
+    onConfirm(selectedYear, selectedMonth);
   [self hideAnimated:YES notifyClosed:YES];
 }
 
@@ -3875,6 +4263,11 @@ struct timepicker_handle
   GlintIOSTimePickerCoordinator* coordinator = nil;
 };
 
+struct monthpicker_handle
+{
+  GlintIOSMonthPickerCoordinator* coordinator = nil;
+};
+
 struct weekpicker_handle
 {
   GlintIOSWeekPickerCoordinator* coordinator = nil;
@@ -4021,6 +4414,98 @@ void hideTimePicker(timepicker_handle* handle)
 }
 
 void destroyTimePicker(timepicker_handle* handle)
+{
+  if (!handle)
+    return;
+
+  void (^run)(void) = ^{
+    if (handle->coordinator)
+    {
+      [handle->coordinator destroy];
+      [handle->coordinator release];
+      handle->coordinator = nil;
+    }
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  delete handle;
+}
+
+monthpicker_handle* showMonthPicker(int initialYear,
+                                    int initialMonth,
+                                    const RECT& anchorScreenRect,
+                                    std::function<void(int, int)> onChange,
+                                    std::function<void(int, int)> onConfirm,
+                                    std::function<void()> onReset,
+                                    std::function<void()> onClosed)
+{
+  return reopenMonthPicker(nullptr,
+                           initialYear,
+                           initialMonth,
+                           anchorScreenRect,
+                           std::move(onChange),
+                           std::move(onConfirm),
+                           std::move(onReset),
+                           std::move(onClosed));
+}
+
+monthpicker_handle* reopenMonthPicker(monthpicker_handle* handle,
+                                      int initialYear,
+                                      int initialMonth,
+                                      const RECT& anchorScreenRect,
+                                      std::function<void(int, int)> onChange,
+                                      std::function<void(int, int)> onConfirm,
+                                      std::function<void()> onReset,
+                                      std::function<void()> onClosed)
+{
+  __block monthpicker_handle* result = handle;
+  __block std::function<void(int, int)> changeCb = std::move(onChange);
+  __block std::function<void(int, int)> confirmCb = std::move(onConfirm);
+  __block std::function<void()> resetCb = std::move(onReset);
+  __block std::function<void()> closedCb = std::move(onClosed);
+
+  void (^run)(void) = ^{
+    if (!result)
+      result = new monthpicker_handle();
+    if (!result->coordinator)
+      result->coordinator = [[GlintIOSMonthPickerCoordinator alloc] init];
+    result->coordinator->onChange = std::move(changeCb);
+    result->coordinator->onConfirm = std::move(confirmCb);
+    result->coordinator->onReset = std::move(resetCb);
+    result->coordinator->onClosed = std::move(closedCb);
+    [result->coordinator presentWithYear:initialYear
+                                   month:initialMonth
+                         anchorScreenRect:anchorScreenRect];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+
+  return result;
+}
+
+void hideMonthPicker(monthpicker_handle* handle)
+{
+  if (!handle || !handle->coordinator)
+    return;
+
+  void (^run)(void) = ^{
+    [handle->coordinator hideAnimated:YES notifyClosed:YES];
+  };
+
+  if ([NSThread isMainThread])
+    run();
+  else
+    dispatch_sync(dispatch_get_main_queue(), run);
+}
+
+void destroyMonthPicker(monthpicker_handle* handle)
 {
   if (!handle)
     return;

@@ -8,6 +8,7 @@
 #include "../../../default_style.hpp"
 #include "../../../glint_document.hpp"
 #include "../../../platform/glint_apple_platform.hpp"
+#include "../../../platform/glint_platform_monthpicker.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -55,6 +56,14 @@ class glint_month_input : public glint_element
 
 public:
   std::function<void(int, int)> onChange;
+
+  ~glint_month_input() override
+  {
+#if GLINT_PLATFORM_IOS
+    glint_platform::destroyMonthPicker(mPlatformPicker_);
+    mPlatformPicker_ = nullptr;
+#endif
+  }
 
   glint_month_input()
   {
@@ -139,6 +148,22 @@ public:
     mLastRectT = mRect.T;
   }
 
+  void OnMouseDown(float x, float y, const glint_mouse_mod& mod) override
+  {
+    (void)x;
+    (void)y;
+#if GLINT_PLATFORM_IOS
+    if (mod.R)
+      return;
+    if (mRoot)
+      mRoot->SetFocus(this);
+    _openPicker();
+    return;
+#else
+    glint_element::OnMouseDown(x, y, mod);
+#endif
+  }
+
   bool OnKeyDown(const glint_key_press& key) override
   {
     if (key.vk == 0x1B && mPickerOpen) { _closePicker(); return true; }
@@ -182,6 +207,9 @@ public:
   void onFocusGained() override
   {
     style.borderColor = glint_color{255, 74, 144, 217};
+#if GLINT_PLATFORM_IOS
+    _openPicker();
+#endif
     setDirty(false);
   }
 
@@ -207,6 +235,9 @@ private:
   glint_element* mFieldEls[2] = {};
   glint_element* mFieldTexts[2] = {};
   _IconElem* mIconEl = nullptr;
+#if GLINT_PLATFORM_IOS
+  glint_platform::monthpicker_handle* mPlatformPicker_ = nullptr;
+#endif
 
   static glint_monthpicker_window*& _sharedWindow()
   {
@@ -229,7 +260,12 @@ private:
 
       el->addEventListener("mousedown", [this, idx](glint_event&) {
         if (mRoot) mRoot->SetFocus(this);
+#if GLINT_PLATFORM_IOS
+        (void)idx;
+        _openPicker();
+#else
         _setActiveField(idx);
+#endif
       });
       addChild(el);
     };
@@ -241,6 +277,12 @@ private:
       lbl->className = "mi-sep-label";
       lbl->innerText = "/";
       sep->addChild(lbl);
+#if GLINT_PLATFORM_IOS
+      sep->addEventListener("mousedown", [this](glint_event&) {
+        if (mRoot) mRoot->SetFocus(this);
+        _openPicker();
+      });
+#endif
       addChild(sep);
     };
 
@@ -250,12 +292,22 @@ private:
 
     auto* spacer = new glint_element();
     spacer->className = "mi-spacer";
+#if GLINT_PLATFORM_IOS
+    spacer->addEventListener("mousedown", [this](glint_event&) {
+      if (mRoot) mRoot->SetFocus(this);
+      _openPicker();
+    });
+#endif
     addChild(spacer);
 
     mIconEl = new _IconElem();
     mIconEl->addEventListener("mousedown", [this](glint_event&) {
       if (mRoot) mRoot->SetFocus(this);
+#if GLINT_PLATFORM_IOS
+      _openPicker();
+#else
       _togglePicker();
+#endif
     });
     addChild(mIconEl);
 
@@ -327,6 +379,26 @@ private:
   void _openPicker()
   {
 #if GLINT_PLATFORM_IOS
+    if (mPickerOpen)
+      return;
+
+    mPickerOpen = true;
+    const RECT popupAnchor = _anchorScreenRect();
+    mPlatformPicker_ = glint_platform::reopenMonthPicker(
+      mPlatformPicker_,
+      mYear,
+      mMonth,
+      popupAnchor,
+      [this](int year, int month) {
+        setMonth(year, month);
+        if (onChange) onChange(mYear, mMonth);
+      },
+      nullptr,
+      nullptr,
+      [this]() {
+        mPickerOpen = false;
+        setDirty(false);
+      });
     return;
 #endif
 
@@ -349,6 +421,7 @@ private:
   void _closePicker()
   {
 #if GLINT_PLATFORM_IOS
+    glint_platform::hideMonthPicker(mPlatformPicker_);
     mPickerOpen = false;
     return;
 #endif

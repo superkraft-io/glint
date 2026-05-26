@@ -796,6 +796,8 @@ month-input {
 
 .mi-spacer {
   flex-grow: 1;
+  align-self: stretch;
+  cursor: pointer;
 }
 
 .mi-icon {
