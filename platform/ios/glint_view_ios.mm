@@ -600,20 +600,28 @@ glint_color glint_color_from_uicolor(UIColor* color)
 
 CGRect glint_colorpicker_source_rect(UIView* sourceView, RECT anchorScreenRect)
 {
-  if (glint_last_interaction_view)
+  const CGFloat rawWidth = static_cast<CGFloat>(anchorScreenRect.right - anchorScreenRect.left);
+  const CGFloat rawHeight = static_cast<CGFloat>(anchorScreenRect.bottom - anchorScreenRect.top);
+  if (glint_last_interaction_view && rawWidth > 0.0f && rawHeight > 0.0f)
   {
-    CGPoint point = [sourceView convertPoint:glint_last_interaction_point fromView:glint_last_interaction_view];
-    return CGRectMake(point.x, point.y, 1.0f, 1.0f);
+    CGRect anchorRect = CGRectMake(static_cast<CGFloat>(anchorScreenRect.left),
+                                   static_cast<CGFloat>(anchorScreenRect.top),
+                                   rawWidth,
+                                   rawHeight);
+    if (sourceView == glint_last_interaction_view)
+      return anchorRect;
+
+    CGRect localRect = [sourceView convertRect:anchorRect fromView:glint_last_interaction_view];
+    if (!CGRectIsNull(localRect) && !CGRectIsEmpty(localRect))
+      return localRect;
   }
 
-  const CGFloat width = std::max<CGFloat>(1.0f, static_cast<CGFloat>(anchorScreenRect.right - anchorScreenRect.left));
-  const CGFloat height = std::max<CGFloat>(1.0f, static_cast<CGFloat>(anchorScreenRect.bottom - anchorScreenRect.top));
-  if (sourceView.window && width > 0.0f && height > 0.0f)
+  if (sourceView.window && rawWidth > 0.0f && rawHeight > 0.0f)
   {
     CGRect screenRect = CGRectMake(static_cast<CGFloat>(anchorScreenRect.left),
                                    static_cast<CGFloat>(anchorScreenRect.top),
-                                   width,
-                                   height);
+                                   rawWidth,
+                                   rawHeight);
     CGRect localRect = [sourceView convertRect:screenRect fromCoordinateSpace:sourceView.window.screen.coordinateSpace];
     if (!CGRectIsNull(localRect) && !CGRectIsEmpty(localRect))
       return localRect;

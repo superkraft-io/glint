@@ -467,6 +467,16 @@ private:
     return (mRoot && mRoot->macWindow)
       ? mRoot->macWindow->contentRectToScreen(cl, ct, bW, bH)
       : RECT{};
+#elif GLINT_PLATFORM_IOS
+  const glint_point pos = mRoot ? getPosition(&mRoot->mCanvas) : getPosition();
+  const float cl = pos.x;
+  const float ct = pos.y;
+  const float bW = mRect.W();
+  const float bH = mRect.H();
+  return { static_cast<int>(cl),
+           static_cast<int>(ct),
+           static_cast<int>(cl + bW),
+           static_cast<int>(ct + bH) };
 #else
     return RECT{};
 #endif

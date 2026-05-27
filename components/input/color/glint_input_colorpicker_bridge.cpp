@@ -41,6 +41,11 @@ RECT glint_input_colorpicker_anchor_screen_rect(const glint_element* anchorEleme
   return (anchorElement->mRoot && anchorElement->mRoot->linuxWindow)
     ? anchorElement->mRoot->linuxWindow->contentRectToScreen(cl, ct, width, height)
     : RECT{};
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+  return { static_cast<int>(cl),
+           static_cast<int>(ct),
+           static_cast<int>(cl + width),
+           static_cast<int>(ct + height) };
 #elif defined(__APPLE__) && !TARGET_OS_IPHONE
   return (anchorElement->mRoot && anchorElement->mRoot->macWindow)
     ? anchorElement->mRoot->macWindow->contentRectToScreen(cl, ct, width, height)

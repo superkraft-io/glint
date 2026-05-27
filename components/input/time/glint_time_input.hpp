@@ -424,6 +424,11 @@ private:
     return (mRoot && mRoot->linuxWindow)
       ? mRoot->linuxWindow->contentRectToScreen(cl, ct, bW, bH)
       : RECT{};
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+  return { static_cast<int>(cl),
+       static_cast<int>(ct),
+       static_cast<int>(cl + bW),
+       static_cast<int>(ct + bH) };
 #elif defined(__APPLE__) && !TARGET_OS_IPHONE
     return (mRoot && mRoot->macWindow)
       ? mRoot->macWindow->contentRectToScreen(cl, ct, bW, bH)
