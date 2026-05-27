@@ -9,3 +9,4 @@ glint_element* glint_create_time_input_delegate(const std::function<void(int, in
 std::string glint_time_input_delegate_get_value(const glint_element* element);
 bool glint_time_input_delegate_set_value(glint_element* element, const std::string& value);
 void glint_time_input_delegate_clear(glint_element* element);
+void glint_time_input_delegate_set_interaction_state(glint_element* element, bool disabled, bool readonly);

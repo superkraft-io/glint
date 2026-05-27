@@ -86,6 +86,11 @@ input > checkbox,
 input > radio,
 input > slider,
 input > image-input,
+input > date-input,
+input > month-input,
+input > week-input,
+input > time-input,
+input > datetime-local-input,
 input > text-input {
   position: absolute;
   left: 0;
@@ -697,8 +702,8 @@ date-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 180px;
-  height: 28px;
+  width: 100%;
+  height: 100%;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;
@@ -755,8 +760,8 @@ month-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 140px;
-  height: 28px;
+  width: 100%;
+  height: 100%;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;
@@ -815,8 +820,8 @@ week-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 156px;
-  height: 28px;
+  width: 100%;
+  height: 100%;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;
@@ -888,8 +893,8 @@ time-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 118px;
-  height: 28px;
+  width: 100%;
+  height: 100%;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;
@@ -948,8 +953,8 @@ datetime-local-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 244px;
-  height: 28px;
+  width: 100%;
+  height: 100%;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;

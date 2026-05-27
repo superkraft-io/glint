@@ -26,3 +26,9 @@ void glint_datetime_local_input_delegate_clear(glint_element* element)
   if (auto* input = dynamic_cast<glint_datetime_local_input*>(element))
     input->clear();
 }
+
+void glint_datetime_local_input_delegate_set_interaction_state(glint_element* element, bool disabled, bool readonly)
+{
+  if (auto* input = dynamic_cast<glint_datetime_local_input*>(element))
+    input->setInteractionState(disabled, readonly);
+}

@@ -69,6 +69,36 @@ class glint_date_input : public glint_element
 public:
   std::function<void(int /*year*/, int /*month*/, int /*day*/)> onChange;
 
+  void setInteractionState(bool disabled, bool readonly)
+  {
+    mDisabled = disabled;
+    mReadonly = readonly;
+
+    const bool interactive = _isInteractive();
+
+    style.pointerEvents = interactive ? "" : "none";
+    style.cursor = interactive ? "" : "default";
+
+    if (mIconEl)
+    {
+      mIconEl->hovered = false;
+      mIconEl->style.cursor = interactive ? "" : "default";
+    }
+
+    if (!interactive && mRoot && mRoot->getFocusedNode() == this)
+      mRoot->SetFocus(nullptr);
+
+    if (!_canOpenCalendar())
+      _closeCalendar();
+
+    if (!_canMutate())
+    {
+      mActiveField = -1;
+      mTypedStr.clear();
+      _refreshDisplay();
+    }
+  }
+
   ~glint_date_input() override
   {
 #if GLINT_PLATFORM_IOS
@@ -172,13 +202,17 @@ public:
     (void)x;
     (void)y;
 #if GLINT_PLATFORM_IOS
-    if (mod.R)
+    if (mod.R || !_isInteractive())
       return;
     if (mRoot)
       mRoot->SetFocus(this);
+    if (!_canOpenCalendar())
+      return;
     _openCalendar();
     return;
 #else
+    if (!_isInteractive())
+      return;
     glint_element::OnMouseDown(x, y, mod);
 #endif
   }
@@ -186,6 +220,9 @@ public:
   // -- Keyboard ---------------------------------------------------------------
   bool OnKeyDown(const glint_key_press& key) override
   {
+    if (!_isInteractive())
+      return false;
+
     if (key.vk == 0x1B && mCalendarOpen) { _closeCalendar(); return true; }
     if ((key.alt && key.vk == 0x28) || key.vk == 0x73) { _toggleCalendar(); return true; }
 
@@ -229,7 +266,8 @@ public:
   {
     style.borderColor = glint_color{255, 74, 144, 217};
 #if GLINT_PLATFORM_IOS
-    _openCalendar();
+    if (_canOpenCalendar())
+      _openCalendar();
 #endif
     setDirty(false);
   }
@@ -246,6 +284,8 @@ private:
   static constexpr int kMonth = 0, kDay = 1, kYear = 2;
   int  mYear = 2024, mMonth = 1, mDay = 1;
   bool mHasValue = false;
+  bool mDisabled = false;
+  bool mReadonly = false;
   int  mActiveField   = -1;
   bool mCalendarOpen  = false;
   float mLastRectL = 0.f, mLastRectT = 0.f;
@@ -279,11 +319,17 @@ private:
       el->addChild(txt);
 
       el->addEventListener("mousedown", [this, idx](glint_event&) {
+        if (!_isInteractive())
+          return;
         if (mRoot) mRoot->SetFocus(this);
 #if GLINT_PLATFORM_IOS
         (void)idx;
+        if (!_canOpenCalendar())
+          return;
         _openCalendar();
 #else
+        if (!_canMutate())
+          return;
         _setActiveField(idx);
 #endif
       });
@@ -299,7 +345,11 @@ private:
       sep->addChild(lbl);
 #if GLINT_PLATFORM_IOS
       sep->addEventListener("mousedown", [this](glint_event&) {
+        if (!_isInteractive())
+          return;
         if (mRoot) mRoot->SetFocus(this);
+        if (!_canOpenCalendar())
+          return;
         _openCalendar();
       });
 #endif
@@ -317,7 +367,11 @@ private:
     spacer->className = "di-spacer";
 #if GLINT_PLATFORM_IOS
     spacer->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+      if (!_canOpenCalendar())
+        return;
       _openCalendar();
     });
 #endif
@@ -325,10 +379,16 @@ private:
 
     mIconEl = new _IconElem();
     mIconEl->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
 #if GLINT_PLATFORM_IOS
+      if (!_canOpenCalendar())
+        return;
       _openCalendar();
 #else
+      if (!_canOpenCalendar())
+        return;
       _toggleCalendar();
 #endif
     });
@@ -374,6 +434,10 @@ private:
     _refreshDisplay();
   }
 
+  bool _isInteractive() const { return !mDisabled && !mReadonly; }
+  bool _canMutate() const { return _isInteractive(); }
+  bool _canOpenCalendar() const { return _isInteractive(); }
+
   // ── Calendar open / close ──────────────────────────────────────────────────
   void _toggleCalendar() { mCalendarOpen ? _closeCalendar() : _openCalendar(); }
 
@@ -407,6 +471,9 @@ private:
 
   void _openCalendar()
   {
+    if (!_canOpenCalendar())
+      return;
+
 #if GLINT_PLATFORM_IOS
     if (mCalendarOpen)
       return;
@@ -420,6 +487,8 @@ private:
       mDay,
       popupAnchor,
       [this](int year, int month, int day) {
+        if (!_canMutate())
+          return;
         setDate(year, month, day);
         if (onChange) onChange(mYear, mMonth, mDay);
       },
@@ -437,6 +506,8 @@ private:
 
     auto onPicked = [this](int y, int m, int d)
     {
+      if (!_canMutate())
+        return;
       setDate(y, m, d);
       mCalendarOpen = false;
       if (mRoot) mRoot->SetFocus(this);
@@ -464,6 +535,9 @@ private:
   // ── Step / type ────────────────────────────────────────────────────────────
   void _stepField(int f, int delta)
   {
+    if (!_canMutate())
+      return;
+
     if (!mHasValue)
       mHasValue = true;
     mTypedStr.clear();
@@ -492,6 +566,9 @@ private:
 
   void _handleDigit(char ch)
   {
+    if (!_canMutate())
+      return;
+
     if (!mHasValue)
       mHasValue = true;
     const int digit = ch - '0';

@@ -1738,7 +1738,7 @@ private:
   std::string _defaultButtonLabel() const
   {
     if (type == "submit") return "Submit";
-    if (type == "reset") return "Reset";
+    if (type == "reset") return glint_i18n::localized(glint_i18n_key::common_reset);
     return "Button";
   }
 
@@ -1987,6 +1987,14 @@ private:
 
     const std::string delegateKind = _delegateKindForType(type);
 
+    if (mActiveDelegateKind == "color" &&
+        _isButtonLikeType(type) &&
+        value.empty() &&
+        text.empty())
+    {
+      mPendingValue.clear();
+    }
+
     if (_delegateKindForType(type) != "color" && mColorPickerBridge)
     {
       glint_input_colorpicker_destroy(mColorPickerBridge);
@@ -2006,6 +2014,8 @@ private:
     {
       auto* bt           = new glint_button();
       bt->SetLabel(_resolvedButtonLabel());
+      bt->style.width = "100%";
+      bt->style.height = "100%";
       bt->SetOnClick([this]() {
         if (disabled) return;
         const std::string currentValue = getValue();
@@ -2306,6 +2316,7 @@ private:
     {
       mDateInput->mAcceptsFocus = !disabled && !isHiddenType && !readonly;
       mDateInput->mTabStop = !disabled && !isHiddenType;
+      glint_date_input_delegate_set_interaction_state(mDateInput, disabled || isHiddenType, readonly);
       if (mPendingValue.empty()) glint_date_input_delegate_clear(mDateInput);
       else                       glint_date_input_delegate_set_value(mDateInput, mPendingValue);
     }
@@ -2313,6 +2324,7 @@ private:
     {
       mDateTimeLocalInput->mAcceptsFocus = !disabled && !isHiddenType && !readonly;
       mDateTimeLocalInput->mTabStop = !disabled && !isHiddenType;
+      glint_datetime_local_input_delegate_set_interaction_state(mDateTimeLocalInput, disabled || isHiddenType, readonly);
       if (mPendingValue.empty()) glint_datetime_local_input_delegate_clear(mDateTimeLocalInput);
       else                       glint_datetime_local_input_delegate_set_value(mDateTimeLocalInput, mPendingValue);
     }
@@ -2320,6 +2332,7 @@ private:
     {
       mMonthInput->mAcceptsFocus = !disabled && !isHiddenType && !readonly;
       mMonthInput->mTabStop = !disabled && !isHiddenType;
+      glint_month_input_delegate_set_interaction_state(mMonthInput, disabled || isHiddenType, readonly);
       if (mPendingValue.empty()) glint_month_input_delegate_clear(mMonthInput);
       else                        glint_month_input_delegate_set_value(mMonthInput, mPendingValue);
     }
@@ -2327,6 +2340,7 @@ private:
     {
       mWeekInput->mAcceptsFocus = !disabled && !isHiddenType && !readonly;
       mWeekInput->mTabStop = !disabled && !isHiddenType;
+      glint_week_input_delegate_set_interaction_state(mWeekInput, disabled || isHiddenType, readonly);
       if (mPendingValue.empty()) glint_week_input_delegate_clear(mWeekInput);
       else                       glint_week_input_delegate_set_value(mWeekInput, mPendingValue);
     }
@@ -2334,6 +2348,7 @@ private:
     {
       mTimeInput->mAcceptsFocus = !disabled && !isHiddenType && !readonly;
       mTimeInput->mTabStop = !disabled && !isHiddenType;
+      glint_time_input_delegate_set_interaction_state(mTimeInput, disabled || isHiddenType, readonly);
       if (mPendingValue.empty()) glint_time_input_delegate_clear(mTimeInput);
       else                       glint_time_input_delegate_set_value(mTimeInput, mPendingValue);
     }

@@ -58,6 +58,36 @@ class glint_week_input : public glint_element
 public:
   std::function<void(int, int)> onChange;
 
+  void setInteractionState(bool disabled, bool readonly)
+  {
+    mDisabled = disabled;
+    mReadonly = readonly;
+
+    const bool interactive = _isInteractive();
+
+    style.pointerEvents = interactive ? "" : "none";
+    style.cursor = interactive ? "" : "default";
+
+    if (mIconEl)
+    {
+      mIconEl->hovered = false;
+      mIconEl->style.cursor = interactive ? "" : "default";
+    }
+
+    if (!interactive && mRoot && mRoot->getFocusedNode() == this)
+      mRoot->SetFocus(nullptr);
+
+    if (!_canOpenPicker())
+      _closePicker();
+
+    if (!_canMutate())
+    {
+      mActiveField = -1;
+      mTypedStr.clear();
+      _refreshDisplay();
+    }
+  }
+
   ~glint_week_input() override
   {
 #if GLINT_PLATFORM_IOS
@@ -152,19 +182,26 @@ public:
     (void)x;
     (void)y;
 #if GLINT_PLATFORM_IOS
-    if (mod.R)
+    if (mod.R || !_isInteractive())
       return;
     if (mRoot)
       mRoot->SetFocus(this);
+    if (!_canOpenPicker())
+      return;
     _openPicker();
     return;
 #else
+    if (!_isInteractive())
+      return;
     glint_element::OnMouseDown(x, y, mod);
 #endif
   }
 
   bool OnKeyDown(const glint_key_press& key) override
   {
+    if (!_isInteractive())
+      return false;
+
     if (key.vk == 0x1B && mPickerOpen) { _closePicker(); return true; }
     if ((key.alt && key.vk == 0x28) || key.vk == 0x73) { _togglePicker(); return true; }
 #if !GLINT_PLATFORM_IOS
@@ -217,7 +254,8 @@ public:
   {
     style.borderColor = glint_color{255, 74, 144, 217};
 #if GLINT_PLATFORM_IOS
-    _openPicker();
+    if (_canOpenPicker())
+      _openPicker();
 #endif
     setDirty(false);
   }
@@ -236,6 +274,8 @@ private:
   int mWeekYear = 2024;
   int mWeek = 1;
   bool mHasValue = false;
+  bool mDisabled = false;
+  bool mReadonly = false;
   int mActiveField = -1;
   bool mPickerOpen = false;
   float mLastRectL = 0.f, mLastRectT = 0.f;
@@ -268,11 +308,17 @@ private:
       el->addChild(txt);
 
       el->addEventListener("mousedown", [this, idx](glint_event&) {
+        if (!_isInteractive())
+          return;
         if (mRoot) mRoot->SetFocus(this);
 #if GLINT_PLATFORM_IOS
         (void)idx;
+        if (!_canOpenPicker())
+          return;
         _openPicker();
 #else
+        if (!_canMutate())
+          return;
         _setActiveField(idx);
 #endif
       });
@@ -287,7 +333,11 @@ private:
     prefix->addChild(prefixLbl);
 #if GLINT_PLATFORM_IOS
     prefix->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+      if (!_canOpenPicker())
+        return;
       _openPicker();
     });
 #endif
@@ -303,7 +353,11 @@ private:
     sep->addChild(sepLbl);
 #if GLINT_PLATFORM_IOS
     sep->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+      if (!_canOpenPicker())
+        return;
       _openPicker();
     });
 #endif
@@ -315,7 +369,11 @@ private:
     spacer->className = "wi-spacer";
 #if GLINT_PLATFORM_IOS
     spacer->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+      if (!_canOpenPicker())
+        return;
       _openPicker();
     });
 #endif
@@ -323,10 +381,16 @@ private:
 
     mIconEl = new _IconElem();
     mIconEl->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
 #if GLINT_PLATFORM_IOS
+      if (!_canOpenPicker())
+        return;
       _openPicker();
 #else
+      if (!_canOpenPicker())
+        return;
       _togglePicker();
 #endif
     });
@@ -369,6 +433,10 @@ private:
     _refreshDisplay();
   }
 
+  bool _isInteractive() const { return !mDisabled && !mReadonly; }
+  bool _canMutate() const { return _isInteractive(); }
+  bool _canOpenPicker() const { return _isInteractive(); }
+
   void _togglePicker() { mPickerOpen ? _closePicker() : _openPicker(); }
 
   RECT _anchorScreenRect() const
@@ -398,6 +466,9 @@ private:
 
   void _openPicker()
   {
+    if (!_canOpenPicker())
+      return;
+
 #if GLINT_PLATFORM_IOS
     if (mPickerOpen)
       return;
@@ -410,6 +481,8 @@ private:
       mWeek,
       popupAnchor,
       [this](int weekYear, int week) {
+        if (!_canMutate())
+          return;
         setWeek(weekYear, week);
         if (onChange) onChange(mWeekYear, mWeek);
       },
@@ -427,6 +500,8 @@ private:
 
     auto onPicked = [this](int weekYear, int week)
     {
+      if (!_canMutate())
+        return;
       setWeek(weekYear, week);
       mPickerOpen = false;
       if (mRoot) mRoot->SetFocus(this);
@@ -453,6 +528,9 @@ private:
 
   void _stepField(int field, int delta)
   {
+    if (!_canMutate())
+      return;
+
     if (!mHasValue)
       mHasValue = true;
     mTypedStr.clear();
@@ -494,6 +572,9 @@ private:
 
   void _handleDigit(char ch)
   {
+    if (!_canMutate())
+      return;
+
     if (!mHasValue)
       mHasValue = true;
     const int digit = ch - '0';

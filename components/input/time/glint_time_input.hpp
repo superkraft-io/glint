@@ -50,6 +50,36 @@ class glint_time_input : public glint_element
 public:
   std::function<void(int, int)> onChange;
 
+  void setInteractionState(bool disabled, bool readonly)
+  {
+    mDisabled = disabled;
+    mReadonly = readonly;
+
+    const bool interactive = _isInteractive();
+
+    style.pointerEvents = interactive ? "" : "none";
+    style.cursor = interactive ? "" : "default";
+
+    if (mIconEl)
+    {
+      mIconEl->hovered = false;
+      mIconEl->style.cursor = interactive ? "" : "default";
+    }
+
+    if (!interactive && mRoot && mRoot->getFocusedNode() == this)
+      mRoot->SetFocus(nullptr);
+
+    if (!_canOpenPicker())
+      _closePicker();
+
+    if (!_canMutate())
+    {
+      mActiveField = -1;
+      mTypedStr.clear();
+      _refreshDisplay();
+    }
+  }
+
   ~glint_time_input() override
   {
 #if GLINT_PLATFORM_IOS
@@ -143,19 +173,26 @@ public:
     (void)x;
     (void)y;
 #if GLINT_PLATFORM_IOS
-    if (mod.R)
+    if (mod.R || !_isInteractive())
       return;
     if (mRoot)
       mRoot->SetFocus(this);
+    if (!_canOpenPicker())
+      return;
     _openPicker();
     return;
 #else
+    if (!_isInteractive())
+      return;
     glint_element::OnMouseDown(x, y, mod);
 #endif
   }
 
   bool OnKeyDown(const glint_key_press& key) override
   {
+    if (!_isInteractive())
+      return false;
+
     if ((key.alt && key.vk == 0x28) || key.vk == 0x73) { _togglePicker(); return true; }
     if (mPickerOpen && _shouldRouteKeyToPicker(key) && _sharedWindow()->handleKey(key))
       return true;
@@ -205,7 +242,8 @@ public:
   {
     style.borderColor = glint_color{255, 74, 144, 217};
 #if GLINT_PLATFORM_IOS
-    _openPicker();
+    if (_canOpenPicker())
+      _openPicker();
 #endif
     setDirty(false);
   }
@@ -224,6 +262,8 @@ private:
   int mHour = 0;
   int mMinute = 0;
   bool mHasValue = false;
+  bool mDisabled = false;
+  bool mReadonly = false;
   int mActiveField = -1;
   bool mPickerOpen = false;
   float mLastRectL = 0.f, mLastRectT = 0.f;
@@ -255,11 +295,17 @@ private:
       el->addChild(txt);
 
       el->addEventListener("mousedown", [this, idx](glint_event&) {
+        if (!_isInteractive())
+          return;
         if (mRoot) mRoot->SetFocus(this);
 #if GLINT_PLATFORM_IOS
         (void)idx;
+        if (!_canOpenPicker())
+          return;
         _openPicker();
 #else
+        if (!_canMutate())
+          return;
         _setActiveField(idx);
 #endif
       });
@@ -276,7 +322,11 @@ private:
     sep->addChild(sepLbl);
 #if GLINT_PLATFORM_IOS
     sep->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+      if (!_canOpenPicker())
+        return;
       _openPicker();
     });
 #endif
@@ -288,7 +338,11 @@ private:
     spacer->className = "ti-spacer";
 #if GLINT_PLATFORM_IOS
     spacer->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+      if (!_canOpenPicker())
+        return;
       _openPicker();
     });
 #endif
@@ -296,8 +350,18 @@ private:
 
     mIconEl = new _IconElem();
     mIconEl->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+    #if GLINT_PLATFORM_IOS
+      if (!_canOpenPicker())
+        return;
+      _openPicker();
+    #else
+      if (!_canOpenPicker())
+        return;
       _togglePicker();
+    #endif
     });
     addChild(mIconEl);
 
@@ -338,6 +402,10 @@ private:
     _refreshDisplay();
   }
 
+  bool _isInteractive() const { return !mDisabled && !mReadonly; }
+  bool _canMutate() const { return _isInteractive(); }
+  bool _canOpenPicker() const { return _isInteractive(); }
+
   void _togglePicker() { mPickerOpen ? _closePicker() : _openPicker(); }
 
   RECT _anchorScreenRect() const
@@ -367,6 +435,9 @@ private:
 
   void _openPicker()
   {
+    if (!_canOpenPicker())
+      return;
+
 #if GLINT_PLATFORM_IOS
     if (mPickerOpen)
       return;
@@ -379,10 +450,14 @@ private:
       mMinute,
       popupAnchor,
       [this](int hour, int minute) {
+        if (!_canMutate())
+          return;
         setTime(hour, minute);
         if (onChange) onChange(mHour, mMinute);
       },
       [this]() {
+        if (!_canMutate())
+          return;
         clear();
         if (onChange) onChange(mHour, mMinute);
       },
@@ -398,6 +473,8 @@ private:
 
     auto onChanged = [this](int hour, int minute)
     {
+      if (!_canMutate())
+        return;
       setTime(hour, minute);
       if (onChange) onChange(mHour, mMinute);
     };
@@ -422,6 +499,9 @@ private:
 
   void _stepField(int field, int delta)
   {
+    if (!_canMutate())
+      return;
+
     if (!mHasValue)
       mHasValue = true;
     mTypedStr.clear();
@@ -458,6 +538,9 @@ private:
 
   void _handleDigit(char ch)
   {
+    if (!_canMutate())
+      return;
+
     if (!mHasValue)
       mHasValue = true;
     const int digit = ch - '0';

@@ -6,6 +6,10 @@
 #include "../../../platform/glint_platform_datetime_local_picker.hpp"
 #include "../time/glint_time_value.hpp"
 
+#if GLINT_PLATFORM_MAC
+#include "glint_datetime_localpicker_window.hpp"
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
@@ -53,6 +57,36 @@ class glint_datetime_local_input : public glint_element
 public:
   std::function<void(int, int, int, int, int)> onChange;
 
+  void setInteractionState(bool disabled, bool readonly)
+  {
+    mDisabled = disabled;
+    mReadonly = readonly;
+
+    const bool interactive = _isInteractive();
+
+    style.pointerEvents = interactive ? "" : "none";
+    style.cursor = interactive ? "" : "default";
+
+    if (mIconEl)
+    {
+      mIconEl->hovered = false;
+      mIconEl->style.cursor = interactive ? "" : "default";
+    }
+
+    if (!interactive && mRoot && mRoot->getFocusedNode() == this)
+      mRoot->SetFocus(nullptr);
+
+    if (!_canOpenPicker())
+      _closePicker();
+
+    if (!_canMutate())
+    {
+      mActiveField = -1;
+      mTypedStr.clear();
+      _refreshDisplay();
+    }
+  }
+
   ~glint_datetime_local_input() override
   {
 #if GLINT_PLATFORM_IOS
@@ -76,6 +110,15 @@ public:
     computedStyle = mergedStyleForLayout();
 
     _buildChildren();
+
+#if GLINT_PLATFORM_MAC
+    if (!_sharedWindow())
+    {
+      RECT dummy{};
+      _sharedWindow() = glint_datetime_localpicker_window::open(
+        mYear, mMonth, mDay, mHour, mMinute, dummy, nullptr, nullptr);
+    }
+#endif
   }
 
   void setDateTime(int year, int month, int day, int hour, int minute)
@@ -147,20 +190,29 @@ public:
     (void)x;
     (void)y;
 #if GLINT_PLATFORM_IOS
-    if (mod.R)
+    if (mod.R || !_isInteractive())
       return;
     if (mRoot)
       mRoot->SetFocus(this);
+    if (!_canOpenPicker())
+      return;
     _openPicker();
     return;
 #else
+    if (!_isInteractive())
+      return;
     glint_element::OnMouseDown(x, y, mod);
 #endif
   }
 
   bool OnKeyDown(const glint_key_press& key) override
   {
+    if (!_isInteractive())
+      return false;
+
     if (key.vk == 0x1B && mPickerOpen) { _closePicker(); return true; }
+    if (!_canMutate())
+      return false;
     if ((key.alt && key.vk == 0x28) || key.vk == 0x73) { _togglePicker(); return true; }
 
     if (mActiveField < 0)
@@ -202,7 +254,8 @@ public:
   {
     style.borderColor = glint_color{255, 74, 144, 217};
 #if GLINT_PLATFORM_IOS
-    _openPicker();
+    if (_canOpenPicker())
+      _openPicker();
 #endif
     setDirty(false);
   }
@@ -228,6 +281,8 @@ private:
   int mHour = 0;
   int mMinute = 0;
   bool mHasValue = false;
+  bool mDisabled = false;
+  bool mReadonly = false;
   int mActiveField = -1;
   bool mPickerOpen = false;
   float mLastRectL = 0.f;
@@ -239,6 +294,14 @@ private:
   _IconElem* mIconEl = nullptr;
 #if GLINT_PLATFORM_IOS
   glint_platform::datetime_local_picker_handle* mPlatformPicker_ = nullptr;
+#endif
+
+#if GLINT_PLATFORM_MAC
+  static glint_datetime_localpicker_window*& _sharedWindow()
+  {
+    static glint_datetime_localpicker_window* sInstance = nullptr;
+    return sInstance;
+  }
 #endif
 
   void _buildChildren()
@@ -255,11 +318,17 @@ private:
       el->addChild(txt);
 
       el->addEventListener("mousedown", [this, idx](glint_event&) {
+        if (!_isInteractive())
+          return;
         if (mRoot) mRoot->SetFocus(this);
 #if GLINT_PLATFORM_IOS
         (void)idx;
+        if (!_canOpenPicker())
+          return;
         _openPicker();
 #else
+        if (!_canMutate())
+          return;
         _setActiveField(idx);
 #endif
       });
@@ -275,7 +344,11 @@ private:
       sep->addChild(lbl);
 #if GLINT_PLATFORM_IOS
       sep->addEventListener("mousedown", [this](glint_event&) {
+        if (!_isInteractive())
+          return;
         if (mRoot) mRoot->SetFocus(this);
+        if (!_canOpenPicker())
+          return;
         _openPicker();
       });
 #endif
@@ -292,7 +365,11 @@ private:
     gap->className = "dli-gap";
 #if GLINT_PLATFORM_IOS
     gap->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+      if (!_canOpenPicker())
+        return;
       _openPicker();
     });
 #endif
@@ -306,7 +383,11 @@ private:
     spacer->className = "dli-spacer";
 #if GLINT_PLATFORM_IOS
     spacer->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+      if (!_canOpenPicker())
+        return;
       _openPicker();
     });
 #endif
@@ -314,10 +395,16 @@ private:
 
     mIconEl = new _IconElem();
     mIconEl->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
 #if GLINT_PLATFORM_IOS
+      if (!_canOpenPicker())
+        return;
       _openPicker();
 #else
+      if (!_canOpenPicker())
+        return;
       _togglePicker();
 #endif
     });
@@ -363,25 +450,20 @@ private:
     _refreshDisplay();
   }
 
+  bool _isInteractive() const { return !mDisabled && !mReadonly; }
+  bool _canMutate() const { return _isInteractive(); }
+  bool _canOpenPicker() const { return _isInteractive(); }
+
   void _togglePicker() { mPickerOpen ? _closePicker() : _openPicker(); }
 
   RECT _anchorScreenRect() const
   {
+#if GLINT_PLATFORM_MAC
     const glint_point pos = mRoot ? getPosition(&mRoot->mCanvas) : getPosition();
     const float cl = pos.x;
     const float ct = pos.y;
-    const float bW = mRect.W(), bH = mRect.H();
-
-#if defined(_WIN32) || defined(OS_WIN)
-    POINT bottomLeft{ (LONG)cl, (LONG)(ct + bH) };
-    if (HWND hwnd = mRoot ? mRoot->hwnd : nullptr)
-      ::ClientToScreen(hwnd, &bottomLeft);
-    return { bottomLeft.x, bottomLeft.y - (LONG)bH, bottomLeft.x + (LONG)bW, bottomLeft.y };
-#elif defined(__linux__)
-    return (mRoot && mRoot->linuxWindow)
-      ? mRoot->linuxWindow->contentRectToScreen(cl, ct, bW, bH)
-      : RECT{};
-#elif defined(__APPLE__) && !TARGET_OS_IPHONE
+    const float bW = mRect.W();
+    const float bH = mRect.H();
     return (mRoot && mRoot->macWindow)
       ? mRoot->macWindow->contentRectToScreen(cl, ct, bW, bH)
       : RECT{};
@@ -392,6 +474,9 @@ private:
 
   void _openPicker()
   {
+    if (!_canOpenPicker())
+      return;
+
 #if GLINT_PLATFORM_IOS
     if (mPickerOpen)
       return;
@@ -407,6 +492,8 @@ private:
       mMinute,
       popupAnchor,
       [this](int year, int month, int day, int hour, int minute) {
+        if (!_canMutate())
+          return;
         setDateTime(year, month, day, hour, minute);
         if (onChange) onChange(mYear, mMonth, mDay, mHour, mMinute);
       },
@@ -417,6 +504,23 @@ private:
         setDirty(false);
       });
     return;
+#elif GLINT_PLATFORM_MAC
+    mPickerOpen = true;
+    const RECT anchor = _anchorScreenRect();
+
+    auto onChanged = [this](int year, int month, int day, int hour, int minute)
+    {
+      if (!_canMutate())
+        return;
+      setDateTime(year, month, day, hour, minute);
+      if (onChange) onChange(mYear, mMonth, mDay, mHour, mMinute);
+    };
+    auto onClosed = [this]() { mPickerOpen = false; };
+
+    _sharedWindow()->reopen(mYear, mMonth, mDay, mHour, mMinute,
+                            anchor, onChanged, onClosed,
+                            mRoot ? &mRoot->mCanvas : nullptr);
+    return;
 #else
     return;
 #endif
@@ -426,12 +530,18 @@ private:
   {
 #if GLINT_PLATFORM_IOS
     glint_platform::hideDateTimeLocalPicker(mPlatformPicker_);
+#elif GLINT_PLATFORM_MAC
+    if (mPickerOpen && _sharedWindow())
+      _sharedWindow()->hide();
 #endif
     mPickerOpen = false;
   }
 
   void _stepField(int field, int delta)
   {
+    if (!_canMutate())
+      return;
+
     if (!mHasValue)
       mHasValue = true;
     mTypedStr.clear();
@@ -470,6 +580,9 @@ private:
 
   void _handleDigit(char ch)
   {
+    if (!_canMutate())
+      return;
+
     if (!mHasValue)
       mHasValue = true;
     const int digit = ch - '0';
