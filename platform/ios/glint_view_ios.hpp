@@ -80,6 +80,7 @@ public:
   bool _handleTextInsert(const std::string& utf8);
   bool _handleReturnKey();
   bool _handleBackspace();
+  void _resetTouchGestureState();
 
   bool _metalEnabled() const { return mActiveBackend == glint_backend::Metal; }
 
@@ -106,4 +107,10 @@ private:
   std::atomic<bool> mFramePending{false};
   bool mRedrawRequested = false;
   bool mLastTouchTargetWantsKeyboard = false;
+  bool mTouchPendingGesture = false;
+  bool mTouchMouseDownDispatched = false;
+  bool mTouchScrollActive = false;
+  float mTouchStartX = 0.f;
+  float mTouchStartY = 0.f;
+  uint64_t mTouchScrollTargetId = 0;
 };

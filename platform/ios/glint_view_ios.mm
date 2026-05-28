@@ -122,6 +122,60 @@ bool glint_hit_keeps_keyboard_focus(const glint_element* hit, const glint_elemen
   return false;
 }
 
+constexpr float glint_ios_touch_scroll_slop = 8.f;
+
+struct glint_scroll_axes
+{
+  bool x = false;
+  bool y = false;
+};
+
+glint_scroll_axes glint_scroll_axes_for_node(const glint_element* node)
+{
+  if (!node)
+    return {};
+
+  const float sbW = node->computedStyle.scrollbarWidth;
+  const bool hasSV = node->mScrollbarV && node->mScrollbarV->style.display != "none";
+  const bool hasSH = node->mScrollbarH && node->mScrollbarH->style.display != "none";
+  const float viewW = node->GetPaintRECT().W() - (hasSV ? sbW : 0.f);
+  const float viewH = node->GetPaintRECT().H() - (hasSH ? sbW : 0.f);
+
+  glint_scroll_axes axes;
+  axes.x = viewW > 0.f
+        && (node->computedStyle.overflowX == "scroll" || node->computedStyle.overflowX == "auto")
+        && node->mScrollWidth > viewW + 0.5f;
+  axes.y = viewH > 0.f
+        && (node->computedStyle.overflowY == "scroll" || node->computedStyle.overflowY == "auto")
+        && node->mScrollHeight > viewH + 0.5f;
+  return axes;
+}
+
+glint_element* glint_find_touch_scroll_target(glint_element* hit)
+{
+  for (glint_element* node = hit; node; node = node->mParent)
+  {
+    const glint_scroll_axes axes = glint_scroll_axes_for_node(node);
+    if (axes.x || axes.y)
+      return node;
+  }
+  return nullptr;
+}
+
+bool glint_should_begin_touch_scroll(const glint_scroll_axes& axes, float totalDx, float totalDy)
+{
+  const float absDx = std::fabs(totalDx);
+  const float absDy = std::fabs(totalDy);
+
+  if (axes.x && axes.y)
+    return absDx > 0.f || absDy > 0.f;
+  if (axes.y)
+    return absDy >= absDx;
+  if (axes.x)
+    return absDx >= absDy;
+  return false;
+}
+
 bool glint_inputmode_is_none(std::string_view inputmode)
 {
   return inputmode == "none";
@@ -5177,6 +5231,14 @@ bool glint_view_ios::_handleBackspace()
   return consumed;
 }
 
+void glint_view_ios::_resetTouchGestureState()
+{
+  mTouchPendingGesture = false;
+  mTouchMouseDownDispatched = false;
+  mTouchScrollActive = false;
+  mTouchScrollTargetId = 0;
+}
+
 void glint_view_ios::_handleTouchDown(float x, float y)
 {
   if (!mDocument)
@@ -5188,6 +5250,7 @@ void glint_view_ios::_handleTouchDown(float x, float y)
   const glint_element* hit = mDocument->mCanvas.HitTest(x, y);
   mLastTouchTargetWantsKeyboard = glint_hit_targets_keyboard(hit);
   glint_element* keyboardTarget = glint_keyboard_target_from_hit(hit);
+  glint_element* scrollTarget = glint_find_touch_scroll_target(const_cast<glint_element*>(hit));
 
   if (const glint_element* focused = mDocument->getFocusedNode(); glint_node_wants_keyboard(focused))
   {
@@ -5201,9 +5264,14 @@ void glint_view_ios::_handleTouchDown(float x, float y)
     _syncKeyboardFocus();
   }
 
+  mTouchPendingGesture = true;
+  mTouchMouseDownDispatched = false;
+  mTouchScrollActive = false;
+  mTouchStartX = x;
+  mTouchStartY = y;
   mPrevX = x;
   mPrevY = y;
-  mDocument->OnMouseDown(x, y, glint_touch_mod(true));
+  mTouchScrollTargetId = scrollTarget ? scrollTarget->mId : 0;
   _syncKeyboardFocus();
   requestRedraw();
 }
@@ -5218,8 +5286,42 @@ void glint_view_ios::_handleTouchMove(float x, float y)
 
   const float dx = x - mPrevX;
   const float dy = y - mPrevY;
+  const float totalDx = x - mTouchStartX;
+  const float totalDy = y - mTouchStartY;
+
+  if (mTouchPendingGesture)
+  {
+    if (std::hypot(totalDx, totalDy) < glint_ios_touch_scroll_slop)
+      return;
+
+    mTouchPendingGesture = false;
+
+    glint_element* scrollTarget = mTouchScrollTargetId ? mDocument->getNodeById(mTouchScrollTargetId) : nullptr;
+    const glint_scroll_axes axes = glint_scroll_axes_for_node(scrollTarget);
+    if (scrollTarget && glint_should_begin_touch_scroll(axes, totalDx, totalDy))
+      mTouchScrollActive = true;
+    else
+      mDocument->OnMouseDown(mTouchStartX, mTouchStartY, glint_touch_mod(true));
+
+    mTouchMouseDownDispatched = !mTouchScrollActive;
+  }
+
+  if (mTouchScrollActive)
+  {
+    if (glint_element* scrollTarget = mTouchScrollTargetId ? mDocument->getNodeById(mTouchScrollTargetId) : nullptr)
+      scrollTarget->scrollTo(scrollTarget->mScrollLeft - dx, scrollTarget->mScrollTop - dy);
+    mPrevX = x;
+    mPrevY = y;
+    requestRedraw();
+    return;
+  }
+
   mPrevX = x;
   mPrevY = y;
+
+  if (!mTouchMouseDownDispatched)
+    return;
+
   mDocument->OnMouseDrag(x, y, dx, dy, glint_touch_mod(true));
   requestRedraw();
 }
@@ -5232,7 +5334,17 @@ void glint_view_ios::_handleTouchUp(float x, float y)
   if (mViewHandle)
     glint_set_last_interaction((__bridge UIView*) mViewHandle, CGPointMake(x, y));
 
-  mDocument->OnMouseUp(x, y, glint_touch_mod(false));
+  if (mTouchPendingGesture)
+  {
+    mDocument->OnMouseDown(x, y, glint_touch_mod(true));
+    mDocument->OnMouseUp(x, y, glint_touch_mod(false));
+  }
+  else if (mTouchMouseDownDispatched)
+  {
+    mDocument->OnMouseUp(x, y, glint_touch_mod(false));
+  }
+
+  _resetTouchGestureState();
   if (!mLastTouchTargetWantsKeyboard && _focusedNodeWantsKeyboard())
     mDocument->SetFocus(nullptr);
   _syncKeyboardFocus();
@@ -5244,6 +5356,7 @@ void glint_view_ios::_handleTouchCancel()
   if (!mDocument)
     return;
 
+  _resetTouchGestureState();
   mDocument->OnMouseOut();
   if (!mLastTouchTargetWantsKeyboard && _focusedNodeWantsKeyboard())
     mDocument->SetFocus(nullptr);
