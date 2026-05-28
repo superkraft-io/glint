@@ -12,6 +12,7 @@
 #include "../glint_view_base.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 
 class glint_view_ios final : public glint_view_base
@@ -80,6 +81,7 @@ public:
   bool _handleTextInsert(const std::string& utf8);
   bool _handleReturnKey();
   bool _handleBackspace();
+  void _resetTouchGestureState();
 
   bool _metalEnabled() const { return mActiveBackend == glint_backend::Metal; }
 
@@ -106,4 +108,11 @@ private:
   std::atomic<bool> mFramePending{false};
   bool mRedrawRequested = false;
   bool mLastTouchTargetWantsKeyboard = false;
+  bool mTouchPendingGesture = false;
+  bool mTouchMouseDownDispatched = false;
+  bool mTouchScrollActive = false;
+  uint8_t mTouchScrollAxis = 0;
+  float mTouchStartX = 0.f;
+  float mTouchStartY = 0.f;
+  uint64_t mTouchScrollTargetId = 0;
 };

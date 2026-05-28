@@ -2050,8 +2050,9 @@ public:
         const float maxY  = std::max(0.f, node->mScrollHeight - viewH);
         if (maxY > 0.f)
         {
-          node->mScrollTop = std::max(0.f, std::min(node->mScrollTop + deltaY, maxY));
-          consumed = true;
+          const float prevTop = node->mScrollTop;
+          node->scrollTo(node->mScrollLeft, node->mScrollTop + deltaY);
+          consumed = std::fabs(node->mScrollTop - prevTop) > 0.5f;
         }
       }
 
@@ -2064,19 +2065,14 @@ public:
         const float maxX  = std::max(0.f, node->mScrollWidth - viewW);
         if (maxX > 0.f)
         {
-          node->mScrollLeft = std::max(0.f, std::min(node->mScrollLeft + deltaX, maxX));
-          consumed = true;
+          const float prevLeft = node->mScrollLeft;
+          node->scrollTo(node->mScrollLeft + deltaX, node->mScrollTop);
+          consumed = consumed || std::fabs(node->mScrollLeft - prevLeft) > 0.5f;
         }
       }
 
       if (consumed)
       {
-        // Scroll changes mScrollTop/mScrollLeft; the scrollbar thumb position
-        // is resolved during Layout(), so we must mark the document
-        // layout-dirty (not just paint-dirty) for the thumb to track. This
-        // runs at input rate, not frame rate, so it's cheap.
-        node->_refreshRootHoverFromPointer();
-        node->setDirty(false);
         break;
       }
 
