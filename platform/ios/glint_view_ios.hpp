@@ -12,6 +12,7 @@
 #include "../glint_view_base.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 
 class glint_view_ios final : public glint_view_base
@@ -110,6 +111,7 @@ private:
   bool mTouchPendingGesture = false;
   bool mTouchMouseDownDispatched = false;
   bool mTouchScrollActive = false;
+  uint8_t mTouchScrollAxis = 0;
   float mTouchStartX = 0.f;
   float mTouchStartY = 0.f;
   uint64_t mTouchScrollTargetId = 0;
