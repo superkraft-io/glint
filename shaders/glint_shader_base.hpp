@@ -8,7 +8,7 @@
  * Unlike the old component-based approach, shaders are NOT scene-graph nodes.
  * They attach to a glint_element via:
  *
- *   comp->style.backdropFilter = "shader(glass, liquid_glass)";   // backdrop shader
+ *   comp->style.backdropFilter = "shader(glass, wave)";   // animated backdrop shader
  *   comp->style.filter         = "shader(vign, vignette)";        // procedural overlay
  *
  *   comp->shaders["glass"]->params["strength"] = 20.f;
@@ -64,9 +64,9 @@ public:
 
   /** Named parameters.  Set before or between draw calls.
    *
-   *    comp->shaders["glass"]->params["strength"] = 20.f;
-   *    comp->shaders["glass"]->params["tint"]     = glint_color(128, 0, 200, 255);
-   *    comp->shaders["glass"]->params["dir"]      = SkV2{1.f, 0.f};
+  *    comp->shaders["glass"]->params["strength"] = 20.f;
+  *    comp->shaders["glass"]->params["tint"]     = glint_color(128, 0, 200, 255);
+  *    comp->shaders["glass"]->params["dir"]      = SkV2{1.f, 0.f};
    */
   std::map<std::string, sk_shader_param> params;
 
