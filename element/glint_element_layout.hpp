@@ -662,6 +662,62 @@
     return h;
   }
 
+  static bool _hasAutoAbsoluteWidth(const glint_element& c)
+  {
+    const auto& raw = c.computedStyle.width.raw;
+    return raw.empty() || raw == "auto";
+  }
+
+  static bool _hasAutoAbsoluteHeight(const glint_element& c)
+  {
+    const auto& raw = c.computedStyle.height.raw;
+    return raw.empty() || raw == "auto";
+  }
+
+  static float _clampWidthToStyle(const glint_element& c, float w, float parentW)
+  {
+    const auto& mnwr = c.computedStyle.minWidth.raw;
+    const auto& mxwr = c.computedStyle.maxWidth.raw;
+    if (!mnwr.empty()) w = std::max(w, c.computedStyle.minWidth.resolve(parentW));
+    if (!mxwr.empty()) w = std::min(w, c.computedStyle.maxWidth.resolve(parentW));
+    return w;
+  }
+
+  static float _clampHeightToStyle(const glint_element& c, float h, float parentH)
+  {
+    const auto& mnhr = c.computedStyle.minHeight.raw;
+    const auto& mxhr = c.computedStyle.maxHeight.raw;
+    if (!mnhr.empty()) h = std::max(h, c.computedStyle.minHeight.resolve(parentH));
+    if (!mxhr.empty()) h = std::min(h, c.computedStyle.maxHeight.resolve(parentH));
+    return h;
+  }
+
+  static float _absoluteUsedW(const glint_element& c, float cbW)
+  {
+    if (_hasAutoAbsoluteWidth(c)
+        && !c.computedStyle.left.raw.empty()
+        && !c.computedStyle.right.raw.empty())
+    {
+      const float insetL = c.computedStyle.left.resolve(cbW);
+      const float insetR = c.computedStyle.right.resolve(cbW);
+      return _clampWidthToStyle(c, std::max(0.f, cbW - insetL - insetR), cbW);
+    }
+    return std::max(0.f, childPrefW(c, cbW));
+  }
+
+  static float _absoluteUsedH(const glint_element& c, float cbH, float usedW)
+  {
+    if (_hasAutoAbsoluteHeight(c)
+        && !c.computedStyle.top.raw.empty()
+        && !c.computedStyle.bottom.raw.empty())
+    {
+      const float insetT = c.computedStyle.top.resolve(cbH);
+      const float insetB = c.computedStyle.bottom.resolve(cbH);
+      return _clampHeightToStyle(c, std::max(0.f, cbH - insetT - insetB), cbH);
+    }
+    return std::max(0.f, childPrefH(c, cbH, usedW));
+  }
+
   // Preferred child width: explicit style.width if set, else intrinsic from
   // children (recursive), else preferredW() virtual, else last-known mRect.W().
   //
@@ -863,8 +919,8 @@
       if (child.get() == mScrollbarV || child.get() == mScrollbarH || child.get() == mScrollCorner) continue;
       const glint_rect cb  = _containingBlockContent(child.get());
       const float cbW = cb.W(), cbH = cb.H();
-      const float w = std::max(0.f, childPrefW(*child, cbW));
-      const float h = std::max(0.f, childPrefH(*child, cbH, cbW));
+      const float w = _absoluteUsedW(*child, cbW);
+      const float h = _absoluteUsedH(*child, cbH, w);
       // X: left → right → static-position (Chrome flex behaviour)
       float l;
       if      (!child->computedStyle.left.raw.empty())  l = cb.L + child->computedStyle.left.resolve(cbW);
@@ -1610,8 +1666,8 @@
       if (child->computedStyle.display == "none" || child->computedStyle.position != "absolute") continue;
       const glint_rect cb  = _containingBlockContent(child);
       const float cbW = cb.W(), cbH = cb.H();
-      const float cw = std::max(0.f, childPrefW(*child, cbW));
-      const float ch = std::max(0.f, childPrefH(*child, cbH, cbW));
+      const float cw = _absoluteUsedW(*child, cbW);
+      const float ch = _absoluteUsedH(*child, cbH, cw);
       float l, t;
       if      (!child->computedStyle.left.raw.empty())   l = cb.L + child->computedStyle.left.resolve(cbW);
       else if (!child->computedStyle.right.raw.empty())  l = cb.L + cbW - child->computedStyle.right.resolve(cbW) - cw;
@@ -1736,8 +1792,8 @@
       if (child->computedStyle.display == "none" || child->computedStyle.position != "absolute") continue;
       const glint_rect cb  = _containingBlockContent(child);
       const float cbW = cb.W(), cbH = cb.H();
-      const float cw = std::max(0.f, childPrefW(*child, cbW));
-      const float ch = std::max(0.f, childPrefH(*child, cbH, cbW));
+      const float cw = _absoluteUsedW(*child, cbW);
+      const float ch = _absoluteUsedH(*child, cbH, cw);
       float l, t;
       if      (!child->computedStyle.left.raw.empty())   l = cb.L + child->computedStyle.left.resolve(cbW);
       else if (!child->computedStyle.right.raw.empty())  l = cb.L + cbW - child->computedStyle.right.resolve(cbW) - cw;
@@ -1785,8 +1841,8 @@
         // position:absolute — resolve against nearest positioned ancestor (containing block).
         const glint_rect cb  = _containingBlockContent(child.get());
         const float cbW = cb.W(), cbH = cb.H();
-        const float w   = std::max(0.f, childPrefW(*child, cbW));
-        const float h   = std::max(0.f, childPrefH(*child, cbH, cbW));
+        const float w   = _absoluteUsedW(*child, cbW);
+        const float h   = _absoluteUsedH(*child, cbH, w);
         // X: left → right → static-position (Chrome flex behaviour)
         float l;
         if      (!child->computedStyle.left.raw.empty())  l = cb.L + child->computedStyle.left.resolve(cbW);
