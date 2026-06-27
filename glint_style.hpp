@@ -38,6 +38,286 @@
 
 using namespace glint_graphics;
 
+namespace glint_style_detail {
+
+enum class calc_dimension
+{
+  number,
+  length,
+};
+
+struct calc_value
+{
+  float          value = 0.f;
+  calc_dimension dimension = calc_dimension::number;
+  bool           valid = false;
+
+  static calc_value number(float v)
+  {
+    return { v, calc_dimension::number, true };
+  }
+
+  static calc_value length(float v)
+  {
+    return { v, calc_dimension::length, true };
+  }
+
+  static calc_value invalid()
+  {
+    return {};
+  }
+};
+
+class calc_parser
+{
+public:
+  calc_parser(const std::string& text, float parentSize)
+    : mText(text)
+    , mParentSize(parentSize)
+  {
+  }
+
+  calc_value parse()
+  {
+    auto value = parseSum();
+    skipSpaces();
+    if (!value.valid || mPos != mText.size())
+      return calc_value::invalid();
+    return value;
+  }
+
+private:
+  void skipSpaces()
+  {
+    while (mPos < mText.size() && std::isspace(static_cast<unsigned char>(mText[mPos])))
+      ++mPos;
+  }
+
+  bool consume(char c)
+  {
+    skipSpaces();
+    if (mPos < mText.size() && mText[mPos] == c)
+    {
+      ++mPos;
+      return true;
+    }
+    return false;
+  }
+
+  bool consumeWordInsensitive(const char* word)
+  {
+    skipSpaces();
+
+    size_t probe = mPos;
+    for (size_t i = 0; word[i] != '\0'; ++i, ++probe)
+    {
+      if (probe >= mText.size())
+        return false;
+      if (std::tolower(static_cast<unsigned char>(mText[probe]))
+          != std::tolower(static_cast<unsigned char>(word[i])))
+      {
+        return false;
+      }
+    }
+
+    mPos = probe;
+    return true;
+  }
+
+  calc_value parseSum()
+  {
+    auto lhs = parseProduct();
+    if (!lhs.valid) return lhs;
+
+    while (true)
+    {
+      skipSpaces();
+      if (mPos >= mText.size())
+        return lhs;
+
+      const char op = mText[mPos];
+      if (op != '+' && op != '-')
+        return lhs;
+
+      ++mPos;
+      auto rhs = parseProduct();
+      if (!rhs.valid || lhs.dimension != rhs.dimension)
+        return calc_value::invalid();
+
+      lhs.value = (op == '+') ? (lhs.value + rhs.value) : (lhs.value - rhs.value);
+    }
+  }
+
+  calc_value parseProduct()
+  {
+    auto lhs = parseUnary();
+    if (!lhs.valid) return lhs;
+
+    while (true)
+    {
+      skipSpaces();
+      if (mPos >= mText.size())
+        return lhs;
+
+      const char op = mText[mPos];
+      if (op != '*' && op != '/')
+        return lhs;
+
+      ++mPos;
+      auto rhs = parseUnary();
+      if (!rhs.valid)
+        return calc_value::invalid();
+
+      if (op == '*')
+      {
+        if (lhs.dimension == calc_dimension::number && rhs.dimension == calc_dimension::number)
+        {
+          lhs.value *= rhs.value;
+          lhs.dimension = calc_dimension::number;
+        }
+        else if (lhs.dimension == calc_dimension::length && rhs.dimension == calc_dimension::number)
+        {
+          lhs.value *= rhs.value;
+          lhs.dimension = calc_dimension::length;
+        }
+        else if (lhs.dimension == calc_dimension::number && rhs.dimension == calc_dimension::length)
+        {
+          lhs.value *= rhs.value;
+          lhs.dimension = calc_dimension::length;
+        }
+        else
+        {
+          return calc_value::invalid();
+        }
+      }
+      else
+      {
+        if (std::abs(rhs.value) <= 1.0e-12f)
+          return calc_value::invalid();
+
+        if (lhs.dimension == calc_dimension::number && rhs.dimension == calc_dimension::number)
+        {
+          lhs.value /= rhs.value;
+          lhs.dimension = calc_dimension::number;
+        }
+        else if (lhs.dimension == calc_dimension::length && rhs.dimension == calc_dimension::number)
+        {
+          lhs.value /= rhs.value;
+          lhs.dimension = calc_dimension::length;
+        }
+        else
+        {
+          return calc_value::invalid();
+        }
+      }
+    }
+  }
+
+  calc_value parseUnary()
+  {
+    skipSpaces();
+    if (mPos >= mText.size())
+      return calc_value::invalid();
+
+    if (mText[mPos] == '+')
+    {
+      ++mPos;
+      return parseUnary();
+    }
+
+    if (mText[mPos] == '-')
+    {
+      ++mPos;
+      auto value = parseUnary();
+      if (!value.valid)
+        return value;
+      value.value = -value.value;
+      return value;
+    }
+
+    return parsePrimary();
+  }
+
+  calc_value parsePrimary()
+  {
+    skipSpaces();
+    if (mPos >= mText.size())
+      return calc_value::invalid();
+
+    if (consume('('))
+    {
+      auto value = parseSum();
+      if (!value.valid || !consume(')'))
+        return calc_value::invalid();
+      return value;
+    }
+
+    if (consumeWordInsensitive("calc"))
+    {
+      if (!consume('('))
+        return calc_value::invalid();
+      auto value = parseSum();
+      if (!value.valid || !consume(')'))
+        return calc_value::invalid();
+      return value;
+    }
+
+    return parseNumberToken();
+  }
+
+  calc_value parseNumberToken()
+  {
+    skipSpaces();
+    if (mPos >= mText.size())
+      return calc_value::invalid();
+
+    const char first = mText[mPos];
+    if (!std::isdigit(static_cast<unsigned char>(first)) && first != '.')
+      return calc_value::invalid();
+
+    const char* begin = mText.c_str() + mPos;
+    char* end = nullptr;
+    const double numeric = std::strtod(begin, &end);
+    if (end == begin)
+      return calc_value::invalid();
+
+    mPos = static_cast<size_t>(end - mText.c_str());
+    skipSpaces();
+
+    if (mPos < mText.size() && mText[mPos] == '%')
+    {
+      ++mPos;
+      return calc_value::length(static_cast<float>(numeric * mParentSize / 100.0));
+    }
+
+    if (mPos + 1 < mText.size()
+        && std::tolower(static_cast<unsigned char>(mText[mPos])) == 'p'
+        && std::tolower(static_cast<unsigned char>(mText[mPos + 1])) == 'x')
+    {
+      mPos += 2;
+      return calc_value::length(static_cast<float>(numeric));
+    }
+
+    return calc_value::number(static_cast<float>(numeric));
+  }
+
+  const std::string& mText;
+  float              mParentSize = 0.f;
+  size_t             mPos = 0;
+};
+
+inline bool tryResolveLengthExpression(const std::string& raw, float parentSize, float& outValue)
+{
+  calc_parser parser(raw, parentSize);
+  const auto value = parser.parse();
+  if (!value.valid)
+    return false;
+  outValue = value.value;
+  return true;
+}
+
+} // namespace glint_style_detail
+
 // ── glint_length ───────────────────────────────────────────────────────────────────────────────
 // A CSS-inspired length type. Accepts floats (pixels) or strings ("50%", "12px").
 //   _c.style.width  = 82.f;     // pixels — existing code unchanged
@@ -69,20 +349,17 @@ struct glint_length
   // Resolve to pixels given the parent dimension on the same axis.
   // "50%"  → parentSize * 0.5
   // "12px" or "12" → 12.f
+  // "calc(100% - 40px)" → parentSize - 40.f
   // "auto" → 0.f (reserved for future flex-like layout)
   // Invalid / unknown strings (e.g. "fill") → 0.f (treated as unset)
   float resolve(float parentSize) const
   {
     if (raw.empty() || raw == "0" || raw == "auto") return 0.f;
-    // Guard against non-numeric strings — avoids std::stof throwing on e.g. "fill" or "-px"
-    const char fc = raw.front();
-    const char sc = raw.size() > 1 ? raw[1] : 0;
-    const bool startsNumeric = std::isdigit(static_cast<unsigned char>(fc)) || fc == '.'
-        || ((fc == '-' || fc == '+') && (std::isdigit(static_cast<unsigned char>(sc)) || sc == '.'));
-    if (!startsNumeric) return 0.f;
-    if (raw.back() == '%')
-      return std::stof(raw) * parentSize / 100.f;
-    return std::stof(raw); // stof stops at non-numeric suffix, so "12px" → 12.f
+
+    float resolved = 0.f;
+    if (!glint_style_detail::tryResolveLengthExpression(raw, parentSize, resolved))
+      return 0.f;
+    return resolved;
   }
 
   // Allow reading back as float (resolve with no parent — percentages → 0).
@@ -636,9 +913,11 @@ struct sk_side_proxy
   // resolve against the containing block's inline size / width).
   // For plain px values (or when set from float/int), returns the stored value.
   float resolve(float containerWidth) const {
-    if (_rawp && !_rawp->empty() && _rawp->back() == '%')
+    if (_rawp && !_rawp->empty())
     {
-      try { return std::stof(*_rawp) * containerWidth / 100.f; } catch (...) {}
+      float resolved = 0.f;
+      if (glint_style_detail::tryResolveLengthExpression(*_rawp, containerWidth, resolved))
+        return resolved;
     }
     return _p ? *_p : 0.f;
   }

@@ -32,13 +32,22 @@ const libraryNames = [
   'zlib'
 ];
 
+const glintMacLibraryNames = [
+  'skia',
+  'svg',
+  'skshaper',
+  'skparagraph',
+  'skunicode_core',
+  'skunicode_icu'
+];
+
 const VALID_BACKENDS = ['cpu', 'opengl', 'd3d12', 'dawn', 'metal'];
 
 function printUsage() {
   console.log(`
 Usage:
   node third_party/glint/scripts/init_skia.mjs --prebuilt [--backend <backend>]
-  node third_party/glint/scripts/init_skia.mjs --source  [--config Release|Debug|Both] [--backend <backend>]
+  node third_party/glint/scripts/init_skia.mjs --source  [--config Release|Debug|Both] [--backend <backend>] [--arch host|arm64|x64|universal]
 
 --prebuilt   Download prebuilt Skia libraries (fast, recommended for getting started)
 --source     Build Skia from source (slower, required for custom configurations)
@@ -52,6 +61,8 @@ Backends (default: cpu):
 
 Options:
   --skip-sync  Skip 'python tools/git-sync-deps' (use if deps are already present)
+  --arch       Target architecture(s). Default: host. On macOS, use 'universal'
+               to build both arm64 and x64 libs and lipo them into mac/universal/.
 
 Output goes to: third_party/skia/
 Generates:       third_party/glint/glint_render_backend.h
@@ -73,7 +84,8 @@ function parseArgs(argv) {
     prebuilt: false,
     config: 'Release',
     backend: 'cpu',
-    skipSync: false
+    skipSync: false,
+    arch: 'host'
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -119,6 +131,16 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (arg === '--arch' || arg === '-arch') {
+      const next = argv[index + 1];
+      if (!next) {
+        fail('Missing value for --arch. Expected host, arm64, x64, or universal.');
+      }
+      options.arch = next.toLowerCase();
+      index += 1;
+      continue;
+    }
+
     fail(`Unknown argument: ${arg}`);
   }
 
@@ -128,6 +150,10 @@ function parseArgs(argv) {
 
   if (!VALID_BACKENDS.includes(options.backend)) {
     fail(`Invalid backend: ${options.backend}. Expected one of: ${VALID_BACKENDS.join(', ')}.`);
+  }
+
+  if (!['host', 'arm64', 'x64', 'universal'].includes(options.arch)) {
+    fail(`Invalid arch: ${options.arch}. Expected host, arm64, x64, or universal.`);
   }
 
   return options;
@@ -190,6 +216,39 @@ function findCommand(commandNames) {
           ? path.dirname(resolvedCommand)
           : null,
         version: (result.stdout || result.stderr || '').trim().split(/\r?\n/)[0]
+      };
+    }
+  }
+
+  return null;
+}
+
+function resolveLipoTool() {
+  if (process.platform !== 'darwin') {
+    return null;
+  }
+
+  const defaultLipo = '/usr/bin/lipo';
+  if (fs.existsSync(defaultLipo)) {
+    return {
+      name: defaultLipo,
+      binDir: path.dirname(defaultLipo),
+      version: defaultLipo
+    };
+  }
+
+  const xcrunResult = spawnSync('xcrun', ['--find', 'lipo'], {
+    stdio: 'pipe',
+    encoding: 'utf8'
+  });
+
+  if (xcrunResult.status === 0) {
+    const resolvedPath = (xcrunResult.stdout || '').trim();
+    if (resolvedPath) {
+      return {
+        name: resolvedPath,
+        binDir: path.dirname(resolvedPath),
+        version: resolvedPath
       };
     }
   }
@@ -353,15 +412,25 @@ function buildBackendGnFlags(backend) {
   }
 }
 
-function resolveArch() {
+function resolveHostArch() {
   const arch = os.arch();
   if (arch === 'arm64') return 'arm64';
   return 'x64';
 }
 
-function buildGnArgs(configName, backend) {
+function resolveRequestedArchs(archOption) {
+  if (archOption === 'host') return [resolveHostArch()];
+  if (archOption === 'universal') {
+    if (process.platform !== 'darwin') {
+      fail('--arch universal is only supported on macOS.');
+    }
+    return ['arm64', 'x64'];
+  }
+  return [archOption];
+}
+
+function buildGnArgs(configName, backend, arch) {
   const isDebug = configName === 'Debug';
-  const arch = resolveArch();
 
   const common = `is_debug = ${isDebug ? 'true' : 'false'}
 is_official_build = ${isDebug ? 'false' : 'true'}
@@ -429,6 +498,31 @@ function copyMacLibraries(outDir, configName, arch) {
     const srcLib = path.join(outDir, `lib${libraryName}.a`);
     if (fs.existsSync(srcLib)) {
       fs.copyFileSync(srcLib, path.join(libDst, `lib${libraryName}.a`));
+    }
+  }
+}
+
+function hasMacLibraries(configName, arch) {
+  return glintMacLibraryNames.every((libraryName) =>
+    fs.existsSync(path.join(depsDir, 'mac', arch, configName, `lib${libraryName}.a`))
+  );
+}
+
+function createUniversalMacLibraries(configs, lipoCommand) {
+  for (const configName of configs) {
+    const universalDst = path.join(depsDir, 'mac', 'universal', configName);
+    ensureDirectory(universalDst);
+
+    for (const libraryName of glintMacLibraryNames) {
+      const armLib = path.join(depsDir, 'mac', 'arm64', configName, `lib${libraryName}.a`);
+      const x64Lib = path.join(depsDir, 'mac', 'x64', configName, `lib${libraryName}.a`);
+      const universalLib = path.join(universalDst, `lib${libraryName}.a`);
+
+      if (!fs.existsSync(armLib) || !fs.existsSync(x64Lib)) {
+        fail(`Cannot create universal macOS Skia libs; missing ${libraryName} for ${configName}. Expected:\n  ${armLib}\n  ${x64Lib}`);
+      }
+
+      run(lipoCommand, ['-create', armLib, x64Lib, '-output', universalLib]);
     }
   }
 }
@@ -591,11 +685,16 @@ async function downloadPrebuilt(backend) {
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
+  const requestedArchs = resolveRequestedArchs(options.arch);
 
   if (options.prebuilt) {
     if (options.help) {
       printUsage();
       process.exit(0);
+    }
+
+    if (options.arch !== 'host') {
+      fail('Prebuilt mode only supports the host architecture. Use --source with --arch arm64, x64, or universal.');
     }
 
     writeRenderBackendHeader(options.backend);
@@ -613,6 +712,7 @@ function main() {
   }
 
   console.log(`Render backend: ${options.backend.toUpperCase()}`);
+  console.log(`Target architectures: ${requestedArchs.join(', ')}`);
 
   // Write the header immediately so CMake can configure even if the Skia build
   // fails or is interrupted later in this script.
@@ -713,7 +813,13 @@ function main() {
 
   const configs = options.config === 'Both' ? ['Release', 'Debug'] : [options.config];
   const gnExecutable = resolveGnExecutable(activeSkiaSrcDir);
-  const arch = resolveArch();
+  const lipo = process.platform === 'darwin' && requestedArchs.length > 1
+    ? resolveLipoTool()
+    : null;
+
+  if (process.platform === 'darwin' && requestedArchs.length > 1 && !lipo) {
+    fail('lipo not found. Install Xcode command line tools and retry.');
+  }
 
   // On Linux, the repo lives on the Windows NTFS filesystem (mounted via
   // WSL's 9P driver at /mnt/c/).  Heavy parallel writes to that path
@@ -724,33 +830,45 @@ function main() {
     ? '/var/tmp/skia-build-glint'
     : null;
 
-  for (const configName of configs) {
-    const outDir = process.platform === 'linux'
-      ? path.join(linuxNativeBuildBase, arch, configName)
-      : process.platform === 'darwin'
-        ? path.join(tmpDir, 'build', arch, configName)
-        : path.join(tmpDir, 'build', 'x64', configName);
-    ensureDirectory(outDir);
+  for (const arch of requestedArchs) {
+    for (const configName of configs) {
+      if (process.platform === 'darwin' && hasMacLibraries(configName, arch)) {
+        console.log(`Reusing existing Skia ${configName} libs for ${arch}.`);
+        continue;
+      }
 
-    console.log(`Generating GN build files for ${configName}...`);
-    run(gnExecutable, ['gen', outDir, `--args=${buildGnArgs(configName, options.backend)}`], { cwd: activeSkiaSrcDir, env });
+      const outDir = process.platform === 'linux'
+        ? path.join(linuxNativeBuildBase, arch, configName)
+        : process.platform === 'darwin'
+          ? path.join(tmpDir, 'build', arch, configName)
+          : path.join(tmpDir, 'build', 'x64', configName);
+      ensureDirectory(outDir);
 
-    console.log(`Building Skia ${configName} with ninja...`);
-    // On Linux (WSL) cap parallelism to reduce concurrent I/O.
-    // WSL2 kernel can produce transient I/O errors under very high
-    // parallel write load; -j4 keeps throughput reasonable while staying
-    // well below the failure threshold.
-    const ninjaJobArgs = process.platform === 'linux' ? ['-j4'] : [];
-    run(ninja.command, ['-C', outDir, ...ninjaJobArgs], { env });
+      console.log(`Generating GN build files for ${configName} (${arch})...`);
+      run(gnExecutable, ['gen', outDir, `--args=${buildGnArgs(configName, options.backend, arch)}`], { cwd: activeSkiaSrcDir, env });
 
-    console.log(`Copying ${configName} libs...`);
-    if (process.platform === 'darwin') {
-      copyMacLibraries(outDir, configName, arch);
-    } else if (process.platform === 'linux') {
-      copyLinuxLibraries(outDir, configName, arch);
-    } else {
-      copyLibraries(outDir, configName);
+      console.log(`Building Skia ${configName} (${arch}) with ninja...`);
+      // On Linux (WSL) cap parallelism to reduce concurrent I/O.
+      // WSL2 kernel can produce transient I/O errors under very high
+      // parallel write load; -j4 keeps throughput reasonable while staying
+      // well below the failure threshold.
+      const ninjaJobArgs = process.platform === 'linux' ? ['-j4'] : [];
+      run(ninja.command, ['-C', outDir, ...ninjaJobArgs], { env });
+
+      console.log(`Copying ${configName} libs (${arch})...`);
+      if (process.platform === 'darwin') {
+        copyMacLibraries(outDir, configName, arch);
+      } else if (process.platform === 'linux') {
+        copyLinuxLibraries(outDir, configName, arch);
+      } else {
+        copyLibraries(outDir, configName);
+      }
     }
+  }
+
+  if (process.platform === 'darwin' && requestedArchs.length > 1) {
+    console.log('Creating universal macOS libraries with lipo...');
+    createUniversalMacLibraries(configs, lipo.name);
   }
 
   console.log('Cleaning up tmp build directory...');

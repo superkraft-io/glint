@@ -71,7 +71,19 @@ else()
   set(_GLINT_SKIA_PLATFORM "win")
 endif()
 
-if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_OSX_ARCHITECTURES)
+  set(_GLINT_APPLE_ARCHS ${CMAKE_OSX_ARCHITECTURES})
+  list(FIND _GLINT_APPLE_ARCHS "arm64" _GLINT_HAS_ARM64)
+  list(FIND _GLINT_APPLE_ARCHS "x86_64" _GLINT_HAS_X86_64)
+
+  if(NOT _GLINT_HAS_ARM64 EQUAL -1 AND NOT _GLINT_HAS_X86_64 EQUAL -1)
+    set(_GLINT_SKIA_ARCH "universal")
+  elseif(NOT _GLINT_HAS_ARM64 EQUAL -1)
+    set(_GLINT_SKIA_ARCH "arm64")
+  else()
+    set(_GLINT_SKIA_ARCH "x64")
+  endif()
+elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR
    CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
   set(_GLINT_SKIA_ARCH "arm64")
 else()
@@ -83,6 +95,11 @@ set(_SKIA_LIB_ROOT "${GLINT_DEPS_DIR}/${_GLINT_SKIA_PLATFORM}/${_GLINT_SKIA_ARCH
 set(_SKIA_BIN_DIR "${GLINT_DEPS_DIR}/${_GLINT_SKIA_PLATFORM}/bin")
 set(_SKIA_DEBUG_LIB_DIR "${_SKIA_LIB_ROOT}/Debug")
 set(_SKIA_RELEASE_LIB_DIR "${_SKIA_LIB_ROOT}/Release")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND _GLINT_SKIA_ARCH STREQUAL "universal" AND NOT EXISTS "${_SKIA_LIB_ROOT}")
+  message(FATAL_ERROR
+    "Missing universal Skia libraries under ${_SKIA_LIB_ROOT}. Run node third_party/glint/scripts/init_skia.mjs --source --backend metal --arch universal ")
+endif()
 
 if(NOT EXISTS "${_SKIA_SRC_DIR}/include/core/SkCanvas.h")
   message(FATAL_ERROR
@@ -289,17 +306,9 @@ if(APPLE)
   add_library(glint::host_mac ALIAS glint_host_mac)
   set_target_properties(glint_host_mac PROPERTIES EXPORT_NAME host_mac)
   target_link_libraries(glint_host_mac INTERFACE glint::core glint_host_mac_support)
-  # The prebuilt libskia.a was compiled WITH SK_TRIVIAL_ABI=[[clang::trivial_abi]]
-  # in the Debug config but WITHOUT it in the Release config.  That annotation
-  # makes sk_sp<T> use register return on ARM64 (result in x0) instead of SRET
-  # (hidden output pointer in x8).  Every TU that calls a Skia function returning
-  # sk_sp<T> must see the same definition as the library it was linked against;
-  # a mismatch means the caller reads x0 while Skia wrote to x8 (or vice-versa),
-  # leaving the sk_sp holding a garbage pointer → crash at the first dereference.
-  target_compile_definitions(glint_host_mac INTERFACE
-    "$<$<CONFIG:Debug>:SK_TRIVIAL_ABI=[[clang::trivial_abi]]>")
-  target_compile_definitions(glint_host_mac_support PRIVATE
-    "$<$<CONFIG:Debug>:SK_TRIVIAL_ABI=[[clang::trivial_abi]]>")
+  # The vendored macOS Skia archives currently use the default sk_sp ABI.
+  # Do not force SK_TRIVIAL_ABI in consuming TUs or ARM64 callers will return
+  # sk_sp<T> in x0 while the library expects an SRET pointer in x8.
 
   foreach(_skia_lib skia svg skshaper skparagraph skunicode_core skunicode_icu)
     target_link_libraries(glint_host_mac INTERFACE

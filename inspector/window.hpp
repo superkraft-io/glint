@@ -3553,7 +3553,7 @@ function exportAbsoluteJSON() {
   }
 
   // -- Rendering -------------------------------------------------------------
-  void recreateSurface()
+  void recreateSurface() override
   {
 #if defined(_WIN32)
     if (mRenderer)
