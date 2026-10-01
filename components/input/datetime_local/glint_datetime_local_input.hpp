@@ -518,14 +518,20 @@ private:
     mPickerOpen = true;
     const RECT anchor = _anchorScreenRect();
 
-    auto onChanged = [this](int year, int month, int day, int hour, int minute)
+    // The picker calls these on its own thread: hop back to ours (skipped
+    // if this input was destroyed in the meantime).
+    auto post = ownerThreadPoster();
+    auto onChanged = [this, post](int year, int month, int day, int hour, int minute)
     {
-      if (!_canMutate())
-        return;
-      setDateTime(year, month, day, hour, minute);
-      if (onChange) onChange(mYear, mMonth, mDay, mHour, mMinute);
+      post([this, year, month, day, hour, minute]
+      {
+        if (!_canMutate())
+          return;
+        setDateTime(year, month, day, hour, minute);
+        if (onChange) onChange(mYear, mMonth, mDay, mHour, mMinute);
+      });
     };
-    auto onClosed = [this]() { mPickerOpen = false; };
+    auto onClosed = [this, post]() { post([this] { mPickerOpen = false; }); };
 
     _sharedWindow()->reopen(mYear, mMonth, mDay, mHour, mMinute,
                             anchor, onChanged, onClosed,

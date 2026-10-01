@@ -24,6 +24,7 @@
  */
 
 #include "../../../platform/glint_apple_platform.hpp"
+#include "../glint_picker_registry.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Windows implementation
@@ -66,35 +67,18 @@ public:
 
   // ── Static active-popup registry ─────────────────────────────────────────
   // Exactly one glint_datepicker_window may be "active" at a time.  When any
-  // instance is shown via reopen(), it registers itself here and installs a
-  // single capture-phase wheel listener on the document canvas that hides it.
+  // instance is shown it marks itself active; reopen() makes sure the document
+  // canvas carries the capture-phase wheel listener that hides it (see
+  // glint_picker_registry.hpp for the thread rules).
   // This means callers never need to manage wheel listeners themselves.
-  static void _registerActive(glint_datepicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_datepicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr); // clear any previous
-    sActiveInstance = w;
-    sDocCanvas      = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        /*useCapture=*/true);
-    }
+    glint_picker_registry<glint_datepicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_datepicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas      = nullptr;
+    glint_picker_registry<glint_datepicker_window>::clearActive(w);
   }
 
   // ── reopen ───────────────────────────────────────────────────────────────
@@ -106,6 +90,9 @@ public:
               std::function<void()>            onClosed,
               glint_element*                   docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_datepicker_window>::attachCanvas(docCanvas);
     {
       std::lock_guard<std::mutex> lk(mMtx);
       mYear              = year;
@@ -161,8 +148,10 @@ protected:
         y = mYear; m = mMonth; d = mDay;
         anchor     = mAnchorRect;
         docCanvas  = mDocCanvas;
-        mOnChange  = std::move(mPendingOnChange);
-        mOnClosed  = std::move(mPendingOnClosed);
+        // Copy, not move: two reopen() calls before this message is handled
+        // queue two REOPENs, and the second must not see moved-from callbacks.
+        mOnChange  = mPendingOnChange;
+        mOnClosed  = mPendingOnClosed;
       }
       _registerActive(this, docCanvas);
       _reposition(anchor);
@@ -236,11 +225,6 @@ protected:
   void afterRun() override { delete this; }
 
 private:
-  // ── Static registry storage ─────────────────────────────────────────────
-  static inline glint_datepicker_window* sActiveInstance  = nullptr;
-  static inline glint_element*           sDocCanvas       = nullptr;
-  static inline int                      sWheelListenerId = -1;
-
   std::mutex                       mMtx;
   int                              mYear = 2024, mMonth = 1, mDay = 1;
   RECT                             mAnchorRect      = { 100, 100, 114, 114 };
@@ -309,6 +293,9 @@ public:
               std::function<void()>            onClosed,
               glint_element*                   docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_datepicker_window>::attachCanvas(docCanvas);
     mYear       = year;
     mMonth      = month;
     mDay        = day;
@@ -392,36 +379,14 @@ protected:
   }
 
 private:
-  static inline glint_datepicker_window* sActiveInstance  = nullptr;
-  static inline glint_element*           sDocCanvas       = nullptr;
-  static inline int                      sWheelListenerId = -1;
-
-  static void _registerActive(glint_datepicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_datepicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr);
-    sActiveInstance = w;
-    sDocCanvas      = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        /*useCapture=*/true);
-    }
+    glint_picker_registry<glint_datepicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_datepicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas      = nullptr;
+    glint_picker_registry<glint_datepicker_window>::clearActive(w);
   }
 
   int                              mYear = 2024, mMonth = 1, mDay = 1;
@@ -473,8 +438,12 @@ public:
     return &sInstance;
   }
 
-  static void _registerActive(glint_datepicker_window*, glint_element*) {}
-  static void _unregisterActive(glint_datepicker_window*) {}
+  static void _registerActive(glint_datepicker_window*, glint_element*) {
+    glint_picker_registry<glint_datepicker_window>::setActive(w);
+  }
+  static void _unregisterActive(glint_datepicker_window*) {
+    glint_picker_registry<glint_datepicker_window>::clearActive(w);
+  }
 
   void reopen(int,
               int,
@@ -527,6 +496,9 @@ public:
               std::function<void()>            onClosed,
               glint_element*                   docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_datepicker_window>::attachCanvas(docCanvas);
     mYear       = year;
     mMonth      = month;
     mDay        = day;
@@ -609,37 +581,14 @@ protected:
   }
 
 private:
-  // ── Static registry storage ─────────────────────────────────────────────
-  static inline glint_datepicker_window* sActiveInstance  = nullptr;
-  static inline glint_element*           sDocCanvas       = nullptr;
-  static inline int                      sWheelListenerId = -1;
-
-  static void _registerActive(glint_datepicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_datepicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr);
-    sActiveInstance = w;
-    sDocCanvas      = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        /*useCapture=*/true);
-    }
+    glint_picker_registry<glint_datepicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_datepicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas      = nullptr;
+    glint_picker_registry<glint_datepicker_window>::clearActive(w);
   }
 
   int                              mYear = 2024, mMonth = 1, mDay = 1;

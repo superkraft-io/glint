@@ -509,16 +509,22 @@ private:
     mCalendarOpen = true;
     const RECT anchor = _anchorScreenRect();
 
-    auto onPicked = [this](int y, int m, int d)
+    // The picker calls these on its own thread: hop back to ours (skipped
+    // if this input was destroyed in the meantime).
+    auto post = ownerThreadPoster();
+    auto onPicked = [this, post](int y, int m, int d)
     {
-      if (!_canMutate())
-        return;
-      setDate(y, m, d);
-      mCalendarOpen = false;
-      if (mRoot) mRoot->SetFocus(this);
-      if (onChange) onChange(mYear, mMonth, mDay);
+      post([this, y, m, d]
+      {
+        if (!_canMutate())
+          return;
+        setDate(y, m, d);
+        mCalendarOpen = false;
+        if (mRoot) mRoot->SetFocus(this);
+        if (onChange) onChange(mYear, mMonth, mDay);
+      });
     };
-    auto onClosed = [this]() { mCalendarOpen = false; };
+    auto onClosed = [this, post]() { post([this] { mCalendarOpen = false; }); };
 
     _sharedWindow()->reopen(mYear, mMonth, mDay, anchor, onPicked, onClosed,
                             mRoot ? &mRoot->mCanvas : nullptr);

@@ -6,6 +6,7 @@
  */
 
 #include "../../../platform/glint_apple_platform.hpp"
+#include "../glint_picker_registry.hpp"
 
 #if defined(_WIN32) || defined(OS_WIN)
 
@@ -37,32 +38,14 @@ public:
     return w;
   }
 
-  static void _registerActive(glint_monthpicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_monthpicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr);
-    sActiveInstance = w;
-    sDocCanvas = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        true);
-    }
+    glint_picker_registry<glint_monthpicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_monthpicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas = nullptr;
+    glint_picker_registry<glint_monthpicker_window>::clearActive(w);
   }
 
   void reopen(int year,
@@ -72,6 +55,9 @@ public:
               std::function<void()> onClosed,
               glint_element* docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_monthpicker_window>::attachCanvas(docCanvas);
     {
       std::lock_guard<std::mutex> lk(mMtx);
       mYear = year;
@@ -123,8 +109,10 @@ protected:
         y = mYear; m = mMonth;
         anchor = mAnchorRect;
         docCanvas = mDocCanvas;
-        mOnChange = std::move(mPendingOnChange);
-        mOnClosed = std::move(mPendingOnClosed);
+        // Copy, not move: two reopen() calls before this message is handled
+        // queue two REOPENs, and the second must not see moved-from callbacks.
+        mOnChange = mPendingOnChange;
+        mOnClosed = mPendingOnClosed;
       }
       _registerActive(this, docCanvas);
       _reposition(anchor);
@@ -195,10 +183,6 @@ protected:
   void afterRun() override { delete this; }
 
 private:
-  static inline glint_monthpicker_window* sActiveInstance = nullptr;
-  static inline glint_element* sDocCanvas = nullptr;
-  static inline int sWheelListenerId = -1;
-
   std::mutex mMtx;
   int mYear = 2024;
   int mMonth = 1;
@@ -261,6 +245,9 @@ public:
               std::function<void()> onClosed,
               glint_element* docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_monthpicker_window>::attachCanvas(docCanvas);
     mYear = year;
     mMonth = month;
     mAnchorRect = anchorScreenRect;
@@ -343,36 +330,14 @@ protected:
   }
 
 private:
-  static inline glint_monthpicker_window* sActiveInstance = nullptr;
-  static inline glint_element* sDocCanvas = nullptr;
-  static inline int sWheelListenerId = -1;
-
-  static void _registerActive(glint_monthpicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_monthpicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr);
-    sActiveInstance = w;
-    sDocCanvas = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        true);
-    }
+    glint_picker_registry<glint_monthpicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_monthpicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas = nullptr;
+    glint_picker_registry<glint_monthpicker_window>::clearActive(w);
   }
 
   int mYear = 2024;
@@ -417,8 +382,12 @@ public:
     return &sInstance;
   }
 
-  static void _registerActive(glint_monthpicker_window*, glint_element*) {}
-  static void _unregisterActive(glint_monthpicker_window*) {}
+  static void _registerActive(glint_monthpicker_window*, glint_element*) {
+    glint_picker_registry<glint_monthpicker_window>::setActive(w);
+  }
+  static void _unregisterActive(glint_monthpicker_window*) {
+    glint_picker_registry<glint_monthpicker_window>::clearActive(w);
+  }
 
   void reopen(int,
               int,
@@ -467,6 +436,9 @@ public:
               std::function<void()> onClosed,
               glint_element* docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_monthpicker_window>::attachCanvas(docCanvas);
     mYear = year;
     mMonth = month;
     mAnchorRect = anchorScreenRect;
@@ -548,36 +520,14 @@ protected:
   }
 
 private:
-  static inline glint_monthpicker_window* sActiveInstance = nullptr;
-  static inline glint_element* sDocCanvas = nullptr;
-  static inline int sWheelListenerId = -1;
-
-  static void _registerActive(glint_monthpicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_monthpicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr);
-    sActiveInstance = w;
-    sDocCanvas = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        true);
-    }
+    glint_picker_registry<glint_monthpicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_monthpicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas = nullptr;
+    glint_picker_registry<glint_monthpicker_window>::clearActive(w);
   }
 
   int mYear = 2024;

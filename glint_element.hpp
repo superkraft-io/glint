@@ -54,6 +54,7 @@
 #include "include/effects/SkGradientShader.h"
 #include "include/effects/SkDashPathEffect.h"
 #include "shaders/glint_shader_registry.hpp"
+#include "utils/glint_task_queue.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -491,6 +492,14 @@ public:
    *  running listeners, since a listener may destroy the element (e.g. a
    *  "delete" button that removes its own row). */
   std::weak_ptr<void> lifeToken() const { return mLifeToken; }
+
+  /** Returns a callable, safe to invoke from any thread, that runs a task on
+   *  this element's owning (window) thread.  The task is skipped if this
+   *  element or its document is gone by the time it would run.  Create it on
+   *  the owning thread, e.g. when opening a popup window whose callbacks run
+   *  on the popup's own thread.  Without a document, tasks run inline.
+   *  Defined in glint_document.hpp. */
+  glint_owner_poster ownerThreadPoster() const;
 
 private:
   std::shared_ptr<char> mLifeToken = std::make_shared<char>(0);

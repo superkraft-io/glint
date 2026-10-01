@@ -1314,8 +1314,10 @@ private:
 
     case WM_LBUTTONUP:
     {
-      ::ReleaseCapture();
+      // Route first: ReleaseCapture sends WM_CAPTURECHANGED synchronously,
+      // which would otherwise cancel the press before this mouseup is seen.
       glint_win32_host::routeLeftButtonUp(self->mOwnRoot.get(), wp, lp, self->mDpr);
+      ::ReleaseCapture();
       glint_win32_host::invalidateWindow(hwnd);
       return 0;
     }
@@ -1342,8 +1344,10 @@ private:
 
     case WM_MBUTTONUP:
     {
-      ::ReleaseCapture();
+      // Route first: ReleaseCapture sends WM_CAPTURECHANGED synchronously,
+      // which would otherwise cancel the press before this mouseup is seen.
       glint_win32_host::routeMiddleButtonUp(self->mOwnRoot.get(), wp, lp, self->mDpr);
+      ::ReleaseCapture();
       glint_win32_host::invalidateWindow(hwnd);
       return 0;
     }
@@ -1359,6 +1363,11 @@ private:
       if (LOWORD(lp) == HTCLIENT)
         return glint_win32_host::routeSetCursor(self->mOwnRoot.get(), self->mPrevX, self->mPrevY);
       return ::DefWindowProcW(hwnd, msg, wp, lp);
+
+    case WM_CAPTURECHANGED:
+      glint_win32_host::routeCaptureChanged(hwnd, self->mOwnRoot.get(), lp);
+      glint_win32_host::invalidateWindow(hwnd);
+      return 0;
 
     case WM_MOUSELEAVE:
       glint_win32_host::routeMouseLeave(self->mOwnRoot.get());

@@ -779,8 +779,10 @@ private:
 
       case WM_LBUTTONUP:
       {
-        ::ReleaseCapture();
+        // Route first: ReleaseCapture sends WM_CAPTURECHANGED synchronously,
+        // which would otherwise cancel the press before this mouseup is seen.
         glint_win32_host::routeLeftButtonUp(self->mDocument.get(), wp, lp, self->mDpr);
+        ::ReleaseCapture();
         glint_win32_host::invalidateWindow(hwnd);
         return 0;
       }
@@ -808,6 +810,11 @@ private:
         if (LOWORD(lp) == HTCLIENT)
           return glint_win32_host::routeSetCursor(self->mDocument.get(), self->mPrevX, self->mPrevY);
         return ::DefWindowProcW(hwnd, msg, wp, lp);
+
+      case WM_CAPTURECHANGED:
+        glint_win32_host::routeCaptureChanged(hwnd, self->mDocument.get(), lp);
+        glint_win32_host::invalidateWindow(hwnd);
+        return 0;
 
       case WM_MOUSELEAVE:
         glint_win32_host::routeMouseLeave(self->mDocument.get());
@@ -876,7 +883,8 @@ private:
 
   HWND  mParent = nullptr;
   HWND  mHWND = nullptr;
-  bool  mRedrawRequested = false;
+  // Set from other threads (requestRedraw, popup task wake-ups).
+  std::atomic<bool> mRedrawRequested{ false };
   uint64_t mPaintCount = 0;
   uint64_t mRedrawRequestCount = 0;
   uint64_t mTimerWakeCount = 0;

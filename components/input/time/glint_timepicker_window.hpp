@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../platform/glint_apple_platform.hpp"
+#include "../glint_picker_registry.hpp"
 
 #include <functional>
 
@@ -38,32 +39,14 @@ public:
     return w;
   }
 
-  static void _registerActive(glint_timepicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_timepicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr);
-    sActiveInstance = w;
-    sDocCanvas = docCanvas;
-    if (kHideOnUnfocus && docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        true);
-    }
+    glint_picker_registry<glint_timepicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_timepicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas = nullptr;
+    glint_picker_registry<glint_timepicker_window>::clearActive(w);
   }
 
   void reopen(int hour,
@@ -73,6 +56,9 @@ public:
               std::function<void()> onClosed,
               glint_element* docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_timepicker_window>::attachCanvas(docCanvas);
     {
       std::lock_guard<std::mutex> lk(mMtx);
       mHour = hour;
@@ -100,13 +86,19 @@ public:
       ::PostMessage(h, WM_SKUI_HIDE_TP, 0, 0);
   }
 
+  // Called from the owning input's thread, but the picker's document lives
+  // on this window's thread: queue the key there instead of touching it here.
+  // Returns true once queued; the input only routes navigation keys
+  // (arrows, paging, Home/End, Tab, Enter, Escape) that the picker handles.
   bool handleKey(const glint_key_press& key)
   {
-    if (!mOwnRoot || !mPicker) return false;
-    mOwnRoot->SetFocus(mPicker);
-    const bool handled = mOwnRoot->OnKeyDown(key);
-    if (handled) ::PostMessage(mHWND, WM_SKUI_REDRAW, 0, 0);
-    return handled;
+    if (!mOwnRoot) return false;
+    mOwnRoot->taskQueue()->post([this, key] {
+      if (!mOwnRoot || !mPicker) return;
+      mOwnRoot->SetFocus(mPicker);
+      if (mOwnRoot->OnKeyDown(key)) ::PostMessage(mHWND, WM_SKUI_REDRAW, 0, 0);
+    });
+    return true;
   }
 
   void destroy() { stopThread(); }
@@ -136,8 +128,10 @@ protected:
         minute = mMinute;
         anchor = mAnchorRect;
         docCanvas = mDocCanvas;
-        mOnChange = std::move(mPendingOnChange);
-        mOnClosed = std::move(mPendingOnClosed);
+        // Copy, not move: two reopen() calls before this message is handled
+        // queue two REOPENs, and the second must not see moved-from callbacks.
+        mOnChange = mPendingOnChange;
+        mOnClosed = mPendingOnClosed;
       }
       _registerActive(this, docCanvas);
       _reposition(anchor);
@@ -246,10 +240,6 @@ protected:
   void afterRun() override { delete this; }
 
 private:
-  static inline glint_timepicker_window* sActiveInstance = nullptr;
-  static inline glint_element* sDocCanvas = nullptr;
-  static inline int sWheelListenerId = -1;
-
   std::mutex mMtx;
   int mHour = 0;
   int mMinute = 0;
@@ -314,6 +304,9 @@ public:
               std::function<void()> onClosed,
               glint_element* docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_timepicker_window>::attachCanvas(docCanvas);
     mHour = hour;
     mMinute = minute;
     mInitialHour = hour;
@@ -347,13 +340,19 @@ public:
 
   bool isVisible() const { return !mSuppressAutoClose; }
 
+  // Called from the owning input's thread, but the picker's document lives
+  // on this window's thread: queue the key there instead of touching it here.
+  // Returns true once queued; the input only routes navigation keys
+  // (arrows, paging, Home/End, Tab, Enter, Escape) that the picker handles.
   bool handleKey(const glint_key_press& key)
   {
-    if (!mOwnRoot || !mPicker) return false;
-    mOwnRoot->SetFocus(mPicker);
-    const bool handled = mOwnRoot->OnKeyDown(key);
-    if (handled) requestRedraw();
-    return handled;
+    if (!mOwnRoot) return false;
+    mOwnRoot->taskQueue()->post([this, key] {
+      if (!mOwnRoot || !mPicker) return;
+      mOwnRoot->SetFocus(mPicker);
+      if (mOwnRoot->OnKeyDown(key)) requestRedraw();
+    });
+    return true;
   }
 
   void destroy()
@@ -429,36 +428,14 @@ protected:
   }
 
 private:
-  static inline glint_timepicker_window* sActiveInstance = nullptr;
-  static inline glint_element* sDocCanvas = nullptr;
-  static inline int sWheelListenerId = -1;
-
-  static void _registerActive(glint_timepicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_timepicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr);
-    sActiveInstance = w;
-    sDocCanvas = docCanvas;
-    if (kHideOnUnfocus && docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        true);
-    }
+    glint_picker_registry<glint_timepicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_timepicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas = nullptr;
+    glint_picker_registry<glint_timepicker_window>::clearActive(w);
   }
 
   int mHour = 0;
@@ -505,8 +482,12 @@ public:
     return &sInstance;
   }
 
-  static void _registerActive(glint_timepicker_window*, glint_element*) {}
-  static void _unregisterActive(glint_timepicker_window*) {}
+  static void _registerActive(glint_timepicker_window*, glint_element*) {
+    glint_picker_registry<glint_timepicker_window>::setActive(w);
+  }
+  static void _unregisterActive(glint_timepicker_window*) {
+    glint_picker_registry<glint_timepicker_window>::clearActive(w);
+  }
 
   void reopen(int,
               int,
@@ -556,6 +537,9 @@ public:
               std::function<void()> onClosed,
               glint_element* docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_timepicker_window>::attachCanvas(docCanvas);
     mHour = hour;
     mMinute = minute;
     mInitialHour = hour;
@@ -670,36 +654,14 @@ protected:
   }
 
 private:
-  static inline glint_timepicker_window* sActiveInstance = nullptr;
-  static inline glint_element* sDocCanvas = nullptr;
-  static inline int sWheelListenerId = -1;
-
-  static void _registerActive(glint_timepicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_timepicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr);
-    sActiveInstance = w;
-    sDocCanvas = docCanvas;
-    if (kHideOnUnfocus && docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        true);
-    }
+    glint_picker_registry<glint_timepicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_timepicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas = nullptr;
+    glint_picker_registry<glint_timepicker_window>::clearActive(w);
   }
 
   int mHour = 0;

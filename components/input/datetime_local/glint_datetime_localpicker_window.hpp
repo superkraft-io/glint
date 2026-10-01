@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../platform/glint_apple_platform.hpp"
+#include "../glint_picker_registry.hpp"
 
 #if GLINT_PLATFORM_MAC
 
@@ -47,6 +48,9 @@ public:
               std::function<void()> onClosed,
               glint_element* docCanvas = nullptr)
   {
+    // Runs on the owning document's thread: the only place the registry
+    // touches the document (the popup thread only marks itself active).
+    glint_picker_registry<glint_datetime_localpicker_window>::attachCanvas(docCanvas);
     mYear = year;
     mMonth = month;
     mDay = day;
@@ -162,36 +166,14 @@ protected:
   }
 
 private:
-  static inline glint_datetime_localpicker_window* sActiveInstance = nullptr;
-  static inline glint_element* sDocCanvas = nullptr;
-  static inline int sWheelListenerId = -1;
-
-  static void _registerActive(glint_datetime_localpicker_window* w, glint_element* docCanvas)
+  static void _registerActive(glint_datetime_localpicker_window* w, glint_element* /*docCanvas*/)
   {
-    _unregisterActive(nullptr);
-    sActiveInstance = w;
-    sDocCanvas = docCanvas;
-    if (docCanvas && sWheelListenerId < 0)
-    {
-      sWheelListenerId = docCanvas->addEventListener(
-        "wheel",
-        [](glint_event&) {
-          if (sActiveInstance) sActiveInstance->hide();
-        },
-        true);
-    }
+    glint_picker_registry<glint_datetime_localpicker_window>::setActive(w);
   }
 
   static void _unregisterActive(glint_datetime_localpicker_window* w)
   {
-    if (w && w != sActiveInstance) return;
-    if (sDocCanvas && sWheelListenerId >= 0)
-    {
-      sDocCanvas->removeEventListener(sWheelListenerId);
-      sWheelListenerId = -1;
-    }
-    sActiveInstance = nullptr;
-    sDocCanvas = nullptr;
+    glint_picker_registry<glint_datetime_localpicker_window>::clearActive(w);
   }
 
   int mYear = 2024;

@@ -126,8 +126,10 @@ protected:
         // processed before this point used the OLD callbacks (old generation),
         // so the inspector discarded them as stale.  From now on HIDE_CP fires
         // the new callbacks correctly.
-        mOnChange   = std::move(mPendingOnChange);
-        mOnClosed   = std::move(mPendingOnClosed);
+        // Copy, not move: two reopen() calls before this message is handled
+        // queue two REOPENs, and the second must not see moved-from callbacks.
+        mOnChange   = mPendingOnChange;
+        mOnClosed   = mPendingOnClosed;
       }
       _reposition(anchor);
       if (mPicker) mPicker->setValue(color);

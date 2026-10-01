@@ -783,20 +783,30 @@ private:
           docX - 4, docY, 8, 1);
 
         auto alive = mAlive;
-        mFloatingPicker = glint_colorpicker_window::open(stops[idx].color, anchor);
+        // The picker calls back on its own thread: hop back to ours (skipped
+        // if this editor was destroyed in the meantime).
+        auto post = ownerThreadPoster();
+        auto* picker = glint_colorpicker_window::open(stops[idx].color, anchor);
+        mFloatingPicker = picker;
         mFloatingPicker->reopen(
             stops[idx].color,
             anchor,
-            /*onChange=*/[this, alive](glint_color c) {
-                if (!*alive) return;
-                if (mSelectedStop < 0 || mSelectedStop >= (int)stops.size()) return;
-                stops[mSelectedStop].color = c;
-                _fireOnChange();
-                setDirty(false);
+            /*onChange=*/[this, alive, post](glint_color c) {
+                post([this, alive, c] {
+                    if (!*alive) return;
+                    if (mSelectedStop < 0 || mSelectedStop >= (int)stops.size()) return;
+                    stops[mSelectedStop].color = c;
+                    _fireOnChange();
+                    setDirty(false);
+                });
             },
-            /*onClosed=*/[this, alive]() {
-                if (!*alive) return;
-                mFloatingPicker = nullptr;
+            /*onClosed=*/[this, alive, post, picker]() {
+                post([this, alive, picker] {
+                    if (!*alive) return;
+                    // Closing only hides the window; destroy it so its thread
+                    // doesn't leak (a new picker is opened per stop click).
+                    if (mFloatingPicker == picker) _dismissFloatingPicker();
+                });
             }
         );
 #else
@@ -827,20 +837,30 @@ private:
         // open() starts the picker thread with the window hidden (showOnCreate
         // returns false).  reopen() repositions, seeds the picker, applies the
         // real callbacks, and shows the window — all in one atomic PostMessage.
-        mFloatingPicker = glint_colorpicker_window::open(stops[idx].color, anchor);
+        // The picker calls back on its own thread: hop back to ours (skipped
+        // if this editor was destroyed in the meantime).
+        auto post = ownerThreadPoster();
+        auto* picker = glint_colorpicker_window::open(stops[idx].color, anchor);
+        mFloatingPicker = picker;
         mFloatingPicker->reopen(
             stops[idx].color,
             anchor,
-            /*onChange=*/[this, alive](glint_color c) {
-                if (!*alive) return;
-                if (mSelectedStop < 0 || mSelectedStop >= (int)stops.size()) return;
-                stops[mSelectedStop].color = c;
-                _fireOnChange();
-                setDirty(false);
+            /*onChange=*/[this, alive, post](glint_color c) {
+                post([this, alive, c] {
+                    if (!*alive) return;
+                    if (mSelectedStop < 0 || mSelectedStop >= (int)stops.size()) return;
+                    stops[mSelectedStop].color = c;
+                    _fireOnChange();
+                    setDirty(false);
+                });
             },
-            /*onClosed=*/[this, alive]() {
-                if (!*alive) return;
-                mFloatingPicker = nullptr;
+            /*onClosed=*/[this, alive, post, picker]() {
+                post([this, alive, picker] {
+                    if (!*alive) return;
+                    // Closing only hides the window; destroy it so its thread
+                    // doesn't leak (a new picker is opened per stop click).
+                    if (mFloatingPicker == picker) _dismissFloatingPicker();
+                });
             }
         );
 #endif

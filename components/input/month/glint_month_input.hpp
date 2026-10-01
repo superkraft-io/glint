@@ -479,16 +479,22 @@ private:
     mPickerOpen = true;
     const RECT anchor = _anchorScreenRect();
 
-    auto onPicked = [this](int y, int m)
+    // The picker calls these on its own thread: hop back to ours (skipped
+    // if this input was destroyed in the meantime).
+    auto post = ownerThreadPoster();
+    auto onPicked = [this, post](int y, int m)
     {
-      if (!_canMutate())
-        return;
-      setMonth(y, m);
-      mPickerOpen = false;
-      if (mRoot) mRoot->SetFocus(this);
-      if (onChange) onChange(mYear, mMonth);
+      post([this, y, m]
+      {
+        if (!_canMutate())
+          return;
+        setMonth(y, m);
+        mPickerOpen = false;
+        if (mRoot) mRoot->SetFocus(this);
+        if (onChange) onChange(mYear, mMonth);
+      });
     };
-    auto onClosed = [this]() { mPickerOpen = false; };
+    auto onClosed = [this, post]() { post([this] { mPickerOpen = false; }); };
 
     _sharedWindow()->reopen(mYear, mMonth, anchor, onPicked, onClosed,
                             mRoot ? &mRoot->mCanvas : nullptr);

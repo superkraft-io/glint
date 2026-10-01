@@ -138,6 +138,14 @@ inline void routeLeftButtonUp(glint_document* document, WPARAM wp, LPARAM lp, fl
     document->OnMouseUp(x, y, modifierKeysFromWParam(wp));
 }
 
+// WM_CAPTURECHANGED: another window took capture mid-press (Alt+Tab, Win key,
+// a system modal...).  `lp` is the window gaining capture.
+inline void routeCaptureChanged(HWND hwnd, glint_document* document, LPARAM lp)
+{
+  if (document && reinterpret_cast<HWND>(lp) != hwnd)
+    document->OnMouseCaptureLost();
+}
+
 inline void routeRightButtonDown(glint_document* document, WPARAM wp, LPARAM lp, float scale = 1.f)
 {
   const float invScale = scale > 0.f ? 1.f / scale : 1.f;
@@ -256,12 +264,41 @@ inline void routeMouseWheelH(HWND hwnd, glint_document* document, WPARAM wp, LPA
 
 inline void routeChar(glint_document* document, WPARAM wp)
 {
-  if (!document || wp < 0x20)
-    return;
+  // Characters outside the BMP (emoji, some CJK) arrive as two WM_CHARs: a
+  // high then a low surrogate.  Hold the high half until its partner arrives;
+  // converting each half alone yields two U+FFFD.  Each glint window runs its
+  // own thread, so thread_local keeps windows apart.
+  thread_local wchar_t pendingHighSurrogate = 0;
 
-  wchar_t wideChar = static_cast<wchar_t>(wp);
+  // < 0x20: control characters (Enter, Tab, Backspace... arrive as WM_KEYDOWN).
+  // 0x7F: DEL, sent as WM_CHAR after Ctrl+Backspace.
+  if (!document || wp < 0x20 || wp == 0x7F)
+  {
+    pendingHighSurrogate = 0;
+    return;
+  }
+
+  const wchar_t unit = static_cast<wchar_t>(wp);
+  if (unit >= 0xD800 && unit <= 0xDBFF)
+  {
+    pendingHighSurrogate = unit;
+    return;
+  }
+
+  wchar_t wide[2] = { unit, 0 };
+  int wideLength = 1;
+  if (unit >= 0xDC00 && unit <= 0xDFFF)
+  {
+    if (!pendingHighSurrogate)
+      return;  // orphaned low surrogate
+    wide[0] = pendingHighSurrogate;
+    wide[1] = unit;
+    wideLength = 2;
+  }
+  pendingHighSurrogate = 0;
+
   char utf8[5] = {};
-  const int length = ::WideCharToMultiByte(CP_UTF8, 0, &wideChar, 1, utf8, 4, nullptr, nullptr);
+  const int length = ::WideCharToMultiByte(CP_UTF8, 0, wide, wideLength, utf8, 4, nullptr, nullptr);
   if (length <= 0)
     return;
 
@@ -280,6 +317,15 @@ inline glint_key_press virtualKeyPress(WPARAM wp)
   keyPress.shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
   keyPress.ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
   keyPress.alt = (::GetKeyState(VK_MENU) & 0x8000) != 0;
+
+  // AltGr is reported as Right Alt plus a synthetic Left Ctrl.  It types
+  // characters (Polish AltGr+A = 'ą'), so it must not look like Ctrl+Alt or
+  // editors run Ctrl shortcuts (select all, cut, undo) before WM_CHAR arrives.
+  if ((::GetKeyState(VK_RMENU) & 0x8000) && (::GetKeyState(VK_LCONTROL) & 0x8000))
+  {
+    keyPress.ctrl = false;
+    keyPress.alt = false;
+  }
   return keyPress;
 }
 

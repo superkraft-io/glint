@@ -155,10 +155,16 @@ public:
     // patch its declarations at runtime without touching the static singleton.
     mUaSheet = glint_default_user_agent_stylesheet();
     _rebuildQualifiedRuleCache();
+    // Waking the owning thread for posted tasks = requesting a redraw, since
+    // DrawToCanvas drains the queue.
+    mTaskQueue->setWake(mRequestRedraw);
   }
 
   ~glint_document()
   {
+    // After this returns no other thread can be inside a wake into our host.
+    mTaskQueue->setWake(nullptr);
+
     auto clearDebugNode = [this](std::atomic<glint_element*>& slot) {
       if (auto* node = slot.load(); node && node->mRoot == this)
         slot.store(nullptr);
@@ -1223,6 +1229,18 @@ public:
     if (mActiveGestureNode && hasAncestor(mActiveGestureNode, node)) mActiveGestureNode = nullptr;
     if (mGlobalAnchor.comp == node) { mGlobalAnchor = {}; mGlobalSelActive = false; }
     if (mGlobalFocus.comp  == node) { mGlobalFocus  = {}; mGlobalSelActive = false; }
+
+    // The inspector's highlight pointers are global; clear them too, or the
+    // next frame's overlay (and the inspector) dereference the freed node.
+    // compare_exchange so a concurrent store from the inspector isn't lost.
+    auto clearDebugSlot = [&](std::atomic<glint_element*>& slot) {
+      glint_element* cur = slot.load();
+      if (cur && cur->mRoot == this && hasAncestor(cur, node))
+        slot.compare_exchange_strong(cur, nullptr);
+    };
+    clearDebugSlot(glint_debug::hoveredNode);
+    clearDebugSlot(glint_debug::inspectedNode);
+    clearDebugSlot(glint_debug::pinnedNode);
   }
 
   // ── Tree snapshot export ─────────────────────────────────────────────
@@ -1318,8 +1336,16 @@ public:
    * Used by the inspector window which owns its own CPU SkSurface.
    * Runs Layout(nullptr) before the draw traversal so mRect values are current.
    */
+  /** Tasks posted from other threads (popup callbacks) to run on this
+   *  document's owning thread.  See glint_element::ownerThreadPoster(). */
+  const std::shared_ptr<glint_task_queue>& taskQueue() const { return mTaskQueue; }
+
   void DrawToCanvas(SkCanvas& canvas)
   {
+    // Run tasks posted from other threads first, so their changes are laid
+    // out and drawn in this frame.
+    mTaskQueue->drain();
+
     _recordFrame();
     _tickHotReload();
 
@@ -1763,6 +1789,30 @@ public:
 
       mMouseDownNode = nullptr;
     }
+    setDirty(false);
+  }
+
+  /** The OS took mouse capture away mid-press (Alt+Tab, Win key, a system
+   *  modal...), so no real mouseup will arrive.  End the press like a mouseup
+   *  (DOM "mouseup" + OnMouseUp, so sliders / scrollbars stop dragging and
+   *  :active clears) but without click / dblclick. */
+  void OnMouseCaptureLost()
+  {
+    if (!mMouseDownNode) return;
+
+    for (glint_element* n = mMouseDownNode; n; n = n->mParent)
+      n->mIsActive = false;
+    _reapplyCssChain(mMouseDownNode);
+
+    float ex = mPointerX, ey = mPointerY;
+    scrollAdjusted(mMouseDownNode, ex, ey);
+    auto eu = makeME("mouseup", ex, ey, mPointerMod, 0.f, 0.f, /*bubbles=*/true);
+    mMouseDownNode->dispatchDOMEvent(eu);
+    // Nulled by _onComponentDestroyed if a listener destroyed it.
+    if (mMouseDownNode) mMouseDownNode->OnMouseUp(ex, ey, mPointerMod);
+
+    mMouseDownNode = nullptr;
+    mLastClickNode = nullptr;
     setDirty(false);
   }
 
@@ -3077,6 +3127,7 @@ private:
 
   // ── Injected callbacks ───────────────────────────────────────────────────────
   std::function<void()>                                              mRequestRedraw;
+  std::shared_ptr<glint_task_queue>  mTaskQueue = std::make_shared<glint_task_queue>();
   std::function<void(glint_element*)>                                 mRequestRedrawDetailed;
 
   // ── Tree mutex ────────────────────────────────────────────────────────────
@@ -3515,6 +3566,22 @@ inline glint_element* glint_element::findMaskSourceElement(const std::string& st
 
 // ── glint_element::notifyDestroyed ─────────────────────────────────────────
 // Defined here because it calls glint_document::_onComponentDestroyed.
+
+inline glint_owner_poster glint_element::ownerThreadPoster() const
+{
+  if (!mRoot)
+    return [](std::function<void()> task) { if (task) task(); };
+
+  std::weak_ptr<glint_task_queue> queue = mRoot->taskQueue();
+  std::weak_ptr<void>             life  = lifeToken();
+  return [queue, life](std::function<void()> task) {
+    if (!task) return;
+    if (auto q = queue.lock())
+      // `life` is checked on the owning thread, where elements are destroyed,
+      // so it cannot expire between the check and the task running.
+      q->post([life, task = std::move(task)] { if (!life.expired()) task(); });
+  };
+}
 
 inline void glint_element::notifyDestroyed()
 {

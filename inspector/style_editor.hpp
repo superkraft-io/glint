@@ -1989,6 +1989,10 @@ public:
     }
 
     const void* ownerH = mOwnerHWND;
+    // onClosed fires on the attr-list thread: post to ours, and only clear
+    // mAttrListWin if it still refers to this window (not a newer one).
+    auto post   = ownerThreadPoster();
+    auto opened = std::make_shared<glint_attributes_list_window*>(nullptr);
     mAttrListWin = glint_attributes_list_window::open(
       anchorRect,
       glint_all_style_keys(),
@@ -1998,10 +2002,12 @@ public:
         auto* heap = new std::string(std::move(key));
         if (ownerH) ::PostMessage((HWND)ownerH, WM_INSP_ATTR_PICKED, 0, (LPARAM)heap);
       },
-      [this]() {
-        // Fires on the attr-list thread after the window fully closes.
-        mAttrListWin = nullptr;
+      [this, post, opened]() {
+        post([this, opened] {
+          if (mAttrListWin == *opened) mAttrListWin = nullptr;
+        });
       });
+    *opened = mAttrListWin;
 #elif defined(__APPLE__)
     _dismissAttrList();
     if (!mLiveComp) return;

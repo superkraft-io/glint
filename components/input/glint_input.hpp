@@ -1917,22 +1917,25 @@ private:
     const glint_color currentColor = _resolvedColor();
     const RECT anchor = glint_input_colorpicker_anchor_screen_rect(this);
     auto alive = mAlive;
+    // The picker calls back on its own thread: hop back to ours (skipped if
+    // this input was destroyed in the meantime).
+    auto post = ownerThreadPoster();
 
     mColorPickerBridge = glint_input_colorpicker_reopen(
       mColorPickerBridge,
       currentColor,
       anchor,
-      [this, alive](glint_color c) {
-        if (!*alive) return;
-        const std::string normalized = _colorValueFrom(c);
-        mPendingValue = normalized;
-        _syncDelegateProps();
-        if (onChange) onChange(normalized);
-        setDirty(false);
+      [this, alive, post](glint_color c) {
+        post([this, alive, c] {
+          if (!*alive) return;
+          const std::string normalized = _colorValueFrom(c);
+          mPendingValue = normalized;
+          _syncDelegateProps();
+          if (onChange) onChange(normalized);
+          setDirty(false);
+        });
       },
-      [this, alive]() {
-        if (!*alive) return;
-      }
+      []() {}
     );
   }
 

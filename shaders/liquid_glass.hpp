@@ -17,7 +17,15 @@ public:
     const float chroma        = std::max(getFloat("chromaticStrength", 0.06f), 0.f)
                               * std::max(getFloat("chromaticBase", 0.75f), 0.f)
                               * bezelWidth;
-    return std::max(sampleOffsetX, sampleOffsetY) + bezelWidth + thickness * 0.4f + chroma + 6.f;
+    // Negative magnification samples outward by up to |m| * halfSize.
+    // mCurrentRect is physical; this result is in logical px (the caller
+    // multiplies by mDpr).
+    const float dpr           = mDpr > 0.f ? mDpr : 1.f;
+    const float magnify       = getFloat("magnification", 0.18f);
+    const float magnifyReach  = std::max(-magnify, 0.f) * 0.5f
+                              * std::max(mCurrentRect.W(), mCurrentRect.H()) / dpr;
+    return std::max(sampleOffsetX, sampleOffsetY) + bezelWidth + thickness * 0.4f + chroma
+         + magnifyReach + 6.f;
   }
 
   const char* sksl() const override
@@ -59,7 +67,11 @@ public:
       }
 
       float surfaceLip(float x) {
-        float convex = pow(max(1.0 - pow(1.0 - x * 2.0, 4.0), 0.0), 0.25);
+        // pow() with a negative base is undefined in SkSL (NaN on the raster
+        // pipeline), and 1 - 2x < 0 for x > 0.5, so square it twice instead.
+        float lipBase = 1.0 - x * 2.0;
+        float lipBase2 = lipBase * lipBase;
+        float convex = pow(max(1.0 - lipBase2 * lipBase2, 0.0), 0.25);
         float concave = 1.0 - sqrt(max(1.0 - pow(1.0 - x, 2.0), 0.0)) + 0.1;
         float smoother = 6.0 * pow(x, 5.0) - 15.0 * pow(x, 4.0) + 10.0 * pow(x, 3.0);
         return mix(convex, concave, smoother);
@@ -205,18 +217,22 @@ public:
 
   void setUniforms(SkRuntimeShaderBuilder& b, float w, float h, float) override
   {
+    // The shader runs in physical pixels (w, h, mCurrentRect are physical),
+    // while pixel-sized params are logical CSS px: scale them by mDpr so the
+    // glass matches the element's CSS border-radius at any display scale.
+    const float dpr = mDpr > 0.f ? mDpr : 1.f;
     b.uniform("resolution") = SkV2{w, h};
     b.uniform("origin")     = SkV2{mCurrentRect.L, mCurrentRect.T};
     b.uniform("sampleOffset") = SkV2{
-      getFloat("sampleOffsetX", 0.f),
-      getFloat("sampleOffsetY", 0.f)
+      getFloat("sampleOffsetX", 0.f) * dpr,
+      getFloat("sampleOffsetY", 0.f) * dpr
     };
-    b.uniform("bezelWidth") = getFloat("bezelWidth", 18.f);
-    b.uniform("glassThickness") = getFloat("glassThickness", 28.f);
+    b.uniform("bezelWidth") = getFloat("bezelWidth", 18.f) * dpr;
+    b.uniform("glassThickness") = getFloat("glassThickness", 28.f) * dpr;
     b.uniform("refractiveIndex") = getFloat("refractiveIndex", 1.24f);
     b.uniform("magnification") = getFloat("magnification", 0.18f);
     b.uniform("surfaceType") = getFloat("surfaceType", 1.f);
-    b.uniform("cornerRadius") = getFloat("cornerRadius", std::min(w, h) * 0.5f);
+    b.uniform("cornerRadius") = getFloat("cornerRadius", std::min(w, h) * 0.5f / dpr) * dpr;
     b.uniform("maxDisplacementScale") = getFloat("maxDisplacementScale", 1.65f);
     b.uniform("tintOpacity") = getFloat("tintOpacity", 0.08f);
     b.uniform("tintR") = getFloat("tintR", 1.f);
@@ -224,7 +240,7 @@ public:
     b.uniform("tintB") = getFloat("tintB", 1.f);
     b.uniform("specularOpacity") = getFloat("specularOpacity", 0.42f);
     b.uniform("specularAngle") = getFloat("specularAngle", -0.8f);
-    b.uniform("specularWidth") = getFloat("specularWidth", 2.5f);
+    b.uniform("specularWidth") = getFloat("specularWidth", 2.5f) * dpr;
     b.uniform("shadowOpacity") = getFloat("shadowOpacity", 0.08f);
     b.uniform("shadowWidth") = getFloat("shadowWidth", 1.f);
     b.uniform("chromaticStrength") = getFloat("chromaticStrength", 0.06f);
