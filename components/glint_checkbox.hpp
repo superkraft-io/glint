@@ -108,9 +108,11 @@ public:
 
   void Layout(glint_canvas* g) override
   {
-    // _syncFromProps already ran in tickTransitionsAll() at the top of the
-    // frame; nothing more to do here. (Keep the override so subclasses /
-    // future hooks have a clear seam.)
+    // Newly-added checkboxes can miss this frame's tickTransitionsAll() when
+    // they are inserted during event handling after the root pre-pass has
+    // already run. Sync again here so the first layout/draw uses the final
+    // public field values instead of waiting for the next mouse-driven frame.
+    _syncFromProps();
     glint_element::Layout(g);
   }
 
@@ -120,7 +122,7 @@ public:
   // is idempotent once mBox/mLabel exist.
   void syncBeforeLayout() override
   {
-    if (!mBox) _syncFromProps();
+    _syncFromProps();
   }
 
   // preferredH / preferredW: intrinsic size of the checkbox row.

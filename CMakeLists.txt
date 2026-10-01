@@ -63,7 +63,13 @@ if(NOT GLINT_DEPS_DIR)
     "GLINT_DEPS_DIR to the generated third_party/skia directory.")
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  if(CMAKE_OSX_SYSROOT MATCHES "iphonesimulator")
+    set(_GLINT_SKIA_PLATFORM "ios-simulator")
+  else()
+    set(_GLINT_SKIA_PLATFORM "ios-device")
+  endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   set(_GLINT_SKIA_PLATFORM "mac")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(_GLINT_SKIA_PLATFORM "linux")
@@ -84,7 +90,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_OSX_ARCHITECTURES)
     set(_GLINT_SKIA_ARCH "x64")
   endif()
 elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR
-   CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+   CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64" OR
+   CMAKE_OSX_ARCHITECTURES MATCHES "(^|;)arm64($|;)")
   set(_GLINT_SKIA_ARCH "arm64")
 else()
   set(_GLINT_SKIA_ARCH "x64")
@@ -265,7 +272,13 @@ set_target_properties(glint_host_win32 PROPERTIES EXPORT_NAME host_win32)
 
 if(WIN32)
   add_library(glint_host_win32_support STATIC
-    "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp")
+    "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/datetime_local/glint_datetime_local_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/week/glint_week_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/time/glint_time_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp")
   set_property(TARGET glint_host_win32_support PROPERTY
     MSVC_RUNTIME_LIBRARY "${GLINT_MSVC_RUNTIME_LIBRARY_EXPR}")
   target_link_libraries(glint_host_win32_support PRIVATE glint::host)
@@ -289,9 +302,15 @@ target_link_libraries(glint_host_win32 INTERFACE
 # macOS host target — links Skia libs from the computed _SKIA_LIB_DIR
 # (GLINT_DEPS_DIR/mac/<arch>/<config>/, populated by init_skia.mjs --backend metal)
 # plus Apple system frameworks.
-if(APPLE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   add_library(glint_host_mac_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/datetime_local/glint_datetime_local_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/week/glint_week_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/time/glint_time_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_cursor_mac.mm"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_window_mac.mm"
     "${CMAKE_CURRENT_LIST_DIR}/platform/mac/glint_view_mac.mm")
@@ -320,6 +339,7 @@ if(APPLE)
     "-framework MetalKit"
     "-framework ImageIO"
     "-framework QuartzCore"
+      "-framework UniformTypeIdentifiers"
     "-framework CoreGraphics"
     "-framework CoreText"
     "-framework CoreFoundation"
@@ -329,12 +349,63 @@ if(APPLE)
   )
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  add_library(glint_host_ios_support STATIC
+    "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/datetime_local/glint_datetime_local_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/week/glint_week_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/time/glint_time_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/platform/ios/glint_view_ios.mm")
+  set_source_files_properties(
+    "${CMAKE_CURRENT_LIST_DIR}/platform/ios/glint_view_ios.mm"
+    PROPERTIES COMPILE_FLAGS "-x objective-c++")
+  target_link_libraries(glint_host_ios_support PRIVATE glint::core)
+
+  add_library(glint_host_ios INTERFACE)
+  add_library(glint::host_ios ALIAS glint_host_ios)
+  set_target_properties(glint_host_ios PROPERTIES EXPORT_NAME host_ios)
+  target_link_libraries(glint_host_ios INTERFACE glint::core glint_host_ios_support)
+  target_compile_definitions(glint_host_ios INTERFACE GLINT_INSPECTOR_DISABLED)
+  target_compile_definitions(glint_host_ios_support PRIVATE GLINT_INSPECTOR_DISABLED)
+
+  target_compile_definitions(glint_host_ios INTERFACE
+    "$<$<CONFIG:Debug>:SK_TRIVIAL_ABI=[[clang::trivial_abi]]>")
+  target_compile_definitions(glint_host_ios_support PRIVATE
+    "$<$<CONFIG:Debug>:SK_TRIVIAL_ABI=[[clang::trivial_abi]]>")
+
+  foreach(_skia_lib skia svg skshaper skparagraph skunicode_core skunicode_icu)
+    target_link_libraries(glint_host_ios INTERFACE
+      "${_SKIA_LIB_DIR}/lib${_skia_lib}.a")
+  endforeach()
+
+  target_link_libraries(glint_host_ios INTERFACE
+    "-framework Metal"
+    "-framework PhotosUI"
+    "-framework QuartzCore"
+    "-framework CoreGraphics"
+    "-framework CoreText"
+    "-framework CoreFoundation"
+    "-framework Foundation"
+    "-framework UniformTypeIdentifiers"
+    "-framework UIKit"
+  )
+endif()
+
 # ── Linux host target — X11 + CPU rasterisation ──────────────────────────────
 # GPU (GLX + Ganesh/GL) can be layered on top later; for now the platform
 # backend is CPU-only, keeping the dependency footprint minimal.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_library(glint_host_linux_support STATIC
     "${CMAKE_CURRENT_LIST_DIR}/glint_standalone_stubs.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/date/glint_date_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/datetime_local/glint_datetime_local_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/month/glint_month_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/week/glint_week_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/time/glint_time_input_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/components/input/color/glint_input_colorpicker_bridge.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/platform/linux/glint_window_linux.cpp")
   target_compile_options(glint_host_linux_support PRIVATE
     -Wall -Wextra -Wno-unused-parameter)
@@ -410,7 +481,7 @@ endif()
 if(NOT GLINT_ENABLE_INSPECTOR)
   target_compile_definitions(glint_host_win32 INTERFACE GLINT_INSPECTOR_DISABLED)
   target_compile_definitions(glint_host_win32_support PRIVATE GLINT_INSPECTOR_DISABLED)
-  if(APPLE)
+  if(TARGET glint_host_mac)
     target_compile_definitions(glint_host_mac INTERFACE GLINT_INSPECTOR_DISABLED)
     target_compile_definitions(glint_host_mac_support PRIVATE GLINT_INSPECTOR_DISABLED)
   endif()

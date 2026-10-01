@@ -22,6 +22,8 @@
  *   w->destroy();   // async; afterRun() deletes *this
  */
 
+#include "../platform/glint_apple_platform.hpp"
+
 #if defined(_WIN32) || defined(OS_WIN)
 
 #include "../glint_window.hpp"   // glint_window_win32 + all components
@@ -371,6 +373,36 @@ private:
 
     setPanelFrameOrigin(x, y);
   }
+};
+
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+
+// ── iOS stub implementation ────────────────────────────────────────────────
+// iOS cannot host desktop popup windows. Keep a no-op API surface so shared
+// components compile and run without linking macOS window symbols.
+class glint_colorpicker_window
+{
+public:
+  static glint_colorpicker_window* open(
+    glint_color,
+    RECT,
+    std::function<void(glint_color)> = nullptr,
+    std::function<void()> = nullptr)
+  {
+    static glint_colorpicker_window sInstance;
+    return &sInstance;
+  }
+
+  void reopen(glint_color,
+              RECT,
+              std::function<void(glint_color)>,
+              std::function<void()>)
+  {
+  }
+
+  void hide() {}
+  void destroy() {}
+  bool isVisible() const { return false; }
 };
 
 #else  // ── macOS implementation ─────────────────────────────────────────────────

@@ -21,7 +21,7 @@
  *   });
  */
 
-#include "glint_text_editor_base.hpp"
+#include "input/text/glint_text_editor_base.hpp"
 #include "glint_scrollbar/glint_scrollbar.hpp"
 #include "../default_style.hpp"
 
@@ -103,7 +103,16 @@ class glint_textarea : public glint_text_editor_base
 {
 public:
   // ── Public fields ──────────────────────────────────────────────────────────
+  std::string name;
   std::string placeholder;
+  std::string inputmode;
+  std::string enterkeyhint;
+  std::string autocomplete;
+  std::string autocapitalize;
+  std::string spellcheck;
+  int         maxlength = -1;
+  int         minlength = -1;
+  bool        required = false;
   float       lineHeight = 1.5f;   // multiplier applied to fontSize
 
   // ── Construction ──────────────────────────────────────────────────────────
@@ -135,9 +144,85 @@ public:
 
   const char* typeName() const override { return "textarea"; }
 
+  std::string getAttribute(const std::string& name, bool& found) const override
+  {
+    if (name == "name") { found = true; return this->name; }
+    if (name == "inputmode") { found = true; return inputmode; }
+    if (name == "enterkeyhint") { found = true; return enterkeyhint; }
+    if (name == "autocomplete") { found = true; return autocomplete; }
+    if (name == "autocapitalize") { found = true; return autocapitalize; }
+    if (name == "spellcheck") { found = true; return spellcheck; }
+    if (name == "maxlength") { found = true; return maxlength >= 0 ? std::to_string(maxlength) : std::string(); }
+    if (name == "minlength") { found = true; return minlength >= 0 ? std::to_string(minlength) : std::string(); }
+    if (name == "required") { found = true; return required ? "true" : std::string(); }
+    return glint_text_editor_base::getAttribute(name, found);
+  }
+
+  bool isFormAssociatedControl() const override { return true; }
+  std::string formControlName() const override { return name; }
+  bool isFormControlDisabled() const override { return disabled; }
+  bool formControlIsValid() const override { return disabled || satisfiesTextConstraints(); }
+
+  void captureFormDefaultsIfNeeded() override
+  {
+    if (mFormDefaultsCaptured) return;
+    mDefaultValue = getValue();
+    mFormDefaultsCaptured = true;
+  }
+
+  void resetFormControl() override
+  {
+    captureFormDefaultsIfNeeded();
+    setValue(mDefaultValue);
+    setDirty(false);
+  }
+
+  void appendFormValues(std::vector<glint_form_value>& values,
+                        const glint_element* /*submitter*/) const override
+  {
+    if (disabled || name.empty()) return;
+    glint_form_value textareaValue;
+    textareaValue.name = name;
+    textareaValue.value = getValue();
+    textareaValue.control = const_cast<glint_textarea*>(this);
+    values.push_back(std::move(textareaValue));
+  }
+
+  void onFocusGained() override
+  {
+    if (disabled)
+      return;
+    glint_text_editor_base::onFocusGained();
+  }
+
+protected:
+  int maxTextLength() const override { return maxlength; }
+  int minTextLength() const override { return minlength; }
+  bool isRequiredTextValue() const override { return required; }
+
+public:
+
   // ── Layout: report real content height so the scrollbar is shown/hidden ──
   void Layout(glint_canvas* g) override
   {
+    mAcceptsFocus = !disabled;
+    if (disabled)
+    {
+      if (!mDisabledOpacityApplied)
+      {
+        mEnabledOpacity = style.opacity;
+        mDisabledOpacityApplied = true;
+      }
+      style.opacity = mEnabledOpacity * 0.5f;
+      if (mRoot && mRoot->getFocusedNode() == this)
+        mRoot->SetFocus(nullptr);
+    }
+    else if (mDisabledOpacityApplied)
+    {
+      style.opacity = mEnabledOpacity;
+      mDisabledOpacityApplied = false;
+    }
+
     // The base Layout() measures no children → sets mScrollHeight=0 → clamps
     // mScrollTop to 0 inside _clampScroll().  Save the scroll position first
     // and restore it after we've set the real content height.
@@ -429,7 +514,7 @@ public:
         canvas->drawString(line.c_str(), content.L, textY, font, tp);
 
       // ── Caret ─────────────────────────────────────────────────────────────
-      if (mFocused && caretVisible() && (mSelStart == -1 || mSelStart == mSelEnd))
+      if (mFocused && !readonly && !disabled && caretVisible() && (mSelStart == -1 || mSelStart == mSelEnd))
       {
         if (li == cursorLine)
         {
@@ -452,6 +537,10 @@ public:
 private:
   int             mDragStartPos  = 0;
   glint_element*  mResizeHandle  = nullptr;
+  float           mEnabledOpacity = 1.f;
+  bool            mDisabledOpacityApplied = false;
+  bool            mFormDefaultsCaptured = false;
+  std::string     mDefaultValue;
 
   float _fontSize() const
   {

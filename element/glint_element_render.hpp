@@ -103,7 +103,6 @@
                            rect.T + s.shadowOffsetY - s.shadowSpread,
                            rect.R + s.shadowOffsetX + s.shadowSpread,
                            rect.B + s.shadowOffsetY + s.shadowSpread);
-    if (shadowRect.W() <= 0.f || shadowRect.H() <= 0.f) return;
 
     SkPaint paint;
     paint.setAntiAlias(true);
@@ -198,18 +197,37 @@ public:
       if (it != sTfCache.end()) {
         tf = it->second;
       } else {
+        bool shouldCache = false;
+
         tf = glint_font_registry::getTypefaceByAxes(family, weight, style);
-        // Axis lookup failed (unregistered family) — try legacy weight-only lookup.
-        if (!tf) tf = glint_font_registry::getTypefaceWeighted(family, weight);
-        // Still unresolved: ask the platform font manager for an installed system face.
-        if (!tf) tf = glint_font_registry::getSystemTypefaceByAxes(family, weight, style);
-        // Cache the result — including misses (nullptr stays null and we use
-        // the fallback below). This keeps repeated lookups for unknown families
-        // O(1) instead of re-walking the registry every frame.
-        sTfCache.emplace(std::move(key), tf);
+        if (tf)
+        {
+          shouldCache = true;
+        }
+        else
+        {
+          tf = glint_font_registry::getTypefaceWeighted(family, weight);
+          if (tf)
+            shouldCache = true;
+        }
+
+        if (!tf)
+        {
+          tf = glint_font_registry::getSystemTypefaceByAxes(family, weight, style);
+          if (tf)
+          {
+            SkString matchedFamily;
+            tf->getFamilyName(&matchedFamily);
+            shouldCache = matchedFamily.equals(family);
+          }
+        }
+
+        if (shouldCache)
+          sTfCache.emplace(std::move(key), tf);
       }
     }
     if (!tf) tf = *sFallback;
+
     SkFont f(tf, size);
     f.setSubpixel(true);
     f.setEdging(SkFont::Edging::kSubpixelAntiAlias);

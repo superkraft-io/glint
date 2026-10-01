@@ -699,8 +699,9 @@ inline glint_element* glint_element::ComponentAdd::component(S&& setup, glint_el
 // --- Component includes (deferred so ComponentAdd::div is already defined) --
 #include "glint_button.hpp"
 #include "glint_image.hpp"
-#include "glint_text_editor_base.hpp"
-#include "glint_input.hpp"
+#include "input/text/glint_text_editor_base.hpp"
+#include "glint_form.hpp"
+#include "input/glint_input.hpp"
 #include "glint_colorpicker.hpp"
 #include "glint_dial.hpp"
 #include "glint_gradient_editor.hpp"
@@ -708,9 +709,18 @@ inline glint_element* glint_element::ComponentAdd::component(S&& setup, glint_el
 #include "glint_tooltip.hpp"
 #include "glint_textarea.hpp"
 #include "glint_progress.hpp"
-#include "glint_datepicker.hpp"
-#include "glint_datepicker_window.hpp"
-#include "glint_date_input.hpp"
+#include "input/date/glint_datepicker.hpp"
+#include "input/date/glint_datepicker_window.hpp"
+#include "input/date/glint_date_input.hpp"
+#include "input/month/glint_monthpicker.hpp"
+#include "input/month/glint_monthpicker_window.hpp"
+#include "input/month/glint_month_input.hpp"
+#include "input/week/glint_weekpicker.hpp"
+#include "input/week/glint_weekpicker_window.hpp"
+#include "input/week/glint_week_input.hpp"
+#include "input/time/glint_timepicker.hpp"
+#include "input/time/glint_timepicker_window.hpp"
+#include "input/time/glint_time_input.hpp"
 #include "glint_checkbox.hpp"
 #include "glint_select.hpp"
 #include "glint_tree.hpp"
@@ -886,7 +896,21 @@ inline void glint_component_style::glint_component_adder::img(std::function<void
 inline void glint_component_style::glint_component_adder::input(std::function<void(glint_input&)> s, glint_input** out) {
   _ops.push_back({
     [s, out](glint_ctx& c){ auto* t = c.add.input(s); if (out) *out = t; },
-    [s](glint_canvas*, glint_element*) -> glint_style { glint_input t; if (s) s(t); return t.style; }
+    [s](glint_canvas*, glint_element*) -> glint_style {
+      glint_input t;
+      if (s) s(t);
+      t.syncBeforeLayout();
+      glint_style style = t.style;
+      if (sk_is_fit_content(style.height.raw)) {
+        const float h = t.preferredH(0.f);
+        if (h > 0.f) style.height = h;
+      }
+      if (sk_is_fit_content(style.width.raw)) {
+        const float w = t.preferredW();
+        if (w > 0.f) style.width = w;
+      }
+      return style;
+    }
   });
 }
 

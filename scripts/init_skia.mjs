@@ -42,12 +42,20 @@ const glintMacLibraryNames = [
 ];
 
 const VALID_BACKENDS = ['cpu', 'opengl', 'd3d12', 'dawn', 'metal'];
+const VALID_TARGETS = ['win', 'mac', 'linux', 'ios-simulator', 'ios-device'];
+
+function defaultTargetForPlatform(platform = process.platform) {
+  if (platform === 'win32') return 'win';
+  if (platform === 'darwin') return 'mac';
+  if (platform === 'linux') return 'linux';
+  return platform;
+}
 
 function printUsage() {
   console.log(`
 Usage:
-  node third_party/glint/scripts/init_skia.mjs --prebuilt [--backend <backend>]
-  node third_party/glint/scripts/init_skia.mjs --source  [--config Release|Debug|Both] [--backend <backend>] [--arch host|arm64|x64|universal]
+  node third_party/glint/scripts/init_skia.mjs --prebuilt [--backend <backend>] [--target <target>]
+  node third_party/glint/scripts/init_skia.mjs --source  [--config Release|Debug|Both] [--backend <backend>] [--target <target>] [--arch host|arm64|x64|universal]
 
 --prebuilt   Download prebuilt Skia libraries (fast, recommended for getting started)
 --source     Build Skia from source (slower, required for custom configurations)
@@ -59,7 +67,15 @@ Backends (default: cpu):
   dawn    Dawn / WebGPU (Graphite backend)
   metal   Metal (macOS / iOS only)
 
+Targets (default: host platform):
+  win            Windows desktop
+  mac            macOS desktop
+  linux          Linux desktop
+  ios-simulator  iOS Simulator
+  ios-device     Physical iPhone / iPad
+
 Options:
+  --target <target>  Build for a specific target platform
   --skip-sync  Skip 'python tools/git-sync-deps' (use if deps are already present)
   --arch       Target architecture(s). Default: host. On macOS, use 'universal'
                to build both arm64 and x64 libs and lipo them into mac/universal/.
@@ -84,6 +100,7 @@ function parseArgs(argv) {
     prebuilt: false,
     config: 'Release',
     backend: 'cpu',
+    target: defaultTargetForPlatform(),
     skipSync: false,
     arch: 'host'
   };
@@ -126,6 +143,16 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (arg === '--target' || arg === '-target') {
+      const next = argv[index + 1];
+      if (!next) {
+        fail(`Missing value for --target. Expected one of: ${VALID_TARGETS.join(', ')}.`);
+      }
+      options.target = next.toLowerCase();
+      index += 1;
+      continue;
+    }
+
     if (arg === '--skip-sync' || arg === '-skip-sync') {
       options.skipSync = true;
       continue;
@@ -154,6 +181,10 @@ function parseArgs(argv) {
 
   if (!['host', 'arm64', 'x64', 'universal'].includes(options.arch)) {
     fail(`Invalid arch: ${options.arch}. Expected host, arm64, x64, or universal.`);
+  }
+
+  if (!VALID_TARGETS.includes(options.target)) {
+    fail(`Invalid target: ${options.target}. Expected one of: ${VALID_TARGETS.join(', ')}.`);
   }
 
   return options;
@@ -418,18 +449,24 @@ function resolveHostArch() {
   return 'x64';
 }
 
-function resolveRequestedArchs(archOption) {
+function resolveRequestedArchs(archOption, target) {
+  if (target === 'ios-device') {
+    if (archOption !== 'host' && archOption !== 'arm64') {
+      fail('Target ios-device only supports --arch arm64.');
+    }
+    return ['arm64'];
+  }
   if (archOption === 'host') return [resolveHostArch()];
   if (archOption === 'universal') {
-    if (process.platform !== 'darwin') {
-      fail('--arch universal is only supported on macOS.');
+    if (target !== 'mac') {
+      fail('--arch universal is only supported for the mac target.');
     }
     return ['arm64', 'x64'];
   }
   return [archOption];
 }
 
-function buildGnArgs(configName, backend, arch) {
+function buildGnArgs(configName, backend, target, arch) {
   const isDebug = configName === 'Debug';
 
   const common = `is_debug = ${isDebug ? 'true' : 'false'}
@@ -455,17 +492,26 @@ skia_enable_skparagraph = true
 skia_enable_tools = false
 target_cpu = "${arch}"`;
 
-  if (process.platform === 'win32') {
+  if (target === 'ios-simulator' || target === 'ios-device') {
+    return `${common}
+target_os = "ios"
+ios_use_simulator = ${target === 'ios-simulator' ? 'true' : 'false'}
+skia_ios_use_signing = false
+cc = "clang"
+cxx = "clang++"
+extra_cflags = [ "-stdlib=libc++" ]
+extra_ldflags = [ "-stdlib=libc++" ]`;
+  }
+
+  if (target === 'win') {
     const extraCFlag = isDebug ? '"/MTd"' : '"/MT"';
     return `${common}\nextra_cflags = [ ${extraCFlag} ]`;
   }
 
-  // macOS
-  if (process.platform === 'darwin') {
+  if (target === 'mac') {
     return `${common}\ncc = "clang"\ncxx = "clang++"\nextra_cflags = [ "-stdlib=libc++" ]\nextra_ldflags = [ "-stdlib=libc++" ]`;
   }
 
-  // Linux
   return `${common}\ncc = "clang"\ncxx = "clang++"\nskia_use_freetype = true\nskia_use_system_freetype2 = false\nskia_use_fontconfig = true\nskia_use_system_fontconfig = true`;
 }
 
@@ -490,8 +536,13 @@ function copyLinuxLibraries(outDir, configName, arch) {
   }
 }
 
-function copyMacLibraries(outDir, configName, arch) {
-  const libDst = path.join(depsDir, 'mac', arch, configName);
+function copyAppleLibraries(outDir, configName, arch, target) {
+  const platformDir = target === 'ios-simulator'
+    ? 'ios-simulator'
+    : target === 'ios-device'
+      ? 'ios-device'
+      : 'mac';
+  const libDst = path.join(depsDir, platformDir, arch, configName);
   ensureDirectory(libDst);
 
   for (const libraryName of libraryNames) {
@@ -685,7 +736,7 @@ async function downloadPrebuilt(backend) {
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
-  const requestedArchs = resolveRequestedArchs(options.arch);
+  const requestedArchs = resolveRequestedArchs(options.arch, options.target);
 
   if (options.prebuilt) {
     if (options.help) {
@@ -695,6 +746,10 @@ function main() {
 
     if (options.arch !== 'host') {
       fail('Prebuilt mode only supports the host architecture. Use --source with --arch arm64, x64, or universal.');
+    }
+
+    if (options.target !== defaultTargetForPlatform()) {
+      fail(`Prebuilt Skia packages are only available for the host platform target (${defaultTargetForPlatform()}). Use --source for ${options.target}.`);
     }
 
     writeRenderBackendHeader(options.backend);
@@ -722,15 +777,34 @@ function main() {
     fail(`init_skia.mjs supports Windows, macOS, and Linux. Current platform: ${os.platform()}.`);
   }
 
-  if (process.platform === 'linux' && (options.backend === 'd3d12' || options.backend === 'metal')) {
+  if (options.target === 'ios-simulator' || options.target === 'ios-device' || options.target === 'mac') {
+    if (process.platform !== 'darwin') {
+      fail(`Target '${options.target}' can only be built on macOS.`);
+    }
+  }
+
+  if (options.target === 'win' && process.platform !== 'win32') {
+    fail(`Target 'win' can only be built on Windows.`);
+  }
+
+  if (options.target === 'linux' && process.platform !== 'linux') {
+    fail(`Target 'linux' can only be built on Linux.`);
+  }
+
+  if (options.target === 'linux' && (options.backend === 'd3d12' || options.backend === 'metal')) {
     fail(`Backend '${options.backend}' is not supported on Linux. Use --backend opengl or --backend cpu.`);
   }
 
-  if (process.platform === 'darwin' && (options.backend === 'd3d12' || options.backend === 'opengl')) {
+  if (options.target === 'mac' && (options.backend === 'd3d12' || options.backend === 'opengl')) {
     fail(`Backend '${options.backend}' is not supported on macOS. Use --backend metal or --backend cpu.`);
   }
 
-  if (process.platform === 'win32' && options.backend === 'metal') {
+  if ((options.target === 'ios-simulator' || options.target === 'ios-device')
+      && (options.backend === 'd3d12' || options.backend === 'opengl' || options.backend === 'dawn')) {
+    fail(`Backend '${options.backend}' is not supported on iOS. Use --backend metal or --backend cpu.`);
+  }
+
+  if (options.target === 'win' && options.backend === 'metal') {
     fail(`Backend 'metal' is only supported on macOS.`);
   }
 
@@ -830,9 +904,11 @@ function main() {
     ? '/var/tmp/skia-build-glint'
     : null;
 
+  const isAppleTarget = options.target === 'mac' || options.target === 'ios-simulator' || options.target === 'ios-device';
+
   for (const arch of requestedArchs) {
     for (const configName of configs) {
-      if (process.platform === 'darwin' && hasMacLibraries(configName, arch)) {
+      if (options.target === 'mac' && hasMacLibraries(configName, arch)) {
         console.log(`Reusing existing Skia ${configName} libs for ${arch}.`);
         continue;
       }
@@ -840,14 +916,14 @@ function main() {
       const outDir = process.platform === 'linux'
         ? path.join(linuxNativeBuildBase, arch, configName)
         : process.platform === 'darwin'
-          ? path.join(tmpDir, 'build', arch, configName)
+          ? path.join(tmpDir, 'build', options.target, arch, configName)
           : path.join(tmpDir, 'build', 'x64', configName);
       ensureDirectory(outDir);
 
-      console.log(`Generating GN build files for ${configName} (${arch})...`);
-      run(gnExecutable, ['gen', outDir, `--args=${buildGnArgs(configName, options.backend, arch)}`], { cwd: activeSkiaSrcDir, env });
+      console.log(`Generating GN build files for ${configName} (${options.target}, ${arch})...`);
+      run(gnExecutable, ['gen', outDir, `--args=${buildGnArgs(configName, options.backend, options.target, arch)}`], { cwd: activeSkiaSrcDir, env });
 
-      console.log(`Building Skia ${configName} (${arch}) with ninja...`);
+      console.log(`Building Skia ${configName} for ${options.target} (${arch}) with ninja...`);
       // On Linux (WSL) cap parallelism to reduce concurrent I/O.
       // WSL2 kernel can produce transient I/O errors under very high
       // parallel write load; -j4 keeps throughput reasonable while staying
@@ -856,8 +932,8 @@ function main() {
       run(ninja.command, ['-C', outDir, ...ninjaJobArgs], { env });
 
       console.log(`Copying ${configName} libs (${arch})...`);
-      if (process.platform === 'darwin') {
-        copyMacLibraries(outDir, configName, arch);
+      if (isAppleTarget) {
+        copyAppleLibraries(outDir, configName, arch, options.target);
       } else if (process.platform === 'linux') {
         copyLinuxLibraries(outDir, configName, arch);
       } else {

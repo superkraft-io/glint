@@ -23,13 +23,15 @@
  * there is not enough space underneath.
  */
 
+#include "../../../platform/glint_apple_platform.hpp"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Windows implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
 #if defined(_WIN32) || defined(OS_WIN)
 
-#include "../glint_window.hpp"   // glint_window_win32 + all components
+#include "../../../glint_window.hpp"   // glint_window_win32 + all components
 #include "glint_datepicker.hpp"
 
 #include <functional>
@@ -273,7 +275,7 @@ private:
 
 #elif defined(__linux__)
 
-#include "../platform/glint_window.hpp"   // glint_window_linux + all components
+#include "../../../platform/glint_window.hpp"   // glint_window_linux + all components
 #include "glint_datepicker.hpp"
 
 #include <functional>
@@ -451,9 +453,47 @@ private:
 // macOS implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+
+// ── iOS stub implementation ────────────────────────────────────────────────
+// iOS cannot host desktop popup windows. Keep a no-op API surface so shared
+// components compile and run without linking macOS window symbols.
+class glint_datepicker_window
+{
+public:
+  static glint_datepicker_window* open(
+    int,
+    int,
+    int,
+    RECT,
+    std::function<void(int,int,int)> = nullptr,
+    std::function<void()> = nullptr)
+  {
+    static glint_datepicker_window sInstance;
+    return &sInstance;
+  }
+
+  static void _registerActive(glint_datepicker_window*, glint_element*) {}
+  static void _unregisterActive(glint_datepicker_window*) {}
+
+  void reopen(int,
+              int,
+              int,
+              RECT,
+              std::function<void(int,int,int)>,
+              std::function<void()>,
+              glint_element* = nullptr)
+  {
+  }
+
+  void hide() {}
+  void destroy() {}
+  bool isVisible() const { return false; }
+};
+
 #else
 
-#include "../platform/glint_window.hpp"   // glint_window_mac + all components
+#include "../../../platform/glint_window.hpp"   // glint_window_mac + all components
 #include "glint_datepicker.hpp"
 
 #include <functional>

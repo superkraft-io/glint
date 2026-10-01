@@ -15,9 +15,13 @@
  */
 
 #include "glint_datepicker_window.hpp"
-#include "../default_style.hpp"
+#include "../../../default_style.hpp"
+#include "../../../glint_document.hpp"
+#include "../../../platform/glint_apple_platform.hpp"
+#include "../../../platform/glint_platform_datepicker.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <functional>
@@ -65,6 +69,44 @@ class glint_date_input : public glint_element
 public:
   std::function<void(int /*year*/, int /*month*/, int /*day*/)> onChange;
 
+  void setInteractionState(bool disabled, bool readonly)
+  {
+    mDisabled = disabled;
+    mReadonly = readonly;
+
+    const bool interactive = _isInteractive();
+
+    style.pointerEvents = interactive ? "" : "none";
+    style.cursor = interactive ? "" : "default";
+
+    if (mIconEl)
+    {
+      mIconEl->hovered = false;
+      mIconEl->style.cursor = interactive ? "" : "default";
+    }
+
+    if (!interactive && mRoot && mRoot->getFocusedNode() == this)
+      mRoot->SetFocus(nullptr);
+
+    if (!_canOpenCalendar())
+      _closeCalendar();
+
+    if (!_canMutate())
+    {
+      mActiveField = -1;
+      mTypedStr.clear();
+      _refreshDisplay();
+    }
+  }
+
+  ~glint_date_input() override
+  {
+#if GLINT_PLATFORM_IOS
+    glint_platform::destroyDatePicker(mPlatformPicker_);
+    mPlatformPicker_ = nullptr;
+#endif
+  }
+
   glint_date_input()
   {
     const std::time_t now = std::time(nullptr);
@@ -80,12 +122,14 @@ public:
     _buildChildren();
 
     // Pre-warm the shared popup window on first construction.
+#if !GLINT_PLATFORM_IOS
     if (!_sharedWindow())
     {
       RECT dummy{};
       _sharedWindow() = glint_datepicker_window::open(
         mYear, mMonth, mDay, dummy, nullptr, nullptr);
     }
+#endif
   }
 
   void setDate(int year, int month, int day)
@@ -93,8 +137,45 @@ public:
     mYear  = year;
     mMonth = std::max(1, std::min(12, month));
     mDay   = std::max(1, std::min(_daysInMonth(mYear, mMonth), day));
+    mHasValue = true;
     mTypedStr.clear();
     _refreshDisplay();
+  }
+
+  void clear()
+  {
+    mHasValue = false;
+    mActiveField = -1;
+    mTypedStr.clear();
+    _refreshDisplay();
+  }
+
+  std::string getValue() const
+  {
+    if (!mHasValue)
+      return {};
+
+    char buffer[16];
+    std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", mYear, mMonth, mDay);
+    return buffer;
+  }
+
+  bool setValue(const std::string& value)
+  {
+    if (value.empty())
+    {
+      clear();
+      return true;
+    }
+
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    if (!_tryParseIsoDate(value, year, month, day))
+      return false;
+
+    setDate(year, month, day);
+    return true;
   }
 
   int year()  const { return mYear;  }
@@ -116,9 +197,32 @@ public:
     mLastRectT = mRect.T;
   }
 
+  void OnMouseDown(float x, float y, const glint_mouse_mod& mod) override
+  {
+    (void)x;
+    (void)y;
+#if GLINT_PLATFORM_IOS
+    if (mod.R || !_isInteractive())
+      return;
+    if (mRoot)
+      mRoot->SetFocus(this);
+    if (!_canOpenCalendar())
+      return;
+    _openCalendar();
+    return;
+#else
+    if (!_isInteractive())
+      return;
+    glint_element::OnMouseDown(x, y, mod);
+#endif
+  }
+
   // -- Keyboard ---------------------------------------------------------------
   bool OnKeyDown(const glint_key_press& key) override
   {
+    if (!_isInteractive())
+      return false;
+
     if (key.vk == 0x1B && mCalendarOpen) { _closeCalendar(); return true; }
     if ((key.alt && key.vk == 0x28) || key.vk == 0x73) { _toggleCalendar(); return true; }
 
@@ -161,6 +265,10 @@ public:
   void onFocusGained() override
   {
     style.borderColor = glint_color{255, 74, 144, 217};
+#if GLINT_PLATFORM_IOS
+    if (_canOpenCalendar())
+      _openCalendar();
+#endif
     setDirty(false);
   }
 
@@ -175,6 +283,9 @@ public:
 private:
   static constexpr int kMonth = 0, kDay = 1, kYear = 2;
   int  mYear = 2024, mMonth = 1, mDay = 1;
+  bool mHasValue = false;
+  bool mDisabled = false;
+  bool mReadonly = false;
   int  mActiveField   = -1;
   bool mCalendarOpen  = false;
   float mLastRectL = 0.f, mLastRectT = 0.f;
@@ -183,6 +294,9 @@ private:
   glint_element* mFieldEls  [3] = {};  // month, day, year container
   glint_element* mFieldTexts[3] = {};  // text child of each field
   _IconElem*     mIconEl        = nullptr;
+#if GLINT_PLATFORM_IOS
+  glint_platform::datepicker_handle* mPlatformPicker_ = nullptr;
+#endif
 
   static glint_datepicker_window*& _sharedWindow()
   {
@@ -205,8 +319,19 @@ private:
       el->addChild(txt);
 
       el->addEventListener("mousedown", [this, idx](glint_event&) {
+        if (!_isInteractive())
+          return;
         if (mRoot) mRoot->SetFocus(this);
+#if GLINT_PLATFORM_IOS
+        (void)idx;
+        if (!_canOpenCalendar())
+          return;
+        _openCalendar();
+#else
+        if (!_canMutate())
+          return;
         _setActiveField(idx);
+#endif
       });
       addChild(el);
     };
@@ -218,6 +343,16 @@ private:
       lbl->className = "di-sep-label";
       lbl->innerText = "/";
       sep->addChild(lbl);
+#if GLINT_PLATFORM_IOS
+      sep->addEventListener("mousedown", [this](glint_event&) {
+        if (!_isInteractive())
+          return;
+        if (mRoot) mRoot->SetFocus(this);
+        if (!_canOpenCalendar())
+          return;
+        _openCalendar();
+      });
+#endif
       addChild(sep);
     };
 
@@ -230,12 +365,32 @@ private:
     // Spacer pushes icon to the right end.
     auto* spacer = new glint_element();
     spacer->className = "di-spacer";
+#if GLINT_PLATFORM_IOS
+    spacer->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
+      if (mRoot) mRoot->SetFocus(this);
+      if (!_canOpenCalendar())
+        return;
+      _openCalendar();
+    });
+#endif
     addChild(spacer);
 
     mIconEl = new _IconElem();
     mIconEl->addEventListener("mousedown", [this](glint_event&) {
+      if (!_isInteractive())
+        return;
       if (mRoot) mRoot->SetFocus(this);
+#if GLINT_PLATFORM_IOS
+      if (!_canOpenCalendar())
+        return;
+      _openCalendar();
+#else
+      if (!_canOpenCalendar())
+        return;
       _toggleCalendar();
+#endif
     });
     addChild(mIconEl);
 
@@ -250,6 +405,8 @@ private:
     char bufY[8]; std::snprintf(bufY, sizeof(bufY), "%04d", mYear);
 
     const char* bufs[3] = { bufM, bufD, bufY };
+    if (!mHasValue)
+      bufs[0] = bufs[1] = bufs[2] = "";
 
     for (int i = 0; i < 3; ++i)
     {
@@ -277,16 +434,18 @@ private:
     _refreshDisplay();
   }
 
+  bool _isInteractive() const { return !mDisabled && !mReadonly; }
+  bool _canMutate() const { return _isInteractive(); }
+  bool _canOpenCalendar() const { return _isInteractive(); }
+
   // ── Calendar open / close ──────────────────────────────────────────────────
   void _toggleCalendar() { mCalendarOpen ? _closeCalendar() : _openCalendar(); }
 
   RECT _anchorScreenRect() const
   {
-    float cl = mRect.L, ct = mRect.T;
-    for (glint_element* p = mParent; p; p = p->mParent) {
-      cl -= p->mScrollLeft;
-      ct -= p->mScrollTop;
-    }
+    const glint_point pos = mRoot ? getPosition(&mRoot->mCanvas) : getPosition();
+    const float cl = pos.x;
+    const float ct = pos.y;
     const float bW = mRect.W(), bH = mRect.H();
 
 #if defined(_WIN32) || defined(OS_WIN)
@@ -301,20 +460,59 @@ private:
     return (mRoot && mRoot->linuxWindow)
       ? mRoot->linuxWindow->contentRectToScreen(cl, ct, bW, bH)
       : RECT{};
-#else
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+  return { static_cast<int>(cl),
+       static_cast<int>(ct),
+       static_cast<int>(cl + bW),
+       static_cast<int>(ct + bH) };
+#elif defined(__APPLE__) && !TARGET_OS_IPHONE
     return (mRoot && mRoot->macWindow)
       ? mRoot->macWindow->contentRectToScreen(cl, ct, bW, bH)
       : RECT{};
+#else
+    return RECT{};
 #endif
   }
 
   void _openCalendar()
   {
+    if (!_canOpenCalendar())
+      return;
+
+#if GLINT_PLATFORM_IOS
+    if (mCalendarOpen)
+      return;
+
+    mCalendarOpen = true;
+    const RECT popupAnchor = _anchorScreenRect();
+    mPlatformPicker_ = glint_platform::reopenDatePicker(
+      mPlatformPicker_,
+      mYear,
+      mMonth,
+      mDay,
+      popupAnchor,
+      [this](int year, int month, int day) {
+        if (!_canMutate())
+          return;
+        setDate(year, month, day);
+        if (onChange) onChange(mYear, mMonth, mDay);
+      },
+      nullptr,
+      nullptr,
+      [this]() {
+        mCalendarOpen = false;
+        setDirty(false);
+      });
+    return;
+#endif
+
     mCalendarOpen = true;
     const RECT anchor = _anchorScreenRect();
 
     auto onPicked = [this](int y, int m, int d)
     {
+      if (!_canMutate())
+        return;
       setDate(y, m, d);
       mCalendarOpen = false;
       if (mRoot) mRoot->SetFocus(this);
@@ -328,6 +526,12 @@ private:
 
   void _closeCalendar()
   {
+#if GLINT_PLATFORM_IOS
+    glint_platform::hideDatePicker(mPlatformPicker_);
+    mCalendarOpen = false;
+    return;
+#endif
+
     if (!mCalendarOpen) return;
     mCalendarOpen = false;
     _sharedWindow()->hide();
@@ -336,6 +540,11 @@ private:
   // ── Step / type ────────────────────────────────────────────────────────────
   void _stepField(int f, int delta)
   {
+    if (!_canMutate())
+      return;
+
+    if (!mHasValue)
+      mHasValue = true;
     mTypedStr.clear();
     if (f == kMonth)
     {
@@ -362,6 +571,11 @@ private:
 
   void _handleDigit(char ch)
   {
+    if (!_canMutate())
+      return;
+
+    if (!mHasValue)
+      mHasValue = true;
     const int digit = ch - '0';
     if (mActiveField == kMonth)
     {
@@ -400,5 +614,17 @@ private:
     static const int kD[] = { 0,31,28,31,30,31,30,31,31,30,31,30,31 };
     if (m == 2) { bool l = (y%4==0 && y%100!=0) || (y%400==0); return l ? 29 : 28; }
     return (m >= 1 && m <= 12) ? kD[m] : 30;
+  }
+
+  static bool _tryParseIsoDate(const std::string& value, int& year, int& month, int& day)
+  {
+    char trailing = 0;
+    if (std::sscanf(value.c_str(), "%d-%d-%d%c", &year, &month, &day, &trailing) != 3)
+      return false;
+    if (year < 1 || month < 1 || month > 12)
+      return false;
+    if (day < 1 || day > _daysInMonth(year, month))
+      return false;
+    return true;
   }
 };

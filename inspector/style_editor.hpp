@@ -755,6 +755,60 @@ static bool glint_prop_is_set(const std::string& key, const glint_style_info& in
   return it->second != dit->second;
 }
 
+static bool glint_side_is_authored(const sk_side_proxy& side)
+{
+  return side._rawp && !side._rawp->empty();
+}
+
+static bool glint_inline_prop_is_set(const glint_style& style,
+                                     const std::string& key,
+                                     const glint_style_info& info)
+{
+  if (key == "opacity")        return style.opacity.isSet;
+  if (key == "font-weight")    return style.fontWeight.isSet;
+  if (key == "stroke-opacity") return style.strokeOpacity.isSet;
+
+  if (key == "padding")
+    return info.count(key) > 0 && glint_side_is_authored(style.paddingTop)
+           && glint_side_is_authored(style.paddingRight)
+           && glint_side_is_authored(style.paddingBottom)
+           && glint_side_is_authored(style.paddingLeft);
+  if (key == "padding-top")    return info.count(key) > 0 && glint_side_is_authored(style.paddingTop);
+  if (key == "padding-right")  return info.count(key) > 0 && glint_side_is_authored(style.paddingRight);
+  if (key == "padding-bottom") return info.count(key) > 0 && glint_side_is_authored(style.paddingBottom);
+  if (key == "padding-left")   return info.count(key) > 0 && glint_side_is_authored(style.paddingLeft);
+
+  if (key == "margin")
+    return info.count(key) > 0 && glint_side_is_authored(style.marginTop)
+           && glint_side_is_authored(style.marginRight)
+           && glint_side_is_authored(style.marginBottom)
+           && glint_side_is_authored(style.marginLeft);
+  if (key == "margin-top")    return info.count(key) > 0 && glint_side_is_authored(style.marginTop);
+  if (key == "margin-right")  return info.count(key) > 0 && glint_side_is_authored(style.marginRight);
+  if (key == "margin-bottom") return info.count(key) > 0 && glint_side_is_authored(style.marginBottom);
+  if (key == "margin-left")   return info.count(key) > 0 && glint_side_is_authored(style.marginLeft);
+
+  return glint_prop_is_set(key, info);
+}
+
+static bool glint_style_clear_inline_by_name(glint_style& s, const std::string& key)
+{
+  if (key == "opacity")             { s.opacity = ""; return true; }
+  if (key == "font-weight")         { s.fontWeight = ""; return true; }
+  if (key == "stroke-opacity")      { s.strokeOpacity = ""; return true; }
+  if (key == "padding")             { s.padding = ""; return true; }
+  if (key == "padding-top")         { s.paddingTop = ""; return true; }
+  if (key == "padding-right")       { s.paddingRight = ""; return true; }
+  if (key == "padding-bottom")      { s.paddingBottom = ""; return true; }
+  if (key == "padding-left")        { s.paddingLeft = ""; return true; }
+  if (key == "margin")              { s.margin = ""; return true; }
+  if (key == "margin-top")          { s.marginTop = ""; return true; }
+  if (key == "margin-right")        { s.marginRight = ""; return true; }
+  if (key == "margin-bottom")       { s.marginBottom = ""; return true; }
+  if (key == "margin-left")         { s.marginLeft = ""; return true; }
+  return false;
+}
+
 // Returns a sensible non-default starter value for a property being added.
 static std::string glint_add_default(const std::string& key)
 {
@@ -1614,7 +1668,7 @@ public:
     // !important author rules per the CSS cascade spec).
     std::vector<GlintMatchedCssRule> liveRules;
     std::unordered_set<std::string> importantCssProps;
-    if (comp->mRoot && !comp->mRoot->stylesheets().empty())
+    if (comp->mRoot)
     {
       liveRules = comp->mRoot->matchedCssRulesFor(comp, /*forcePseudoClasses=*/false);
       for (const auto& rule : liveRules)
@@ -1631,7 +1685,7 @@ public:
     {
       const std::string key = k;
       const std::string dId = _declId("", "", key);
-      bool isSet = glint_prop_is_set(key, info);
+      bool isSet = glint_inline_prop_is_set(comp->style, key, info);
       // Chrome spec: glint_optional_float properties carry an explicit isSet flag
       // that is more authoritative than value comparison.  Without this, setting
       // e.g. style.opacity = 1.f is invisible because "1" == default "1", yet
@@ -1674,7 +1728,7 @@ public:
     // -- Footer: } -----------------------------------------------------------
     buildLine("}", 24.f, 8.f);
 
-    const bool shouldDeferCssRules = isFirstShow && comp->mRoot && !comp->mRoot->stylesheets().empty();
+    const bool shouldDeferCssRules = isFirstShow && comp->mRoot;
     if (shouldDeferCssRules)
     {
       mDeferredCssComp              = comp;
@@ -1684,7 +1738,7 @@ public:
       mDeferredCssSeedDisabledDecls = isFirstShow;
       mDeferredCssRulesStage        = 1;
     }
-    else if (comp->mRoot && !comp->mRoot->stylesheets().empty())
+    else if (comp->mRoot)
     {
       appendCssRuleBlocks(comp,
                           info,
@@ -3802,6 +3856,7 @@ private:
     del->style.color            = glint_color(255, 170, 170, 175); // grey X
     del->style.fontSize         = 12.f;
     del->style.fontWeight       = 700;
+    del->style.padding          = 0.f;
     del->style.textAlign        = EAlign::Center;
     const std::string delKey = key;
     PropDeleter ownedDeleter = deleter;  // capture by value
@@ -3823,14 +3878,15 @@ private:
       }
       else if (mLiveComp)
       {
-        // Inline element.style row: reset the property to its spec default.
-        const auto& def = glint_default_style_info();
-        auto it = def.find(delKey);
-        if (it != def.end())
+        if (!glint_style_clear_inline_by_name(mLiveComp->style, delKey))
         {
-          glint_style_set_by_name(mLiveComp->style, delKey, it->second);
-          mLiveComp->setDirty(false);
+          // Inline element.style row: reset the property to its spec default.
+          const auto& def = glint_default_style_info();
+          auto it = def.find(delKey);
+          if (it != def.end())
+            glint_style_set_by_name(mLiveComp->style, delKey, it->second);
         }
+        mLiveComp->setDirty(false);
       }
       mRebuildPending = true;
       setDirty(false);
@@ -3918,7 +3974,8 @@ inline void InspNameButton::OnMouseDown(float /*x*/, float /*y*/, const glint_mo
     if (mWriter)
       mWriter(mKey, it->second);
     else {
-      glint_style_set_by_name(liveComp->style, mKey, it->second);
+      if (!glint_style_clear_inline_by_name(liveComp->style, mKey))
+        glint_style_set_by_name(liveComp->style, mKey, it->second);
       liveComp->setDirty(false);
     }
   }

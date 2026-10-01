@@ -20,6 +20,7 @@
 #include <atomic>
 
 #include "glint_window_mac.hpp"
+#include "../../i18n/glint_i18n.hpp"
 #include "../../glint_bus.hpp"        // glint_insp_bridge declarations
 #ifndef GLINT_INSPECTOR_DISABLED
 #  include "../../components/glint_builder.hpp"  // glint_component_style + full builder (needed by inspector headers)
@@ -1042,6 +1043,8 @@ void glint_window_mac::_createPanelAndView()
   // the user clicks elsewhere (enabling auto-dismiss).  Framed inspector
   // windows also benefit from makeKeyAndOrderFront:.
   [panel makeKeyAndOrderFront:nil];
+  if (mViewHandle)
+    [panel makeFirstResponder:(__bridge NSView*)mViewHandle];
 
   // Now that the panel is on screen, correct the Metal layer's contentsScale
   // and drawableSize to match the actual HiDPI backing scale factor.
@@ -1214,13 +1217,21 @@ void glint_window_mac::showPanel()
 {
   if ([NSThread isMainThread]) {
     mSuppressAutoClose = false;   // re-enable outside-click auto-dismiss
-    if (mPanelHandle)
-      [(__bridge NSWindow*)mPanelHandle makeKeyAndOrderFront:nil];
+    if (mPanelHandle) {
+      NSWindow* panel = (__bridge NSWindow*)mPanelHandle;
+      [panel makeKeyAndOrderFront:nil];
+      if (mViewHandle)
+        [panel makeFirstResponder:(__bridge NSView*)mViewHandle];
+    }
   } else {
     _dispatchMain([this] {
       mSuppressAutoClose = false;
-      if (mPanelHandle)
-        [(__bridge NSWindow*)mPanelHandle makeKeyAndOrderFront:nil];
+      if (mPanelHandle) {
+        NSWindow* panel = (__bridge NSWindow*)mPanelHandle;
+        [panel makeKeyAndOrderFront:nil];
+        if (mViewHandle)
+          [panel makeFirstResponder:(__bridge NSView*)mViewHandle];
+      }
     });
   }
 }
@@ -1290,19 +1301,20 @@ static void _glintPrepareForModalDialog()
     [window makeKeyAndOrderFront:nil];
 }
 
-static std::string _glintRunOpenPanel(bool chooseFiles,
-                                      bool chooseDirectories,
-                                      const std::vector<std::string>& extensions,
-                                      const std::string& title)
+static std::vector<std::string> _glintRunOpenPanel(bool chooseFiles,
+                                                   bool chooseDirectories,
+                                                   bool allowMultipleSelection,
+                                                   const std::vector<std::string>& extensions,
+                                                   const std::string& title)
 {
-  __block std::string result;
+  __block std::vector<std::string> result;
   auto run = ^{
     _glintPrepareForModalDialog();
 
     NSOpenPanel* panel = [NSOpenPanel openPanel];
     [panel setCanChooseFiles:chooseFiles ? YES : NO];
     [panel setCanChooseDirectories:chooseDirectories ? YES : NO];
-    [panel setAllowsMultipleSelection:NO];
+    [panel setAllowsMultipleSelection:allowMultipleSelection ? YES : NO];
     [panel setCanCreateDirectories:chooseDirectories ? YES : NO];
     if (NSString* nsTitle = _glintNSStringFromUtf8(title))
       [panel setTitle:nsTitle];
@@ -1310,10 +1322,13 @@ static std::string _glintRunOpenPanel(bool chooseFiles,
       [panel setAllowedFileTypes:fileTypes];
 
     if ([panel runModal] != NSModalResponseOK) return;
-    NSString* path = [[panel URL] path];
-    if (!path) return;
-    const char* utf8 = [path UTF8String];
-    if (utf8) result = utf8;
+    for (NSURL* url in [panel URLs])
+    {
+      NSString* path = [url path];
+      if (!path) continue;
+      const char* utf8 = [path UTF8String];
+      if (utf8) result.emplace_back(utf8);
+    }
   };
 
   if ([NSThread isMainThread]) run();
@@ -1325,7 +1340,15 @@ std::string showOpenFileDialog(const std::vector<std::string>& extensions,
                                const std::string& title,
                                bool allowDirectories)
 {
-  return _glintRunOpenPanel(true, allowDirectories, extensions, title);
+  const auto results = _glintRunOpenPanel(true, allowDirectories, false, extensions, title);
+  return results.empty() ? std::string{} : results.front();
+}
+
+std::vector<std::string> showOpenFilesDialog(const std::vector<std::string>& extensions,
+                                             const std::string& title,
+                                             bool allowDirectories)
+{
+  return _glintRunOpenPanel(true, allowDirectories, true, extensions, title);
 }
 
 std::string showSaveFileDialog(const std::vector<std::string>& extensions,
@@ -1362,7 +1385,7 @@ std::string showSaveFileDialog(const std::vector<std::string>& extensions,
         normalized.erase(normalized.begin());
       if (NSString* ext = _glintNSStringFromUtf8(normalized))
         if ([[panel nameFieldStringValue] length] == 0)
-        [panel setNameFieldStringValue:[@"Untitled." stringByAppendingString:ext]];
+        [panel setNameFieldStringValue:[[ _glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::file_dialog_untitled)) stringByAppendingString:@"."] stringByAppendingString:ext]];
     }
 
     if ([panel runModal] != NSModalResponseOK) return;
@@ -1411,7 +1434,8 @@ std::string showSaveFileDialog(const std::vector<std::string>& extensions,
 
 std::string showOpenFolderDialog(const std::string& title)
 {
-  return _glintRunOpenPanel(false, true, {}, title);
+  const auto results = _glintRunOpenPanel(false, true, false, {}, title);
+  return results.empty() ? std::string{} : results.front();
 }
 
 void showAlertDialog(const std::string& title, const std::string& message)
@@ -1424,7 +1448,7 @@ void showAlertDialog(const std::string& title, const std::string& message)
       [alert setMessageText:nsTitle];
     if (NSString* nsMessage = _glintNSStringFromUtf8(message))
       [alert setInformativeText:nsMessage];
-    [alert addButtonWithTitle:@"OK"];
+    [alert addButtonWithTitle:_glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::common_ok))];
     [alert runModal];
   };
 
@@ -1450,9 +1474,9 @@ confirm_dialog_result showConfirmDialog(const std::string& title,
     NSString* primary = _glintNSStringFromUtf8(primaryButton);
     NSString* secondary = _glintNSStringFromUtf8(secondaryButton);
     NSString* cancel = _glintNSStringFromUtf8(cancelButton);
-    [alert addButtonWithTitle:primary ? primary : @"OK"];
-    [alert addButtonWithTitle:secondary ? secondary : @"No"];
-    [alert addButtonWithTitle:cancel ? cancel : @"Cancel"];
+    [alert addButtonWithTitle:primary ? primary : _glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::common_ok))];
+    [alert addButtonWithTitle:secondary ? secondary : _glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::common_no))];
+    [alert addButtonWithTitle:cancel ? cancel : _glintNSStringFromUtf8(glint_i18n::localized(glint_i18n_key::common_cancel))];
 
     const NSModalResponse response = [alert runModal];
     if (response == NSAlertFirstButtonReturn)
@@ -1560,6 +1584,17 @@ int showContextMenu(int screenX, int screenY,
   if ([NSThread isMainThread]) run();
   else dispatch_sync(dispatch_get_main_queue(), ^{ run(); });
   return selected;
+}
+
+int showSelectMenu(int screenX, int screenY,
+                   const std::vector<std::pair<int, std::string>>& items,
+                   int selectedId,
+                   const std::vector<int>& disabledIds)
+{
+  const std::vector<int> checkedIds = selectedId > 0
+    ? std::vector<int>{selectedId}
+    : std::vector<int>{};
+  return showContextMenu(screenX, screenY, items, disabledIds, checkedIds);
 }
 
 } // namespace glint_platform

@@ -29,6 +29,7 @@
  */
 
 #include "glint_graphics.hpp"      // glint_rect, glint_color, glint_canvas, glint_popup_menu — centralized seam
+#include "i18n/glint_i18n.hpp"
 #include "glint_types.hpp"   // glint_mouse_mod, glint_no_tag, glint_no_val_idx
 #include "utils/glint_debug.hpp"
 #include "element/glint_html_element.hpp"  // includes glint_style.hpp transitively
@@ -37,6 +38,7 @@
 #if defined(__APPLE__)
 #include "platform/glint_platform.hpp"
 #endif
+#include "render/glint_tree_node.hpp"
 #include "render/glint_filter.hpp"
 #include "render/glint_mask.hpp"
 #include "include/core/SkBlurTypes.h"
@@ -115,6 +117,20 @@ inline glint_rect sk_rect(float x, float y, float width, float height)
 class glint_document;
 // Forward declaration — glint_scrollbar is defined in components/glint_scrollbar/glint_scrollbar.hpp.
 class glint_scrollbar;
+class glint_element;
+
+struct glint_form_value
+{
+  std::string name;
+  std::string value;
+  struct file_entry
+  {
+    std::string name;
+    std::string path;
+  };
+  std::vector<file_entry> files;
+  glint_element* control = nullptr;
+};
 
 // ── glint_element ───────────────────────────────────────────────────────────
 // Plain C++ base owned by its parent component or by
@@ -288,6 +304,67 @@ public:
   // Read `float v = el->scrollTop;` to get current position.
   glint_html_element::sk_scroll_prop& scrollTop;
   glint_html_element::sk_scroll_prop& scrollLeft;
+
+  // Convenience helpers mirroring DOM-style scrollTo behavior.
+  // `left` controls horizontal scroll, `top` controls vertical scroll.
+  void scrollTo(float left, float top)
+  {
+    const float sbW = computedStyle.scrollbarWidth;
+    const bool hasSV = mScrollbarV && mScrollbarV->style.display != "none";
+    const bool hasSH = mScrollbarH && mScrollbarH->style.display != "none";
+    const float viewW = GetPaintRECT().W() - (hasSV ? sbW : 0.f);
+    const float viewH = GetPaintRECT().H() - (hasSH ? sbW : 0.f);
+    const float nextLeft = std::max(0.f, std::min(left, std::max(0.f, mScrollWidth - viewW)));
+    const float nextTop = std::max(0.f, std::min(top, std::max(0.f, mScrollHeight - viewH)));
+
+    if (std::fabs(nextLeft - mScrollLeft) <= 0.5f && std::fabs(nextTop - mScrollTop) <= 0.5f)
+      return;
+
+    mScrollLeft = nextLeft;
+    mScrollTop = nextTop;
+
+    glint_event se;
+    se.type = "scroll";
+    se.bubbles = false;
+    se.cancelable = false;
+    dispatchDOMEvent(se);
+    _refreshRootHoverFromPointer();
+    setDirty(false);
+  }
+
+  void scrollTo(const glint_point& point)
+  {
+    scrollTo(point.x, point.y);
+  }
+
+  void scrollToX(float left)
+  {
+    scrollTo(left, mScrollTop);
+  }
+
+  void scrollToY(float top)
+  {
+    scrollTo(mScrollLeft, top);
+  }
+
+  void scrollIntoView()
+  {
+    if (!mParent) return;
+
+    glint_element* parent = mParent;
+    const float sbW = parent->computedStyle.scrollbarWidth;
+    const bool hasSV = parent->mScrollbarV && parent->mScrollbarV->style.display != "none";
+    const bool hasSH = parent->mScrollbarH && parent->mScrollbarH->style.display != "none";
+    const float viewW = parent->GetPaintRECT().W() - (hasSV ? sbW : 0.f);
+    const float viewH = parent->GetPaintRECT().H() - (hasSH ? sbW : 0.f);
+    if (viewW <= 0.f || viewH <= 0.f) return;
+
+    const glint_point pos = getPosition(parent);
+    const glint_rect rect = GetPaintRECT();
+    const float targetLeft = parent->mScrollLeft + pos.x + rect.W() * 0.5f - viewW * 0.5f;
+    const float targetTop = parent->mScrollTop + pos.y + rect.H() * 0.5f - viewH * 0.5f;
+    parent->scrollTo(targetLeft, targetTop);
+  }
 
   // Computed style — what Draw, getContent and HitTest actually read.
   // Synced from `style` each frame by tickTransitions(). During a transition,
@@ -546,6 +623,25 @@ public:
   /** Returns the full rect (may be inflated by filter pad). */
   glint_rect GetRECT() const { return mRect; }
 
+  /**
+   * Returns this element's top-left position relative to another element in the
+   * same tree, subtracting ancestor scroll offsets along the way.
+   *
+   * Passing nullptr returns the position inside the parent viewport, which means
+   * the parent's current scroll offset is accounted for. If this element has no
+   * parent, nullptr falls back to the root client-space position.
+   */
+  glint_point getPosition(const glint_element* relativeTo = nullptr) const
+  {
+    const glint_point self = _positionInClientSpace();
+    const glint_element* target = relativeTo ? relativeTo : mParent;
+    if (!target) return self;
+    if (mRoot && target->mRoot && mRoot != target->mRoot) return self;
+
+    const glint_point base = target->_positionInClientSpace();
+    return glint_point(self.x - base.x, self.y - base.y);
+  }
+
   /** Returns the inner rect after subtracting padding and border from all four sides. */
   glint_rect getContent() const
   {
@@ -583,6 +679,19 @@ public:
   }
 
   // ── Tree mechanics ─────────────────────────────────────────────────────────
+
+  glint_point _positionInClientSpace() const
+  {
+    const glint_rect rect = GetPaintRECT();
+    float x = rect.L;
+    float y = rect.T;
+    for (const glint_element* p = mParent; p; p = p->mParent)
+    {
+      x -= p->mScrollLeft;
+      y -= p->mScrollTop;
+    }
+    return glint_point(x, y);
+  }
 
   bool isInspectorRemoved() const { return mInspectorRemoved; }
 
@@ -670,6 +779,8 @@ public:
       mApplyCss(mChildren[mChildren.size() - 2].get());
     // Tree shape changed — next frame must relayout.
     if (mRoot) _markRootLayoutDirty();
+    if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
+    if (mRequestRedraw) mRequestRedraw();
     // Notify the inspector (if open) that the tree has changed.
     callRootTreeChanged();
   }
@@ -697,6 +808,8 @@ public:
       element.scrollCornerBox = nullptr;
     }
     if (mRoot) _markRootLayoutDirty();
+    if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
+    if (mRequestRedraw) mRequestRedraw();
     callRootTreeChanged();
   }
 
@@ -723,6 +836,8 @@ public:
     if (erased)
     {
       if (mRoot) _markRootLayoutDirty();
+      if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
+      if (mRequestRedraw) mRequestRedraw();
       callRootTreeChanged();
     }
   }
@@ -773,6 +888,16 @@ public:
     found = false;
     return "";
   }
+
+  // Controls override these hooks when they participate in a parent <form>.
+  virtual bool isFormAssociatedControl() const { return false; }
+  virtual std::string formControlName() const { return {}; }
+  virtual bool isFormControlDisabled() const { return false; }
+  virtual bool formControlIsValid() const { return true; }
+  virtual void captureFormDefaultsIfNeeded() {}
+  virtual void resetFormControl() {}
+  virtual void appendFormValues(std::vector<glint_form_value>&,
+                                const glint_element* /*submitter*/) const {}
 
   /** DOM appendChild — adds a child node. Alias for addChild(). */
   void appendChild(glint_element* node) { addChild(node); }
@@ -2784,15 +2909,22 @@ protected:
     HWND hwnd = mpG ? static_cast<HWND>(mpG->GetWindow()) : nullptr;
     if (!hwnd) return;
 
-    auto sysStr = [](UINT id, const wchar_t* fb) -> std::wstring {
-      wchar_t buf[256] = {};
-      int n = ::LoadStringW(::GetModuleHandleW(L"user32.dll"), id, buf, 256);
-      return n > 0 ? std::wstring(buf, static_cast<std::size_t>(n)) : fb;
+    auto utf8ToWide = [](const std::string& utf8) -> std::wstring {
+      if (utf8.empty())
+        return {};
+      const int size = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), nullptr, 0);
+      if (size <= 0)
+        return {};
+      std::wstring wide(static_cast<size_t>(size), L'\0');
+      ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), wide.data(), size);
+      return wide;
     };
+    const std::wstring sCopy = utf8ToWide(glint_i18n::localized(glint_i18n_key::edit_copy));
+    const std::wstring sSelectAll = utf8ToWide(glint_i18n::localized(glint_i18n_key::edit_select_all));
     HMENU hMenu = ::CreatePopupMenu();
-    ::AppendMenuW(hMenu, MF_STRING | (hasSelection ? 0u : MF_GRAYED), 1, sysStr(31962, L"&Copy").c_str());
+    ::AppendMenuW(hMenu, MF_STRING | (hasSelection ? 0u : MF_GRAYED), 1, sCopy.c_str());
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    ::AppendMenuW(hMenu, MF_STRING | MF_ENABLED, 3, sysStr(31965, L"Select &All").c_str());
+    ::AppendMenuW(hMenu, MF_STRING | MF_ENABLED, 3, sSelectAll.c_str());
 
     POINT pt = { static_cast<LONG>(wx), static_cast<LONG>(wy) };
     ::ClientToScreen(hwnd, &pt);
@@ -2816,7 +2948,9 @@ protected:
     (void)x; (void)y;
     const bool hasSelection = (mSelStart != -1 && mSelStart != mSelEnd);
     const std::vector<std::pair<int, std::string>> menuItems = {
-      {1, "Copy"}, {0, "-"}, {3, "Select All"}
+      {1, glint_i18n::localized(glint_i18n_key::edit_copy)},
+      {0, "-"},
+      {3, glint_i18n::localized(glint_i18n_key::edit_select_all)}
     };
     const std::vector<int> grayed = hasSelection
       ? std::vector<int>{}

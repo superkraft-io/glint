@@ -54,8 +54,10 @@ public:
   // ── Public fields — set in the builder callback ───────────────────────────
   std::vector<std::string>                    options;
   int                                         selectedIndex = -1;   // -1 = nothing selected
+  std::string                                 name;
   std::string                                 placeholder   = "Select…";
   std::function<void(int, const std::string&)> onChange;
+  bool                                        disabled = false;
 
   glint_style hover;    // mouse-over state  (base `style` = normal state)
   glint_style pressed;  // mouse-down state
@@ -67,6 +69,44 @@ public:
   }
 
   const char* typeName() const override { return "select"; }
+
+  std::string getAttribute(const std::string& attrName, bool& found) const override
+  {
+    if (attrName == "name") { found = true; return name; }
+    if (attrName == "disabled") { found = true; return disabled ? "true" : std::string(); }
+    return glint_element::getAttribute(attrName, found);
+  }
+
+  bool isFormAssociatedControl() const override { return true; }
+  std::string formControlName() const override { return name; }
+  bool isFormControlDisabled() const override { return disabled; }
+  bool formControlIsValid() const override { return true; }
+
+  void captureFormDefaultsIfNeeded() override
+  {
+    if (mFormDefaultsCaptured) return;
+    mDefaultSelectedIndex = selectedIndex;
+    mFormDefaultsCaptured = true;
+  }
+
+  void resetFormControl() override
+  {
+    captureFormDefaultsIfNeeded();
+    selectedIndex = mDefaultSelectedIndex;
+    setDirty(false);
+  }
+
+  void appendFormValues(std::vector<glint_form_value>& values,
+                        const glint_element* /*submitter*/) const override
+  {
+    if (disabled || name.empty()) return;
+    if (selectedIndex < 0 || selectedIndex >= static_cast<int>(options.size())) return;
+    glint_form_value selectedValue;
+    selectedValue.name = name;
+    selectedValue.value = options[selectedIndex];
+    selectedValue.control = const_cast<glint_select*>(this);
+    values.push_back(std::move(selectedValue));
+  }
 
   // ── Accessors ──────────────────────────────────────────────────────────────
 
@@ -91,6 +131,7 @@ public:
 
   void OnMouseOver(float, float, const glint_mouse_mod&) override
   {
+    if (disabled) return;
     if (!mIsHovered)
     {
       mIsHovered = true;
@@ -108,6 +149,7 @@ public:
 
   void OnMouseDown(float, float, const glint_mouse_mod&) override
   {
+    if (disabled) return;
     mIsPressed = true;
     _startStateTransition();
     setDirty(false);
@@ -115,6 +157,7 @@ public:
 
   void OnMouseUp(float x, float y, const glint_mouse_mod&) override
   {
+    if (disabled) return;
     const bool wasPressed = mIsPressed;
     mIsPressed = false;
     _startStateTransition();
@@ -153,6 +196,8 @@ protected:
   bool               mIsHovered           = false;
   bool               mIsPressed           = false;
   const glint_style*  mActiveStyle         = nullptr;
+  bool               mFormDefaultsCaptured = false;
+  int                mDefaultSelectedIndex = -1;
 
   // ── State-transition animation (mirrors glint_button exactly) ──────────────
   glint_style  mStateComputedStyle;
@@ -294,7 +339,10 @@ protected:
     for (int i = 0; i < static_cast<int>(options.size()); ++i)
       items.push_back({i + 1, options[i]});
     const std::vector<int> disabled;
-    const int result = glint_platform::showContextMenu(0, 0, items, disabled);
+    const int selectedId = (selectedIndex >= 0 && selectedIndex < static_cast<int>(options.size()))
+      ? selectedIndex + 1
+      : 0;
+    const int result = glint_platform::showSelectMenu(0, 0, items, selectedId, disabled);
     if (result >= 1 && result - 1 < static_cast<int>(options.size()))
     {
       selectedIndex = result - 1;

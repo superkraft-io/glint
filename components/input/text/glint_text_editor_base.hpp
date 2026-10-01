@@ -23,15 +23,16 @@
  *   };
  */
 
-#include "../glint_element.hpp"
+#include "../../../glint_element.hpp"
 #if defined(__APPLE__)
-#include "../platform/glint_platform.hpp"
+#include "../../../platform/glint_platform.hpp"
 #endif
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <regex>
 #include <string>
 #include <utility>
 
@@ -97,6 +98,52 @@ public:
   /** Returns the current text-cursor byte index (always on a codepoint boundary). */
   int getCursorPos() const { return mCursorPos; }
 
+  bool hasSelection() const
+  {
+    return mSelStart != -1 && mSelStart != mSelEnd;
+  }
+
+  bool canCopySelection() const
+  {
+    return hasSelection();
+  }
+
+  bool canCutSelection() const
+  {
+    return !readonly && hasSelection() && canDeleteCodepoints(selectedCodepointLength());
+  }
+
+  bool canPasteFromClipboard() const
+  {
+    return !readonly && !getClipboard().empty();
+  }
+
+  bool canSelectAllText() const
+  {
+    return !mText.empty() && (!hasSelection() || std::min(mSelStart, mSelEnd) != 0
+                              || std::max(mSelStart, mSelEnd) != static_cast<int>(mText.size()));
+  }
+
+  void copySelection()
+  {
+    copy();
+  }
+
+  void cutSelection()
+  {
+    if (!readonly) cut();
+  }
+
+  void pasteFromClipboard()
+  {
+    if (!readonly) paste();
+  }
+
+  void selectAllText()
+  {
+    selectAll();
+  }
+
   void setValue(const std::string& s)
   {
     setValueInternal(s, true);
@@ -107,16 +154,36 @@ public:
     setValueInternal(s, false);
   }
 
-private:
-  void setValueInternal(const std::string& s, bool requestRedraw)
+  void replaceTextFromPlatform(const std::string& s)
   {
-    if (mText == s
+    const std::string clamped = clampTextToMaxLength(s);
+    if (mText == clamped
         && mCursorPos == static_cast<int>(mText.size())
         && mSelStart == -1
         && mSelEnd == -1)
       return;
 
-    mText      = s;
+    mText = clamped;
+    mCursorPos = static_cast<int>(mText.size());
+    mSelStart = mSelEnd = -1;
+    onTextChanged();
+    if (onChange) onChange(mText);
+    resetBlink();
+    onCursorMoved();
+    setDirty(false);
+  }
+
+private:
+  void setValueInternal(const std::string& s, bool requestRedraw)
+  {
+    const std::string clamped = clampTextToMaxLength(s);
+    if (mText == clamped
+        && mCursorPos == static_cast<int>(mText.size())
+        && mSelStart == -1
+        && mSelEnd == -1)
+      return;
+
+    mText      = clamped;
     mCursorPos = static_cast<int>(mText.size());
     mSelStart = mSelEnd = -1;
     onTextChanged();
@@ -124,6 +191,61 @@ private:
   }
 
   public:
+
+  std::string clampTextToMaxLength(const std::string& s) const
+  {
+    const int maxLength = maxTextLength();
+    if (maxLength < 0) return s;
+    return truncateToCodepoints(s, maxLength);
+  }
+
+  /** Maximum number of Unicode codepoints allowed, or -1 when unlimited. */
+  virtual int maxTextLength() const { return -1; }
+
+  /** Minimum number of Unicode codepoints required, or -1 when unlimited. */
+  virtual int minTextLength() const { return -1; }
+
+  /** Whether an empty value is invalid for this text editor. */
+  virtual bool isRequiredTextValue() const { return false; }
+
+  /** Regex pattern used for validity checks, or empty when unset. */
+  virtual std::string validationPattern() const { return {}; }
+
+  bool satisfiesRequiredTextValue() const
+  {
+    if (disabled || !isRequiredTextValue()) return true;
+    return !mText.empty();
+  }
+
+  bool satisfiesMinTextLength() const
+  {
+    const int minLength = minTextLength();
+    if (minLength < 0) return true;
+    if (mText.empty()) return true;
+    return codepointCount(mText) >= minLength;
+  }
+
+  bool satisfiesPatternConstraint() const
+  {
+    if (disabled || mText.empty()) return true;
+
+    const std::string pattern = validationPattern();
+    if (pattern.empty()) return true;
+
+    try
+    {
+      return std::regex_match(mText, std::regex(pattern, std::regex::ECMAScript));
+    }
+    catch (const std::regex_error&)
+    {
+      return true;
+    }
+  }
+
+  bool satisfiesTextConstraints() const
+  {
+    return satisfiesRequiredTextValue() && satisfiesMinTextLength() && satisfiesPatternConstraint();
+  }
 
   // ── Construction ────────────────────────────────────────────────────────────
 
@@ -142,6 +264,14 @@ private:
 
   void onFocusGained() override
   {
+    if (disabled)
+    {
+      mFocused = false;
+      mSelStart = mSelEnd = -1;
+      setDirty(false);
+      return;
+    }
+
     mFocused        = true;
     mJustGainedFocus = true;
     mBlinkStart = std::chrono::steady_clock::now();
@@ -252,6 +382,9 @@ protected:
    */
   virtual bool filterChar(const std::string& /*utf8char*/) { return true; }
 
+  /** Subclass hook for validating a pending insertion against the current state. */
+  virtual bool allowsTextInsertion(const std::string& /*utf8text*/) const { return true; }
+
   // ── Blur helper ────────────────────────────────────────────────────────────
 
   // Remove focus from this node. Delegates to glint_element::Blur() which
@@ -314,6 +447,28 @@ protected:
     int p = pos - 1;
     while (p > 0 && (static_cast<unsigned char>(s[p]) & 0xC0) == 0x80) --p;
     return p;
+  }
+
+  static int codepointCount(const std::string& s, int start = 0, int end = -1)
+  {
+    const int clampedStart = std::max(0, std::min(start, static_cast<int>(s.size())));
+    const int clampedEnd = end < 0
+      ? static_cast<int>(s.size())
+      : std::max(clampedStart, std::min(end, static_cast<int>(s.size())));
+
+    int count = 0;
+    for (int pos = clampedStart; pos < clampedEnd; pos = nextCodepoint(s, pos))
+      ++count;
+    return count;
+  }
+
+  static std::string truncateToCodepoints(const std::string& s, int maxCodepoints)
+  {
+    if (maxCodepoints < 0) return s;
+    int end = 0;
+    for (int count = 0; count < maxCodepoints && end < static_cast<int>(s.size()); ++count)
+      end = nextCodepoint(s, end);
+    return s.substr(0, static_cast<std::size_t>(end));
   }
 
   // ── Word boundary helpers ───────────────────────────────────────────────────
@@ -396,10 +551,26 @@ protected:
 
   void insertText(const std::string& s)
   {
+    std::string limited = s;
+    const int maxLength = maxTextLength();
+    if (maxLength >= 0)
+    {
+      const int selectionLength = (mSelStart != -1 && mSelStart != mSelEnd)
+        ? codepointCount(mText, std::min(mSelStart, mSelEnd), std::max(mSelStart, mSelEnd))
+        : 0;
+      const int currentLength = codepointCount(mText);
+      const int available = maxLength - (currentLength - selectionLength);
+      if (available <= 0) return;
+      limited = truncateToCodepoints(s, available);
+      if (limited.empty()) return;
+    }
+
+    if (!allowsTextInsertion(limited)) return;
+
     pushUndo();
-    deleteSelection();   // replace selection if any
-    mText.insert(static_cast<size_t>(mCursorPos), s);
-    mCursorPos += static_cast<int>(s.size());
+    if (hasSelection()) deleteSelection(false);   // replace selection if any
+    mText.insert(static_cast<size_t>(mCursorPos), limited);
+    mCursorPos += static_cast<int>(limited.size());
     mSelStart = mSelEnd = -1;
     onTextChanged();
     if (onChange) onChange(mText);
@@ -410,8 +581,16 @@ protected:
 
   void deleteBackward()
   {
-    if (mSelStart != -1) { pushUndo(); deleteSelection(); return; }
+    if (mSelStart != -1)
+    {
+      const int selectionLength = selectedCodepointLength();
+      if (!canDeleteCodepoints(selectionLength)) return;
+      pushUndo();
+      deleteSelection();
+      return;
+    }
     if (mCursorPos <= 0) return;
+    if (!canDeleteCodepoints(1)) return;
     pushUndo();
     const int prev = prevCodepoint(mText, mCursorPos);
     mText.erase(static_cast<size_t>(prev),
@@ -426,8 +605,16 @@ protected:
 
   void deleteForward()
   {
-    if (mSelStart != -1) { pushUndo(); deleteSelection(); return; }
+    if (mSelStart != -1)
+    {
+      const int selectionLength = selectedCodepointLength();
+      if (!canDeleteCodepoints(selectionLength)) return;
+      pushUndo();
+      deleteSelection();
+      return;
+    }
     if (mCursorPos >= static_cast<int>(mText.size())) return;
+    if (!canDeleteCodepoints(1)) return;
     pushUndo();
     const int next = nextCodepoint(mText, mCursorPos);
     mText.erase(static_cast<size_t>(mCursorPos),
@@ -439,17 +626,20 @@ protected:
     setDirty(false);
   }
 
-  void deleteSelection()
+  bool deleteSelection(bool enforceMinLength = true)
   {
-    if (mSelStart == -1) return;
+    if (mSelStart == -1) return false;
     const int lo = std::min(mSelStart, mSelEnd);
     const int hi = std::max(mSelStart, mSelEnd);
+    const int selectionLength = codepointCount(mText, lo, hi);
+    if (enforceMinLength && !canDeleteCodepoints(selectionLength)) return false;
     mText.erase(static_cast<size_t>(lo), static_cast<size_t>(hi - lo));
     mCursorPos = lo;
     mSelStart = mSelEnd = -1;
     onTextChanged();
     if (onChange) onChange(mText);
     setDirty(false);
+    return true;
   }
 
   // ── Cursor movement ────────────────────────────────────────────────────────
@@ -607,9 +797,17 @@ protected:
 
   void deleteWordBackward()
   {
-    if (mSelStart != -1) { pushUndo(); deleteSelection(); return; }
+    if (mSelStart != -1)
+    {
+      const int selectionLength = selectedCodepointLength();
+      if (!canDeleteCodepoints(selectionLength)) return;
+      pushUndo();
+      deleteSelection();
+      return;
+    }
     const int target = _wordLeft(mCursorPos);
     if (target == mCursorPos) return;
+    if (!canDeleteCodepoints(codepointCount(mText, target, mCursorPos))) return;
     pushUndo();
     mText.erase(static_cast<size_t>(target),
                 static_cast<size_t>(mCursorPos - target));
@@ -623,9 +821,17 @@ protected:
 
   void deleteWordForward()
   {
-    if (mSelStart != -1) { pushUndo(); deleteSelection(); return; }
+    if (mSelStart != -1)
+    {
+      const int selectionLength = selectedCodepointLength();
+      if (!canDeleteCodepoints(selectionLength)) return;
+      pushUndo();
+      deleteSelection();
+      return;
+    }
     const int target = _wordRight(mCursorPos);
     if (target == mCursorPos) return;
+    if (!canDeleteCodepoints(codepointCount(mText, mCursorPos, target))) return;
     pushUndo();
     mText.erase(static_cast<size_t>(mCursorPos),
                 static_cast<size_t>(target - mCursorPos));
@@ -650,9 +856,23 @@ protected:
   void cut()
   {
     if (mSelStart == -1) return;
+    if (!canDeleteCodepoints(selectedCodepointLength())) return;
     copy();
     pushUndo();
     deleteSelection();
+  }
+
+  int selectedCodepointLength() const
+  {
+    if (mSelStart == -1 || mSelStart == mSelEnd) return 0;
+    return codepointCount(mText, std::min(mSelStart, mSelEnd), std::max(mSelStart, mSelEnd));
+  }
+
+  bool canDeleteCodepoints(int removedCodepoints) const
+  {
+    const int minLength = minTextLength();
+    if (minLength < 0 || removedCodepoints <= 0) return true;
+    return codepointCount(mText) - removedCodepoints >= minLength;
   }
 
   void paste()

@@ -25,7 +25,7 @@
 
 #include "../glint_element.hpp"
 #include "../default_style.hpp"
-#include "glint_input.hpp"
+#include "input/glint_input.hpp"
 
 #include <algorithm>
 #include <cmath>

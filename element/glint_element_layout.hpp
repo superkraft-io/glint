@@ -23,6 +23,17 @@
     const auto& r = c.computedStyle.width.raw;
     return !r.empty() && r != "fit-content" && r != "auto";
   }
+  
+  static bool _hasInFlowChildren(const glint_element& c)
+  {
+    for (const auto& child : c.mChildren)
+    {
+      if (child->computedStyle.display == "none") continue;
+      if (child->computedStyle.position == "absolute") continue;
+      return true;
+    }
+    return false;
+  }
 
   // Returns true when the component has explicit fractional position/size or a
   // non-trivial transform — meaning sub-pixel placement is intentional and we
@@ -96,6 +107,19 @@
     float baseline = 0.f;
   };
 
+  static void _refreshLayoutStyle(glint_element* node)
+  {
+    if (!node) return;
+    node->computedStyle = node->mergedStyleForLayout();
+  }
+
+  static void _refreshLayoutStyle(const glint_element* node)
+  {
+    if (!node) return;
+    auto* mutableNode = const_cast<glint_element*>(node);
+    mutableNode->computedStyle = mutableNode->mergedStyleForLayout();
+  }
+
   template <typename T>
   static std::vector<_TableRowInfo<T>> _collectTableRows(T& table)
   {
@@ -114,6 +138,7 @@
     for (auto& childPtr : table.mChildren)
     {
       T* child = childPtr.get();
+      _refreshLayoutStyle(child);
       if (child->computedStyle.display == "none" || child->computedStyle.position == "absolute")
         continue;
 
@@ -125,6 +150,7 @@
         for (auto& cellPtr : child->mChildren)
         {
           T* cell = cellPtr.get();
+          _refreshLayoutStyle(cell);
           if (cell->computedStyle.display == "none" || cell->computedStyle.position == "absolute")
             continue;
           row.cells.push_back(cell);
@@ -161,6 +187,7 @@
     }
     for (auto& child : node->mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display == "none" || child->computedStyle.position == "absolute") continue;
       _translateSubtree(child.get(), dx, dy);
     }
@@ -439,6 +466,7 @@
 
     for (auto& child : cell->mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display == "none" || child->computedStyle.position == "absolute") continue;
       const glint_rect childRect = child->GetPaintRECT();
       if (!m.hasBounds)
@@ -510,6 +538,7 @@
     }
     for (auto& child : cell->mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display == "none" || child->computedStyle.position == "absolute") continue;
       _translateSubtree(child.get(), 0.f, dy);
     }
@@ -609,7 +638,7 @@
     else
     {
       computeIntrinsic:
-      if (!c.mChildren.empty())
+      if (!c.mChildren.empty() && _hasInFlowChildren(c))
       {
         // Resolve the container's OWN width first so that text inside a column-flex
         // card wraps at the card's actual pixel width, not at the full grandparent
@@ -755,7 +784,7 @@
     else
     {
       computeIntrinsic:
-      if (!c.mChildren.empty())
+      if (!c.mChildren.empty() && _hasInFlowChildren(c))
       {
         // CSS width percentages behave like auto when the containing block width
         // is itself intrinsic/indefinite, avoiding circular inflation during
@@ -807,6 +836,7 @@
 
     for (auto& child : mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display   == "none")     continue;
       if (child->computedStyle.position  == "absolute") continue;
       CI ci;
@@ -915,6 +945,7 @@
     // Scrollbar children are excluded — _positionScrollbars() owns their rects.
     for (auto& child : mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.position != "absolute") continue;
       if (child.get() == mScrollbarV || child.get() == mScrollbarH || child.get() == mScrollCorner) continue;
       const glint_rect cb  = _containingBlockContent(child.get());
@@ -1332,6 +1363,7 @@
     for (auto& childPtr : mChildren)
     {
       glint_element* child = childPtr.get();
+      _refreshLayoutStyle(child);
       if (child->computedStyle.display == "none") continue;
       if (child->computedStyle.position == "absolute") continue;
 
@@ -1663,6 +1695,7 @@
     for (auto& childPtr : mChildren)
     {
       glint_element* child = childPtr.get();
+      _refreshLayoutStyle(child);
       if (child->computedStyle.display == "none" || child->computedStyle.position != "absolute") continue;
       const glint_rect cb  = _containingBlockContent(child);
       const float cbW = cb.W(), cbH = cb.H();
@@ -1789,6 +1822,7 @@
     for (auto& childPtr : mChildren)
     {
       glint_element* child = childPtr.get();
+      _refreshLayoutStyle(child);
       if (child->computedStyle.display == "none" || child->computedStyle.position != "absolute") continue;
       const glint_rect cb  = _containingBlockContent(child);
       const float cbW = cb.W(), cbH = cb.H();
@@ -1819,6 +1853,7 @@
     // any other block-level element) may have innerText set without being inline.
     for (const auto& ch : mChildren)
     {
+      _refreshLayoutStyle(ch.get());
       if (ch->computedStyle.display == "none" || ch->computedStyle.position == "absolute") continue;
       if (ch->computedStyle.display == "inline")
       { layoutInline(g, rect, rW, rH); return; }
@@ -1827,6 +1862,7 @@
     float cursorY = 0.f;
     for (auto& child : mChildren)
     {
+      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display == "none") continue;
       const bool  isAbs = (child->computedStyle.position == "absolute");
       // Scrollbar children are excluded — _positionScrollbars() owns their rects.
@@ -1981,12 +2017,13 @@
     const float maxX = std::max(0.f, mScrollWidth  - viewW);
     const float maxY = std::max(0.f, mScrollHeight - viewH);
 
-    // If the viewport shrank and the element was already pinned to the prior
-    // edge, keep it pinned to the new edge instead of leaving it short by the
-    // delta between old and new max scroll.
-    if (mLastScrollMaxX >= 0.f && maxX > mLastScrollMaxX && std::fabs(mScrollLeft - mLastScrollMaxX) <= 0.5f)
+    // Preserve end-pinning only when there was already a real scroll range.
+    // When the prior max scroll was 0, a newly overflowing element starts at
+    // scrollTop/Left == 0 by default and must stay at the origin rather than
+    // being treated as intentionally pinned to the far edge.
+    if (mLastScrollMaxX > 0.f && maxX > mLastScrollMaxX && std::fabs(mScrollLeft - mLastScrollMaxX) <= 0.5f)
       mScrollLeft = maxX;
-    if (mLastScrollMaxY >= 0.f && maxY > mLastScrollMaxY && std::fabs(mScrollTop - mLastScrollMaxY) <= 0.5f)
+    if (mLastScrollMaxY > 0.f && maxY > mLastScrollMaxY && std::fabs(mScrollTop - mLastScrollMaxY) <= 0.5f)
       mScrollTop = maxY;
 
     mScrollLeft = std::max(0.f, std::min(mScrollLeft, maxX));

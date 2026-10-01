@@ -33,7 +33,7 @@
 
 #include "../platform/glint_window.hpp"   // glint_window base (platform-dispatching umbrella)
 #include "../components/glint_image.hpp"
-#include "../components/glint_input.hpp"
+#include "../components/input/glint_input.hpp"
 #include "../components/glint_tree.hpp"
 #include "style_editor.hpp"      // glint_style_set_by_name, glint_style_is_valid_by_name, InspStylePanel
 #include "image_preview_popup.hpp" // InspImagePreviewPopup hover thumbnail overlay
@@ -126,7 +126,7 @@ protected:
       else           canvas->drawRect(skRect(mRect), p);
     }
 
-    const glint_rect  r   = getContent();
+    const glint_rect  r   = GetRECT();
     const float  cx  = r.L + r.W() * 0.5f;
     const float  cy  = r.T + r.H() * 0.5f;
     const float  rad = std::min(r.W(), r.H()) * 0.5f - 6.f;
@@ -2906,7 +2906,7 @@ function exportAbsoluteJSON() {
   void buildUI() override
   {
     // Prevent the inspector from being inspected recursively.
-    if (mOwnRoot) mOwnRoot->skipInspectMode = true;
+    if (mOwnRoot) mOwnRoot->skipInspectMode = false;
     // Register this document so DrawToCanvas skips the debug border overlay.
     glint_debug::inspectorDoc = mOwnRoot.get();
 

@@ -22,15 +22,19 @@
  *   Linux   — not yet implemented
  */
 
+#include "glint_apple_platform.hpp"
 #include "glint_window_base.hpp"
 
 #if defined(_WIN32)
   #include "win32/glint_window_win32.hpp"
   using glint_window = glint_window_win32;
 
-#elif defined(__APPLE__)
+#elif GLINT_PLATFORM_MAC
   #include "mac/glint_window_mac.hpp"
   // glint_window is aliased to glint_window_mac inside glint_window_mac.hpp
+
+#elif GLINT_PLATFORM_IOS
+  static_assert(true, "glint_window is not available on iOS yet; use glint_view instead.");
 
 #elif defined(__linux__)
   #include "linux/glint_window_linux.hpp"

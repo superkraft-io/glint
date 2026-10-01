@@ -5,7 +5,7 @@
  *
  * Usage (backdrop shader):
  *   comp->style.backdropFilter = "shader(gl, liquid_glass)";
- *   comp->shaders["gl"]->params["strength"] = 20.f;
+ *   comp->shaders["gl"]->params["glassThickness"] = 28.f;
  *
  * Usage (procedural overlay):
  *   comp->style.filter = "shader(aur, aurora)";
@@ -15,7 +15,7 @@
  *   comp->style.backdropFilter = "shader(rip, ripple)";
  *   // click element -- fires automatically via onMouseDown forwarding
  *
- * Built-in names: "aurora", "vignette", "liquid_glass",
+ * Built-in names: "aurora", "vignette", "liquid_glass", "wave",
  *                 "chromatic_aberration", "ripple"
  */
 #include "glint_shader_base.hpp"
@@ -23,6 +23,7 @@
 #include "aurora.hpp"
 #include "vignette.hpp"
 #include "liquid_glass.hpp"
+#include "wave.hpp"
 #include "chromatic_aberration.hpp"
 #include "ripple.hpp"
 #include "lens_refraction.hpp"
