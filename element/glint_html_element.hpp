@@ -40,6 +40,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -121,7 +122,7 @@ public:
      * Handles `once` auto-removal and stopImmediatePropagation.
      * Called once per node in the bubble chain by glint_element::dispatchDOMEvent.
      */
-    void _dispatchToListeners(glint_event& e)
+    void _dispatchToListeners(glint_event& e, const std::weak_ptr<void>* ownerLife = nullptr)
     {
         // ── Snapshot the listener list before iteration ───────────────────────
         // A callback (entry.fn) may trigger a UI rebuild that destroys this
@@ -138,6 +139,16 @@ public:
         for (const Entry& entry : snap)
         {
             if (entry.type != e.type) continue;
+
+            // An earlier listener destroyed the owning element: stop before
+            // touching mListeners again.
+            if (ownerLife && ownerLife->expired()) return;
+
+            // DOM: a listener removed by an earlier listener in this same
+            // dispatch must not fire.
+            const bool stillRegistered = std::any_of(mListeners.begin(), mListeners.end(),
+              [&](const Entry& live) { return live.id == entry.id; });
+            if (!stillRegistered) continue;
 
             // Remove once-listeners from the live list before invoking fn so
             // that even if fn destroys this element we have not left a stale entry.

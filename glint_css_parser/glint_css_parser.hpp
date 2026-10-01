@@ -398,6 +398,9 @@ private:
       if (eof()) break;
 
       if (current().type == GlintCssTokenType::SEMICOLON) { consume(); continue; }
+      // A stray '}' (e.g. from nested CSS, or "color:red }" inline) stops both
+      // loops below without being consumed; skip it so we always make progress.
+      if (current().type == GlintCssTokenType::CLOSE_CURLY) { consume(); continue; }
       if (current().type == GlintCssTokenType::AT_KEYWORD) { consumeAtRule(); continue; }
 
       // COMMENT token — try to parse the body as a disabled declaration.
@@ -504,16 +507,32 @@ private:
   // ── Consume a selector list (comma-separated complex selectors) ──────────
   GlintSelectorList consumeSelectorList()
   {
+    // Comments mean nothing inside a selector; drop them so `div /* x */ > p`
+    // parses like `div > p`.
+    mToks.erase(std::remove_if(mToks.begin() + static_cast<std::ptrdiff_t>(std::min(mPos, mToks.size())), mToks.end(),
+                  [](const GlintCssToken& t) { return t.type == GlintCssTokenType::COMMENT; }),
+                mToks.end());
+
     GlintSelectorList list;
     skipWhitespace();
     while (!eof())
     {
-      const auto complex = consumeComplexSelector();
-      if (!complex.steps.empty())
-        list.selectors.push_back(complex);
-
+      const size_t start = mPos;
+      auto complex = consumeComplexSelector();
       skipWhitespace();
-      if (eof()) break;
+
+      // Per CSS, one invalid selector invalidates the whole list, so the rule
+      // matches nothing.  This also guarantees progress: input such as `> p`,
+      // `a >> b` or a stray ')' used to leave this loop spinning forever.
+      if (complex.steps.empty() || mPos == start
+          || (!eof() && current().type != GlintCssTokenType::COMMA))
+      {
+        list.selectors.clear();
+        mPos = mToks.size();
+        break;
+      }
+
+      list.selectors.push_back(std::move(complex));
       if (current().type == GlintCssTokenType::COMMA) { consume(); skipWhitespace(); }
     }
     return list;
@@ -555,13 +574,29 @@ private:
       // else: whitespace combinator (DESCENDANT), already set
 
       const auto compound = consumeCompoundSelector();
-      if (compound.simples.empty()) break;
+      // A combinator (or whitespace) followed by nothing usable, e.g. `a >`
+      // or `a >> b`, makes the selector invalid.
+      if (compound.simples.empty()) { complex.steps.clear(); return complex; }
 
       GlintComplexSelector::Step step;
       step.combinator = comb;
       step.compound   = compound;
       complex.steps.push_back(std::move(step));
     }
+
+    // Parsed left-to-right, but GlintComplexSelector::matches() walks
+    // right-to-left: steps[0] is the subject (rightmost) compound and
+    // steps[i].combinator joins steps[i-1] to steps[i].  Reverse the compounds
+    // and shift each combinator onto the compound to its left.
+    const size_t n = complex.steps.size();
+    std::vector<GlintComplexSelector::Step> rtl(n);
+    for (size_t i = 0; i < n; ++i)
+    {
+      rtl[i].compound   = std::move(complex.steps[n - 1 - i].compound);
+      rtl[i].combinator = (i == 0) ? GlintCombinator::DESCENDANT
+                                   : complex.steps[n - i].combinator;
+    }
+    complex.steps = std::move(rtl);
     return complex;
   }
 
@@ -656,7 +691,9 @@ private:
         int depth = 1;
         while (!eof() && depth > 0)
         {
-          if (current().type == GlintCssTokenType::OPEN_PAREN)  ++depth;
+          // FUNCTION tokens (e.g. "nth-child(") open a paren too.
+          if (current().type == GlintCssTokenType::OPEN_PAREN
+           || current().type == GlintCssTokenType::FUNCTION)    ++depth;
           if (current().type == GlintCssTokenType::CLOSE_PAREN) { --depth; if (depth == 0) { consume(); break; } }
           argToks.push_back(consume());
         }

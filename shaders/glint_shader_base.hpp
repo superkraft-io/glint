@@ -42,9 +42,17 @@
 #include "include/effects/SkRuntimeEffect.h"
 
 #include <chrono>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <variant>
+
+#ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+  #endif
+  #include <windows.h>
+#endif
 
 using namespace glint_graphics;
 
@@ -134,6 +142,9 @@ protected:
   sk_sp<SkRuntimeEffect>                mEffect;
   float                                 mTime      = 0.f;
   bool                                  mCompiled  = false;
+  /** Canvas save count to restore to in endBackdropLayer, or -1 when
+   *  beginBackdropLayer bailed out without saving (no effect / no filter). */
+  int                                   mBackdropRestoreCount = -1;
   std::chrono::steady_clock::time_point mStartTime;
   /** Set by beginBackdropLayer / drawDirect before each setUniforms call.
    *  Use this in setUniforms() to convert element-local coords to the
@@ -175,7 +186,19 @@ inline void glint_shader_base::compile()
   mCompiled  = true;
   mStartTime = std::chrono::steady_clock::now();
   auto result = SkRuntimeEffect::MakeForShader(SkString(sksl()));
-  if (result.effect) mEffect = std::move(result.effect);
+  if (result.effect)
+  {
+    mEffect = std::move(result.effect);
+    return;
+  }
+
+  // Compilation is attempted once; report why so a broken shader isn't silent.
+  const std::string msg = "[glint shader] SkSL compile failed: "
+                        + std::string(result.errorText.c_str()) + "\n";
+#if defined(_WIN32)
+  OutputDebugStringA(msg.c_str());
+#endif
+  std::fprintf(stderr, "%s", msg.c_str());
 }
 
 inline float glint_shader_base::_currentTime()
@@ -188,6 +211,7 @@ inline float glint_shader_base::_currentTime()
 
 inline void glint_shader_base::beginBackdropLayer(SkCanvas* canvas, const glint_rect& rect, const glint_style& style)
 {
+  mBackdropRestoreCount = -1;
   if (!canvas || !mEffect) return;
   // All uniforms and mCurrentRect in PHYSICAL pixel space.
   // SkImageFilters::RuntimeShader bypasses the canvas CTM and evaluates in the
@@ -222,6 +246,7 @@ inline void glint_shader_base::beginBackdropLayer(SkCanvas* canvas, const glint_
   // ── Step 1: apply the element-shape clip while the logical CTM is still active.
   // ClipBackdropShape uses logical rect / style values; the active scale(mDpr)
   // maps them to physical device pixels correctly.
+  mBackdropRestoreCount = canvas->getSaveCount();
   canvas->save();                                  // save A: clip guard
   glint_filter::ClipBackdropShape(canvas, rect, style);
 
@@ -243,10 +268,13 @@ inline void glint_shader_base::beginBackdropLayer(SkCanvas* canvas, const glint_
 
 inline void glint_shader_base::endBackdropLayer(SkCanvas* canvas)
 {
-  if (!canvas) return;
-  canvas->restore();  // close save C: the saveLayer (filter applied at physical res)
-  canvas->restore();  // close save B: restore CTM to scale(mDpr)
-  canvas->restore();  // close save A: remove clip guard
+  // beginBackdropLayer may have bailed out before saving anything; popping
+  // unconditionally would eat the parent's clip / scroll / DPR saves.
+  if (!canvas || mBackdropRestoreCount < 0) return;
+  // Closes save C (the saveLayer, filter applied at physical res),
+  // save B (CTM guard) and save A (clip guard).
+  canvas->restoreToCount(mBackdropRestoreCount);
+  mBackdropRestoreCount = -1;
 }
 
 inline void glint_shader_base::drawDirect(SkCanvas* canvas, const glint_rect& rect)

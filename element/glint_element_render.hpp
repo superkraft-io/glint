@@ -338,11 +338,14 @@ public:
         auto comma = inner.find(',');
         std::string id   = (comma != std::string::npos) ? trim_(inner.substr(0, comma))    : trim_(inner);
         std::string type = (comma != std::string::npos) ? trim_(inner.substr(comma + 1)) : std::string{};
-        if (shaders.find(id) == shaders.end()) {
+        auto existing = shaders.find(id);
+        if (existing == shaders.end() || !existing->second) {
+          // A null entry appears when user code does shaders["id"] before the
+          // type is registered (or with a typo); treat it like a missing one.
           auto ptr = glint_shader_registry::create(type);
           if (ptr) { ptr->compile(); shaders[id] = std::move(ptr); }
         } else {
-          shaders[id]->compile();
+          existing->second->compile();
         }
         r.shaderIds.push_back(id);
       } else {
@@ -1505,7 +1508,7 @@ public:
     // layer to sample from, producing no visible effect.
     for (auto& _shId : _bdParsedDTC.shaderIds) {
       auto _shIt = shaders.find(_shId);
-      if (_shIt != shaders.end() && _shIt->second->isBackdrop) {
+      if (_shIt != shaders.end() && _shIt->second && _shIt->second->isBackdrop) {
         _shIt->second->mDpr = _getRootDpr();
         _shIt->second->beginBackdropLayer(canvas, mPaintRECT, computedStyle);
       }
@@ -1522,7 +1525,7 @@ public:
     // Draw non-backdrop (bg) shaders as the background layer, before content.
     for (auto& _shId : _fParsedDTC.shaderIds) {
       auto _shIt = shaders.find(_shId);
-      if (_shIt != shaders.end() && !_shIt->second->isBackdrop)
+      if (_shIt != shaders.end() && _shIt->second && !_shIt->second->isBackdrop)
         _shIt->second->drawDirect(canvas, mPaintRECT);
     }
 
@@ -1666,7 +1669,7 @@ public:
     // Close backdrop shader layers in REVERSE order.
     for (auto _shIt2 = _bdParsedDTC.shaderIds.rbegin(); _shIt2 != _bdParsedDTC.shaderIds.rend(); ++_shIt2) {
       auto _shSit = shaders.find(*_shIt2);
-      if (_shSit != shaders.end() && _shSit->second->isBackdrop)
+      if (_shSit != shaders.end() && _shSit->second && _shSit->second->isBackdrop)
         _shSit->second->endBackdropLayer(canvas);
     }
 
@@ -1828,7 +1831,7 @@ public:
     if (mFilterPad > 0.f) mRect = _expandedRECT;
     // Keep redraws going while any shader is animated.
     for (auto& [_sid, _s] : shaders)
-      if (_s->animated) { setDirty(false); break; }
+      if (_s && _s->animated) { setDirty(false); break; }
 
     // Draw scrollbar children in screen space.
     if (mScrollbarV) mScrollbarV->DrawToCanvas(canvas);

@@ -931,6 +931,9 @@ public:
   {
     if (mFocusedNode == node) return;
 
+    // A blur listener may destroy the node we're about to focus.
+    const std::weak_ptr<void> nodeLife = node ? node->lifeToken() : std::weak_ptr<void>{};
+
     // Blur old node.
     if (mFocusedNode)
     {
@@ -945,9 +948,11 @@ public:
       glint_keyboard_event blur;
       blur.type    = "blur";
       blur.bubbles = false;
-      mFocusedNode->element._dispatchToListeners(blur);
+      const auto blurLife = mFocusedNode->lifeToken();
+      mFocusedNode->element._dispatchToListeners(blur, &blurLife);
     }
 
+    if (node && nodeLife.expired()) node = nullptr;
     mFocusedNode = node;
 
     // Focus new node.
@@ -964,7 +969,8 @@ public:
       glint_keyboard_event focus;
       focus.type    = "focus";
       focus.bubbles = false;
-      mFocusedNode->element._dispatchToListeners(focus);
+      const auto focusLife = mFocusedNode->lifeToken();
+      mFocusedNode->element._dispatchToListeners(focus, &focusLife);
     }
 
     // Redraw so the focus ring appears/disappears immediately.
@@ -1043,6 +1049,9 @@ public:
     e.key       = key;
     mFocusedNode->dispatchDOMEvent(e);
     if (e.defaultPrevented) return true;
+    // A listener that destroyed the focused node (nulled by
+    // _onComponentDestroyed) has handled the key.
+    if (!mFocusedNode) return true;
     return mFocusedNode->OnKeyDown(key);
   }
 
@@ -1057,6 +1066,7 @@ public:
     e.key       = key;
     mFocusedNode->dispatchDOMEvent(e);
     if (e.defaultPrevented) return true;
+    if (!mFocusedNode) return true;
     return mFocusedNode->OnKeyUp(key);
   }
   // ── Redraw ─────────────────────────────────────────────────────────────────
@@ -1674,10 +1684,15 @@ public:
       float ex = x, ey = y;
       scrollAdjusted(hit, ex, ey);
       auto e = makeME("mousedown", ex, ey, mod, 0.f, 0.f, /*bubbles=*/true);
+      const auto hitLife = hit->lifeToken();
       hit->dispatchDOMEvent(e);
-      hit->OnMouseDown(ex, ey, mod);
-      for (auto& [_sid, _s] : hit->shaders)
-        _s->onMouseDown(ex - hit->mPaintRECT.L, ey - hit->mPaintRECT.T);
+      // A mousedown listener may have destroyed `hit` (e.g. closing a menu).
+      if (!hitLife.expired())
+      {
+        hit->OnMouseDown(ex, ey, mod);
+        for (auto& [_sid, _s] : hit->shaders)
+          if (_s) _s->onMouseDown(ex - hit->mPaintRECT.L, ey - hit->mPaintRECT.T);
+      }
     }
     setDirty(false);
   }
@@ -1702,10 +1717,12 @@ public:
       scrollAdjusted(mMouseDownNode, ex, ey);
       auto eu = makeME("mouseup", ex, ey, mod, 0.f, 0.f, /*bubbles=*/true);
       mMouseDownNode->dispatchDOMEvent(eu);
-      mMouseDownNode->OnMouseUp(ex, ey, mod);
+      // Listeners may destroy the pressed node; _onComponentDestroyed then
+      // nulls mMouseDownNode, so re-check after every dispatch.
+      if (mMouseDownNode) mMouseDownNode->OnMouseUp(ex, ey, mod);
 
-      glint_element* upNode = hitTest(x, y);
-      if (upNode == mMouseDownNode)
+      glint_element* upNode = mMouseDownNode ? hitTest(x, y) : nullptr;
+      if (upNode && upNode == mMouseDownNode)
       {
         auto ec = makeME("click", ex, ey, mod, 0.f, 0.f, /*bubbles=*/true);
         mMouseDownNode->dispatchDOMEvent(ec);
@@ -1724,7 +1741,9 @@ public:
         auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                            now - mLastClickTime).count();
 
-        if (mLastClickNode && elapsedMs <= dblMs)
+        // The click listener may have destroyed the pressed node (mMouseDownNode
+        // is then null); that ends the double-click sequence.
+        if (mLastClickNode && mMouseDownNode && elapsedMs <= dblMs)
         {
           glint_element* dblTarget = _nearestCommonAncestor(mLastClickNode, mMouseDownNode);
           if (dblTarget)
@@ -1808,7 +1827,8 @@ public:
       scrollAdjusted(mMouseDownNode, ex, ey);
       auto e = makeME("mousemove", ex, ey, mod, dX, dY, /*bubbles=*/true);
       mMouseDownNode->dispatchDOMEvent(e);
-      mMouseDownNode->OnMouseDrag(ex, ey, dX, dY, mod);
+      // Nulled by _onComponentDestroyed if a listener destroyed it.
+      if (mMouseDownNode) mMouseDownNode->OnMouseDrag(ex, ey, dX, dY, mod);
       // Use paint-only redraw by default: elements that actually need a full
       // layout pass (text selection, sliders, etc.) call setDirty(false) on
       // themselves inside their OnMouseDrag override. Avoiding an unconditional
@@ -1826,6 +1846,9 @@ public:
     mPointerMod = mod;
 
     auto* hit = hitTest(x, y);
+    // Listeners below may destroy `hit`; it's a local, so _onComponentDestroyed
+    // can't null it for us.
+    const std::weak_ptr<void> hitLife = hit ? hit->lifeToken() : std::weak_ptr<void>{};
 
     // Inspect mode: update the transient hover highlight and notify the inspector
     // so it can scroll the tree.  Uses hoveredNode (faint), not inspectedNode.
@@ -1883,6 +1906,17 @@ public:
       }
 
       // ── Pass 2: dispatch DOM events ───────────────────────────────────────
+      // Any listener may destroy nodes on either chain (e.g. a mouseleave
+      // handler that rebuilds its parent), so snapshot lifetime tokens and
+      // skip nodes that are gone.
+      std::vector<std::pair<glint_element*, std::weak_ptr<void>>> lives;
+      for (auto* n : oldChain) lives.emplace_back(n, n->lifeToken());
+      for (auto* n : newChain) lives.emplace_back(n, n->lifeToken());
+      auto alive = [&lives](glint_element* n) {
+        for (auto& [p, life] : lives)
+          if (p == n) return !life.expired();
+        return false;
+      };
 
       // 1. mouseout on old target (bubbles up the tree).
       if (mHoveredNode)
@@ -1891,13 +1925,14 @@ public:
         scrollAdjusted(mHoveredNode, ox, oy);
         auto eo = makeME("mouseout", ox, oy, mod, 0.f, 0.f, /*bubbles=*/true);
         mHoveredNode->dispatchDOMEvent(eo);
-        mHoveredNode->OnMouseOut();
+        // Nulled by _onComponentDestroyed if a listener destroyed it.
+        if (mHoveredNode) mHoveredNode->OnMouseOut();
       }
 
       // 2. mouseleave on every node that is no longer hovered (deepest first).
       for (auto* node : oldChain)
       {
-        if (!inChain(newChain, node))
+        if (!inChain(newChain, node) && alive(node))
         {
           float ox = x, oy = y;
           scrollAdjusted(node, ox, oy);
@@ -1906,16 +1941,16 @@ public:
         }
       }
 
-      mHoveredNode = hit;
+      mHoveredNode = alive(hit) ? hit : nullptr;
 
       // 3. mouseover on new target (bubbles up the tree).
-      if (hit)
+      if (mHoveredNode)
       {
         float ex = x, ey = y;
         scrollAdjusted(hit, ex, ey);
         auto eo2 = makeME("mouseover", ex, ey, mod, 0.f, 0.f, /*bubbles=*/true);
         hit->dispatchDOMEvent(eo2);
-        hit->OnMouseOver(ex, ey, mod);
+        if (alive(hit)) hit->OnMouseOver(ex, ey, mod);
       }
 
       // 4. mouseenter on every node that is newly hovered (shallowest first).
@@ -1926,6 +1961,7 @@ public:
         // newChain is deepest-first; fire shallowest-first.
         for (int i = static_cast<int>(toEnter.size()) - 1; i >= 0; --i)
         {
+          if (!alive(toEnter[i])) continue;
           float ex = x, ey = y;
           scrollAdjusted(toEnter[i], ex, ey);
           auto oe = makeME("mouseenter", ex, ey, mod, 0.f, 0.f, /*bubbles=*/false);
@@ -1938,7 +1974,7 @@ public:
 
     // Browser-spec mousemove: fire on every pointer move over the current hit
     // target (not just during drags), bubbling through ancestors.
-    if (hit)
+    if (hit && !hitLife.expired())
     {
       float ex = x, ey = y;
       scrollAdjusted(hit, ex, ey);
@@ -1966,17 +2002,20 @@ public:
       // Snapshot the ancestor chain BEFORE dispatching any events — a mouseleave
       // listener may trigger a rebuild that frees nodes in the chain, making the
       // live `node = node->mParent` walk UB on the next iteration.
-      std::vector<glint_element*> leaveChain;
-      for (glint_element* n = mHoveredNode; n; n = n->mParent) leaveChain.push_back(n);
+      // The snapshot keeps lifetime tokens: an earlier handler may have freed
+      // a node that is still in the snapshot.
+      std::vector<std::pair<glint_element*, std::weak_ptr<void>>> leaveChain;
+      for (glint_element* n = mHoveredNode; n; n = n->mParent) leaveChain.emplace_back(n, n->lifeToken());
 
       // mouseout on the deepest target (bubbles).
       auto eo = makeME("mouseout", 0.f, 0.f, mod, 0.f, 0.f, /*bubbles=*/true);
       mHoveredNode->dispatchDOMEvent(eo);
-      mHoveredNode->OnMouseOut();
+      // Nulled by _onComponentDestroyed if a listener destroyed it.
+      if (mHoveredNode) mHoveredNode->OnMouseOut();
       // mouseleave up the entire ancestor chain (deepest first, no bubble).
-      // Iterate the snapshot; after each dispatch this element may be freed.
-      for (auto* node : leaveChain)
+      for (auto& [node, life] : leaveChain)
       {
+        if (life.expired()) continue;
         auto el = makeME("mouseleave", 0.f, 0.f, mod, 0.f, 0.f, /*bubbles=*/false);
         node->dispatchDOMEvent(el);
       }
@@ -2027,7 +2066,15 @@ public:
     we.ctrlKey   = mod.C;
     we.altKey    = mod.A;
     we.metaKey   = mod.M;
-    if (hit) hit->dispatchDOMEvent(we);
+    if (hit)
+    {
+      const auto hitLife = hit->lifeToken();
+      hit->dispatchDOMEvent(we);
+      // A wheel listener may have destroyed `hit` (e.g. a virtualized list
+      // rebuilding its rows); re-hit-test so the scroll walk below starts from
+      // a live node.
+      if (hitLife.expired()) hit = hitTest(x, y);
+    }
 
     if (we.defaultPrevented)
     {

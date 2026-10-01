@@ -487,6 +487,16 @@ public:
    *  Also created lazily at draw time as a fallback. */
   std::map<std::string, std::unique_ptr<glint_shader_base>> shaders;
 
+  /** Expires when this element is destroyed.  Event code snapshots it before
+   *  running listeners, since a listener may destroy the element (e.g. a
+   *  "delete" button that removes its own row). */
+  std::weak_ptr<void> lifeToken() const { return mLifeToken; }
+
+private:
+  std::shared_ptr<char> mLifeToken = std::make_shared<char>(0);
+
+public:
+
   // ── Scroll state ──────────────────────────────────────────────────────
   // Set by Layout() every frame; read by Draw(), HitTest(), and element.scroll*.
   float mScrollTop    = 0.f;   // current vertical   scroll offset (px)
@@ -593,13 +603,20 @@ public:
   void dispatchDOMEvent(glint_event& e)
   {
     e.target = this;
-    glint_element* node = this;
-    while (node)
+
+    // Snapshot the propagation path, with lifetime tokens, before any listener
+    // runs (as the DOM does).  A listener may destroy nodes on the path, so
+    // destroyed nodes are skipped instead of walking freed mParent pointers.
+    std::vector<std::pair<glint_element*, std::weak_ptr<void>>> path;
+    for (glint_element* n = this; n; n = e.bubbles ? n->mParent : nullptr)
+      path.emplace_back(n, n->lifeToken());
+
+    for (auto& [node, life] : path)
     {
+      if (life.expired()) continue;
       e.currentTarget = node;
-      node->element._dispatchToListeners(e);
+      node->element._dispatchToListeners(e, &life);
       if (!e.bubbles || e._stopPropagation) break;
-      node = node->mParent;
     }
   }
 
@@ -1871,7 +1888,7 @@ public:
     SkCanvas* _shCanvas = static_cast<SkCanvas*>(g.GetDrawContext());
     for (auto& _shId : _bdParsed.shaderIds) {
       auto _shIt = shaders.find(_shId);
-      if (_shIt != shaders.end() && _shIt->second->isBackdrop && _shCanvas) {
+      if (_shIt != shaders.end() && _shIt->second && _shIt->second->isBackdrop && _shCanvas) {
         _shIt->second->mDpr = _getRootDpr();
         _shIt->second->beginBackdropLayer(_shCanvas, GetPaintRECT(), computedStyle);
       }
@@ -1889,7 +1906,7 @@ public:
     if (_shCanvas)
       for (auto& _shId : _fParsed.shaderIds) {
         auto _shIt = shaders.find(_shId);
-        if (_shIt != shaders.end() && !_shIt->second->isBackdrop)
+        if (_shIt != shaders.end() && _shIt->second && !_shIt->second->isBackdrop)
           _shIt->second->drawDirect(_shCanvas, GetPaintRECT());
       }
 
@@ -1975,12 +1992,12 @@ public:
     // Close backdrop shader layers in REVERSE order.
     for (auto _shIt2 = _bdParsed.shaderIds.rbegin(); _shIt2 != _bdParsed.shaderIds.rend(); ++_shIt2) {
       auto _shSit = shaders.find(*_shIt2);
-      if (_shSit != shaders.end() && _shSit->second->isBackdrop && _shCanvas)
+      if (_shSit != shaders.end() && _shSit->second && _shSit->second->isBackdrop && _shCanvas)
         _shSit->second->endBackdropLayer(_shCanvas);
     }
     // Keep redraws going while any shader is animated.
     for (auto& [_sid, _s] : shaders)
-      if (_s->animated) { setDirty(false); break; }
+      if (_s && _s->animated) { setDirty(false); break; }
 
     // CSS parity: border-radius shapes the source paint, filter composites that
     // rounded source, and mask applies afterward to the filtered result.

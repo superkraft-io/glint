@@ -1351,7 +1351,8 @@ private:
           || ((first == '-' || first == '+') && (std::isdigit(static_cast<unsigned char>(second)) || second == '.'));
       if (startsNumeric)
       {
-        lengths.push_back(std::stof(token));
+        // stof throws on e.g. ".x" or "1e40px" (also half-typed inspector edits).
+        try { lengths.push_back(std::stof(token)); } catch (...) {}
       }
       else
       {
