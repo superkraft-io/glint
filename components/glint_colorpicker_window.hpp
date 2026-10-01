@@ -25,6 +25,7 @@
 #if defined(_WIN32) || defined(OS_WIN)
 
 #include "../glint_window.hpp"   // glint_window_win32 + all components
+#include "glint_colorpicker.hpp"
 
 #include <functional>
 #include <mutex>
