@@ -31,6 +31,7 @@
 #endif
 #include <windows.h>
 #include <commdlg.h>
+#include <objbase.h>
 #include <shobjidl.h>
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
 
@@ -1371,8 +1372,9 @@ private:
     }
 
     case WM_SETCURSOR:
-      if (LOWORD(lp) == HTCLIENT)
-        return glint_win32_host::routeSetCursor(self->mOwnRoot.get(), self->mPrevX, self->mPrevY);
+      if (glint_win32_host::routeSetCursorMessage(hwnd, self->mOwnRoot.get(), wp, lp,
+                                                  self->mPrevX, self->mPrevY, self->mDpr))
+        return TRUE;
       return ::DefWindowProcW(hwnd, msg, wp, lp);
 
     case WM_CAPTURECHANGED:
@@ -1588,6 +1590,47 @@ inline std::string glintUtf8FromWide(const wchar_t* value)
   return utf8;
 }
 
+// The shell dialogs need COM on the calling thread, and glint windows run on
+// plain std::threads that never initialize it (CoCreateInstance then fails
+// with CO_E_NOTINITIALIZED).  Enter a single-threaded apartment for the
+// dialog's lifetime; a thread the host already initialized keeps its own
+// (RPC_E_CHANGED_MODE: COM is usable, and there is nothing to undo).
+class glint_com_apartment
+{
+public:
+  glint_com_apartment()
+    : mResult(::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))
+  {
+  }
+
+  ~glint_com_apartment()
+  {
+    if (SUCCEEDED(mResult))
+      ::CoUninitialize();
+  }
+
+  glint_com_apartment(const glint_com_apartment&) = delete;
+  glint_com_apartment& operator=(const glint_com_apartment&) = delete;
+
+private:
+  HRESULT mResult;
+};
+
+// Owner for modal dialogs: this thread's active window, else the foreground
+// window when it is ours.  Never another process's window: a modal dialog
+// disables its owner.
+inline HWND glintDialogOwner()
+{
+  if (HWND active = ::GetActiveWindow())
+    return active;
+
+  HWND foreground = ::GetForegroundWindow();
+  DWORD processId = 0;
+  if (foreground)
+    ::GetWindowThreadProcessId(foreground, &processId);
+  return processId == ::GetCurrentProcessId() ? foreground : nullptr;
+}
+
 inline std::wstring glintBuildDialogFilter(const std::vector<std::string>& extensions)
 {
   std::wstring filter;
@@ -1627,10 +1670,11 @@ inline std::vector<std::string> showOpenFilesDialog(const std::vector<std::strin
   std::vector<wchar_t> pathBuffer(65536, L'\0');
   const std::wstring filter = glintBuildDialogFilter(extensions);
   const std::wstring wideTitle = glintWideFromUtf8(title);
+  const glint_com_apartment com;
 
   OPENFILENAMEW ofn = {};
   ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = ::GetForegroundWindow();
+  ofn.hwndOwner = glintDialogOwner();
   ofn.lpstrFilter = filter.c_str();
   ofn.lpstrFile = pathBuffer.data();
   ofn.nMaxFile = static_cast<DWORD>(pathBuffer.size());
@@ -1679,9 +1723,10 @@ inline std::string showSaveFileDialog(const std::vector<std::string>& extensions
       wcsncpy_s(path, fileName.c_str(), _TRUNCATE);
   }
 
+  const glint_com_apartment com;
   OPENFILENAMEW ofn = {};
   ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = ::GetForegroundWindow();
+  ofn.hwndOwner = glintDialogOwner();
   ofn.lpstrFilter = filter.c_str();
   ofn.lpstrFile = path;
   ofn.nMaxFile = MAX_PATH;
@@ -1696,6 +1741,7 @@ inline std::string showSaveFileDialog(const std::vector<std::string>& extensions
 inline std::string showOpenFolderDialog(const std::string& title)
 {
   std::string result;
+  const glint_com_apartment com;
   IFileOpenDialog* dialog = nullptr;
   if (FAILED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(&dialog))) || !dialog)
@@ -1707,7 +1753,7 @@ inline std::string showOpenFolderDialog(const std::string& title)
   const std::wstring wideTitle = glintWideFromUtf8(title);
   if (!wideTitle.empty()) dialog->SetTitle(wideTitle.c_str());
 
-  if (SUCCEEDED(dialog->Show(::GetForegroundWindow()))) {
+  if (SUCCEEDED(dialog->Show(glintDialogOwner()))) {
     IShellItem* item = nullptr;
     if (SUCCEEDED(dialog->GetResult(&item)) && item) {
       PWSTR widePath = nullptr;

@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <array>
+#include <optional>
 #include <string>
 
 inline const char* glint_backend_name(glint_backend backend)
@@ -213,6 +214,7 @@ public:
 
   void shutdown() override
   {
+    mHostContext.reset();
     glint_win32_surface::destroyOpenGLContext(mHWND, mGLDC, mGLRC, mGrContext, mGpuSurface, mCanvas);
     mHWND = nullptr;
     mWidth = 0;
@@ -227,8 +229,7 @@ public:
 
     if (mWidth <= 0 || mHeight <= 0)
     {
-      mCanvas = nullptr;
-      mGpuSurface.reset();
+      glint_win32_surface::releaseOpenGLSurface(mGLDC, mGLRC, mGpuSurface, mCanvas);
       mDiagnostic.clear();
       return true;
     }
@@ -262,7 +263,16 @@ public:
     }
 
     ::EndPaint(mHWND, &mPaintStruct);
-    ::wglMakeCurrent(mGLDC, mGLRC);
+
+    // Draw on our context; present() gives the thread back to the host's.
+    mHostContext.emplace();
+    if (!glint_win32_surface::makeOpenGLContextCurrent(mGLDC, mGLRC))
+    {
+      mHostContext.reset();
+      mDiagnostic = "wglMakeCurrent failed for OpenGL backend";
+      return nullptr;
+    }
+
     mDiagnostic.clear();
     return mCanvas;
   }
@@ -280,6 +290,7 @@ public:
   {
     if (mGLDC)
       ::SwapBuffers(mGLDC);
+    mHostContext.reset();
   }
 
   glint_backend backend() const override
@@ -336,6 +347,8 @@ private:
   PAINTSTRUCT                               mPaintStruct = {};
   glint_win32_surface::open_gl_init_result  mLastInitResult = glint_win32_surface::open_gl_init_result::missing_window;
   std::string                               mDiagnostic;
+  // The context current before beginFrame(); restored by present().
+  std::optional<glint_win32_surface::wgl_context_restorer> mHostContext;
 };
 #endif // GLINT_RENDER_GPU && !GLINT_ENABLE_D3D12
 

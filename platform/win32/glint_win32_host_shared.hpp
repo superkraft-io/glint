@@ -618,4 +618,29 @@ inline LRESULT routeSetCursor(glint_document* document, float mouseX, float mous
   return TRUE;
 }
 
+// Handles WM_SETCURSOR.  Windows sends it before the WM_MOUSEMOVE that
+// updates the routed mouse position (lastX / lastY), so look the shape up at
+// the pointer's current position instead.  Only the client area of `hwnd`
+// itself is handled: over a child window the child's own cursor applies.
+// Returns false when unhandled; pass the message to DefWindowProc then.
+inline bool routeSetCursorMessage(HWND hwnd, glint_document* document, WPARAM wp, LPARAM lp,
+                                  float lastX, float lastY, float scale = 1.f)
+{
+  if (LOWORD(lp) != HTCLIENT || reinterpret_cast<HWND>(wp) != hwnd)
+    return false;
+
+  float x = lastX;
+  float y = lastY;
+  POINT point = {};
+  if (::GetCursorPos(&point) && ::ScreenToClient(hwnd, &point))
+  {
+    const float invScale = scale > 0.f ? 1.f / scale : 1.f;
+    x = static_cast<float>(point.x) * invScale;
+    y = static_cast<float>(point.y) * invScale;
+  }
+
+  routeSetCursor(document, x, y);
+  return true;
+}
+
 } // namespace glint_win32_host

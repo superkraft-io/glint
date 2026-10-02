@@ -117,6 +117,57 @@ enum class open_gl_init_result
   gr_context_failed
 };
 
+// WGL keeps one current context per thread, and Skia issues its GL calls -
+// including the ones that free its objects - on whatever context is current.
+// Hosts (plugin DAWs, apps embedding a glint view) may render with their own
+// GL context on the same thread, so glint makes its context current only
+// around its own work and then puts the host's back.
+class wgl_context_restorer
+{
+public:
+  wgl_context_restorer()
+    : mDC(::wglGetCurrentDC())
+    , mRC(::wglGetCurrentContext())
+  {
+  }
+
+  ~wgl_context_restorer()
+  {
+    // Nothing was current before: leave ours bound.  Unbinding would only
+    // cost a flush, and whoever uses GL next makes their own context current.
+    if (!mRC)
+      return;
+    if (::wglGetCurrentContext() != mRC || ::wglGetCurrentDC() != mDC)
+      ::wglMakeCurrent(mDC, mRC);
+  }
+
+  wgl_context_restorer(const wgl_context_restorer&) = delete;
+  wgl_context_restorer& operator=(const wgl_context_restorer&) = delete;
+
+  /** Call before deleting `rc`: a deleted context cannot be made current. */
+  void forget(HGLRC rc)
+  {
+    if (rc && mRC == rc)
+    {
+      mDC = nullptr;
+      mRC = nullptr;
+    }
+  }
+
+private:
+  HDC   mDC;
+  HGLRC mRC;
+};
+
+inline bool makeOpenGLContextCurrent(HDC glDC, HGLRC glRC)
+{
+  if (!glDC || !glRC)
+    return false;
+  if (::wglGetCurrentContext() == glRC && ::wglGetCurrentDC() == glDC)
+    return true;
+  return ::wglMakeCurrent(glDC, glRC) != FALSE;
+}
+
 inline void destroyOpenGLContext(
   HWND hwnd,
   HDC& glDC,
@@ -126,14 +177,24 @@ inline void destroyOpenGLContext(
   SkCanvas*& canvas)
 {
   canvas = nullptr;
-  gpuSurface.reset();
-  grContext.reset();
 
-  if (glRC)
   {
-    ::wglMakeCurrent(nullptr, nullptr);
-    ::wglDeleteContext(glRC);
-    glRC = nullptr;
+    wgl_context_restorer restoreHostContext;
+    // Skia frees its GL objects through the current context, so make ours
+    // current first.  If that fails the objects die with the context:
+    // abandon them rather than issue GL calls into someone else's context.
+    const bool current = makeOpenGLContextCurrent(glDC, glRC);
+    if (grContext && !current)
+      grContext->abandonContext();
+    gpuSurface.reset();
+    grContext.reset();
+
+    if (glRC)
+    {
+      restoreHostContext.forget(glRC);
+      ::wglDeleteContext(glRC);   // also makes it not current
+      glRC = nullptr;
+    }
   }
 
   if (glDC && hwnd)
@@ -154,6 +215,10 @@ inline open_gl_init_result initializeOpenGLContext(
   if (!hwnd)
     return open_gl_init_result::missing_window;
 
+  // Set up our context and Skia on it, then hand the thread back to
+  // whatever context the host had current.
+  wgl_context_restorer restoreHostContext;
+
   glDC = ::GetDC(hwnd);
   if (!glDC)
     return open_gl_init_result::get_dc_failed;
@@ -165,6 +230,7 @@ inline open_gl_init_result initializeOpenGLContext(
   pixelFormat.iPixelType = PFD_TYPE_RGBA;
   pixelFormat.cColorBits = 32;
   pixelFormat.cDepthBits = 0;
+  pixelFormat.cStencilBits = 8;   // Skia's stencil clips and path fills
   pixelFormat.iLayerType = PFD_MAIN_PLANE;
 
   const int format = ::ChoosePixelFormat(glDC, &pixelFormat);
@@ -225,6 +291,22 @@ inline open_gl_init_result initializeOpenGLContext(
   return open_gl_init_result::success;
 }
 
+/** Drops the window surface, releasing it through our own context. */
+inline void releaseOpenGLSurface(
+  HDC glDC,
+  HGLRC glRC,
+  sk_sp<SkSurface>& gpuSurface,
+  SkCanvas*& canvas)
+{
+  canvas = nullptr;
+  if (!gpuSurface)
+    return;
+
+  wgl_context_restorer restoreHostContext;
+  makeOpenGLContextCurrent(glDC, glRC);
+  gpuSurface.reset();
+}
+
 inline bool recreateOpenGLSurface(
   int width,
   int height,
@@ -235,13 +317,17 @@ inline bool recreateOpenGLSurface(
   SkCanvas*& canvas)
 {
   canvas = nullptr;
+
+  // Release the old surface and flush pending work on our own context (not
+  // whatever happens to be current), then restore the host's context.
+  wgl_context_restorer restoreHostContext;
+  const bool current = makeOpenGLContextCurrent(glDC, glRC);
   gpuSurface.reset();
 
-  if (!grContext || !glDC || !glRC || width <= 0 || height <= 0)
+  if (!current || !grContext || width <= 0 || height <= 0)
     return false;
 
   grContext->flushAndSubmit();
-  ::wglMakeCurrent(glDC, glRC);
 
   static constexpr GrGLenum kGL_RGBA8 = 0x8058;
 
@@ -249,8 +335,16 @@ inline bool recreateOpenGLSurface(
   framebufferInfo.fFBOID = 0;
   framebufferInfo.fFormat = kGL_RGBA8;
 
+  // Tell Skia what the window's pixel format really has: a stencil buffer
+  // Skia believes in but that does not exist breaks clips and path fills.
+  int stencilBits = 0;
+  PIXELFORMATDESCRIPTOR pixelFormat = {};
+  const int format = ::GetPixelFormat(glDC);
+  if (format > 0 && ::DescribePixelFormat(glDC, format, sizeof(pixelFormat), &pixelFormat))
+    stencilBits = pixelFormat.cStencilBits;
+
   GrBackendRenderTarget renderTarget =
-    GrBackendRenderTargets::MakeGL(width, height, 0, 8, framebufferInfo);
+    GrBackendRenderTargets::MakeGL(width, height, 0, stencilBits, framebufferInfo);
 
   gpuSurface = SkSurfaces::WrapBackendRenderTarget(
     grContext.get(),
@@ -285,7 +379,9 @@ inline bool paintDocumentGpu(
 
   ::EndPaint(hwnd, &paintStruct);
 
-  ::wglMakeCurrent(glDC, glRC);
+  wgl_context_restorer restoreHostContext;
+  if (!makeOpenGLContextCurrent(glDC, glRC))
+    return false;
 
   const auto drawStart = std::chrono::steady_clock::now();
   canvas.clear(clearColor);
@@ -413,13 +509,20 @@ inline direct3d_init_result initializeDirect3DContext(
   if (!hwnd)
     return direct3d_init_result::missing_window;
 
-  UINT factoryFlags = 0;
-#if defined(_DEBUG)
-  factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-#endif
-
   gr_cp<IDXGIFactory4> factory;
-  if (FAILED(::CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&factory))))
+  HRESULT factoryResult = E_FAIL;
+#if defined(_DEBUG)
+  // The DXGI debug layer comes with the optional "Graphics Tools" Windows
+  // feature; without it the debug factory fails with
+  // DXGI_ERROR_SDK_COMPONENT_MISSING.  Retry without the flag rather than
+  // drop debug builds to the CPU renderer.
+  factoryResult = ::CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(&factory));
+  if (FAILED(factoryResult))
+    factory.reset(nullptr);
+#endif
+  if (FAILED(factoryResult))
+    factoryResult = ::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
+  if (FAILED(factoryResult))
     return direct3d_init_result::factory_failed;
 
   if (!chooseHardwareAdapter(factory.get(), adapter))

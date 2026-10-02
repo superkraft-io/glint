@@ -75,6 +75,7 @@ public:
     const int physW = static_cast<int>(std::lround(static_cast<float>(width) * dpr));
     const int physH = static_cast<int>(std::lround(static_cast<float>(height) * dpr));
 
+    // Size only: the host owns the view's position inside its parent.
     ::SetWindowPos(
       mHWND,
       nullptr,
@@ -82,7 +83,7 @@ public:
       0,
       physW,
       physH,
-      SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER);
+      SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOMOVE);
   }
 
   void requestRedraw() override
@@ -110,23 +111,44 @@ private:
   // still returns the OLD DPI. We therefore walk up to the top-level ancestor
   // (which was just updated during its WM_DPICHANGED) and query that instead.
   // This keeps DPR in sync during live display-scaling changes.
+  //
+  // The root only stands in for the window when both share a DPI awareness
+  // context.  Mixed-mode hosts (DPI_HOSTING_BEHAVIOR_MIXED, common in plugin
+  // hosts) can parent a per-monitor-aware view under a DPI-unaware or
+  // system-aware top-level window - or the reverse - and the root's DPI then
+  // says nothing about how this window is scaled, so query the window itself.
   static float deviceScaleForWindow(HWND hwnd)
   {
     typedef UINT (WINAPI* GetDpiForWindowProc)(HWND);
-    static GetDpiForWindowProc getDpiForWindow = [] {
+    typedef DPI_AWARENESS_CONTEXT (WINAPI* GetWindowDpiAwarenessContextProc)(HWND);
+    typedef BOOL (WINAPI* AreDpiAwarenessContextsEqualProc)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT);
+    static const HMODULE user32 = [] {
       HMODULE h = ::GetModuleHandleW(L"user32.dll");
-      if (!h)
-        h = ::LoadLibraryW(L"user32.dll");
-      return h ? reinterpret_cast<GetDpiForWindowProc>(::GetProcAddress(h, "GetDpiForWindow"))
-               : nullptr;
+      return h ? h : ::LoadLibraryW(L"user32.dll");
     }();
+    static const auto getDpiForWindow = user32
+      ? reinterpret_cast<GetDpiForWindowProc>(::GetProcAddress(user32, "GetDpiForWindow"))
+      : nullptr;
+    static const auto getWindowAwareness = user32
+      ? reinterpret_cast<GetWindowDpiAwarenessContextProc>(::GetProcAddress(user32, "GetWindowDpiAwarenessContext"))
+      : nullptr;
+    static const auto awarenessEqual = user32
+      ? reinterpret_cast<AreDpiAwarenessContextsEqualProc>(::GetProcAddress(user32, "AreDpiAwarenessContextsEqual"))
+      : nullptr;
 
     UINT dpi = 96;
     if (getDpiForWindow && hwnd)
     {
-      HWND queryTarget = ::GetAncestor(hwnd, GA_ROOT);
-      if (!queryTarget)
-        queryTarget = hwnd;
+      HWND queryTarget = hwnd;
+      HWND root = ::GetAncestor(hwnd, GA_ROOT);
+      if (root && root != hwnd)
+      {
+        // Without these APIs (before Windows 10 1607) there is no mixed mode.
+        const bool sameAwareness = !getWindowAwareness || !awarenessEqual ||
+          awarenessEqual(getWindowAwareness(hwnd), getWindowAwareness(root));
+        if (sameAwareness)
+          queryTarget = root;
+      }
       const UINT queried = getDpiForWindow(queryTarget);
       if (queried > 0)
         dpi = queried;
@@ -816,8 +838,9 @@ private:
       }
 
       case WM_SETCURSOR:
-        if (LOWORD(lp) == HTCLIENT)
-          return glint_win32_host::routeSetCursor(self->mDocument.get(), self->mPrevX, self->mPrevY);
+        if (glint_win32_host::routeSetCursorMessage(hwnd, self->mDocument.get(), wp, lp,
+                                                    self->mPrevX, self->mPrevY, self->mDpr))
+          return TRUE;
         return ::DefWindowProcW(hwnd, msg, wp, lp);
 
       case WM_CAPTURECHANGED:
