@@ -329,8 +329,10 @@ public:
     // Enter → fire onSubmit, then blur.
     if (!key.ctrl && key.vk == glint_vk::RETURN)
     {
+      // onSubmit may rebuild the UI and destroy this input; don't touch it then.
+      const auto life = lifeToken();
       if (onSubmit) onSubmit(mText);
-      blur();
+      if (!life.expired()) blur();
       return true;
     }
 
@@ -2022,12 +2024,16 @@ private:
       bt->SetOnClick([this]() {
         if (disabled) return;
         const std::string currentValue = getValue();
+        // Each callback below may rebuild the UI and destroy this input.
+        const auto life = lifeToken();
         if (onClick) onClick(currentValue);
+        if (life.expired()) return;
         if (type == "submit")
         {
           bool submitted = true;
           if (auto* form = glint_form::nearestFor(this))
             submitted = form->submit(this);
+          if (life.expired()) return;
           if (submitted && onSubmit)
             onSubmit(currentValue);
         }
@@ -2083,10 +2089,14 @@ private:
         mLastImageSubmitX = x;
         mLastImageSubmitY = y;
         const std::string currentValue = getValue();
+        // Each callback below may rebuild the UI and destroy this input.
+        const auto life = lifeToken();
         if (onClick) onClick(currentValue);
+        if (life.expired()) return;
         bool submitted = true;
         if (auto* form = glint_form::nearestFor(this))
           submitted = form->submit(this);
+        if (life.expired()) return;
         if (submitted && onSubmit)
           onSubmit(currentValue);
       };
@@ -2227,8 +2237,10 @@ private:
       ti->onChange  = [this](const std::string& v) { if (onChange)  onChange(v);  };
       ti->onSubmit  = [this](const std::string& v) {
         bool submitted = true;
+        const auto life = lifeToken();
         if (auto* form = glint_form::nearestFor(this))
           submitted = form->submit(this);
+        if (life.expired()) return;  // the form's handler rebuilt the UI
         if (submitted && onSubmit)
           onSubmit(v);
       };

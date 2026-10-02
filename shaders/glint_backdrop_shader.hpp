@@ -81,13 +81,14 @@ protected:
     mStartTime = std::chrono::steady_clock::now();
     auto result = SkRuntimeEffect::MakeForShader(SkString(sksl()));
     if (result.effect) mEffect = std::move(result.effect);
+    else glint_report_sksl_error(result.errorText);
   }
 
 public:
-  glint_backdrop_shader()
-  {
-    _compile();
-  }
+  // Compiled lazily on first draw: sksl() is pure virtual, and calling it from
+  // this constructor would run before the subclass exists ("pure virtual
+  // function call").
+  glint_backdrop_shader() = default;
 
   // Full DrawToCanvas override — inserts the backdrop-shader saveLayer around
   // all normal drawing (background tint, content, children).
@@ -97,6 +98,7 @@ public:
     tickTransitions();
     if (computedStyle.display == "none") return;
 
+    _compile();
     // Graceful fallback if compilation failed.
     if (!mEffect) { glint_element::DrawToCanvas(canvas); return; }
 

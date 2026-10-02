@@ -180,6 +180,17 @@ inline glint_color glint_shader_base::getColor(const std::string& k, glint_color
   return def;
 }
 
+/** Report an SkSL compile failure (debugger output on Windows, and stderr). */
+inline void glint_report_sksl_error(const SkString& errorText)
+{
+  const std::string msg = "[glint shader] SkSL compile failed: "
+                        + std::string(errorText.c_str()) + "\n";
+#if defined(_WIN32)
+  OutputDebugStringA(msg.c_str());
+#endif
+  std::fprintf(stderr, "%s", msg.c_str());
+}
+
 inline void glint_shader_base::compile()
 {
   if (mCompiled) return;
@@ -193,12 +204,7 @@ inline void glint_shader_base::compile()
   }
 
   // Compilation is attempted once; report why so a broken shader isn't silent.
-  const std::string msg = "[glint shader] SkSL compile failed: "
-                        + std::string(result.errorText.c_str()) + "\n";
-#if defined(_WIN32)
-  OutputDebugStringA(msg.c_str());
-#endif
-  std::fprintf(stderr, "%s", msg.c_str());
+  glint_report_sksl_error(result.errorText);
 }
 
 inline float glint_shader_base::_currentTime()

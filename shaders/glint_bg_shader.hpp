@@ -63,18 +63,20 @@ protected:
     mStartTime = std::chrono::steady_clock::now();
     auto result = SkRuntimeEffect::MakeForShader(SkString(sksl()));
     if (result.effect) mEffect = std::move(result.effect);
+    else glint_report_sksl_error(result.errorText);
   }
 
 public:
-  glint_bg_shader()
-  {
-    _compile();
-  }
+  // Compiled lazily on first draw: sksl() is pure virtual, and calling it from
+  // this constructor would run before the subclass exists ("pure virtual
+  // function call").
+  glint_bg_shader() = default;
 
   // Draws the SkSL shader over the element's paint rect.
   // Called by the base DrawToCanvas after DrawBackgroundToCanvas.
   void DrawContentToCanvas(SkCanvas* canvas) override
   {
+    _compile();
     if (!mEffect || !canvas) return;
 
     if (mAnimated)

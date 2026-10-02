@@ -17,6 +17,19 @@
 
 namespace glint_win32_host
 {
+// The module (EXE or DLL) this copy of glint is compiled into.  Window classes
+// are registered per module: with the EXE's handle, two plugin DLLs that both
+// embed glint would share one class (and one WndProc), and unloading a plugin
+// would leave the class pointing into unloaded code.
+inline HINSTANCE moduleInstance()
+{
+  HMODULE module = nullptr;
+  ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                       | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&moduleInstance), &module);
+  return module ? module : ::GetModuleHandleW(nullptr);
+}
+
 inline std::unordered_map<std::string, HCURSOR>& customCursorRegistry()
 {
   static std::unordered_map<std::string, HCURSOR> registry;
@@ -532,7 +545,7 @@ inline HCURSOR cssToHCursor(const std::string& css)
       // Win32 cursor planes must be 32-bit aligned; 4 bytes covers 1x32px.
       static const BYTE andPlane[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
       static const BYTE xorPlane[4] = { 0x00, 0x00, 0x00, 0x00 };
-      return ::CreateCursor(::GetModuleHandleW(nullptr), 0, 0, 1, 1,
+      return ::CreateCursor(moduleInstance(), 0, 0, 1, 1,
                             andPlane, xorPlane);
     }();
     return blank;

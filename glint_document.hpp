@@ -162,6 +162,8 @@ public:
 
   ~glint_document()
   {
+    // Expire first, before any member is torn down (see documentLifeToken()).
+    mDocLife.reset();
     // After this returns no other thread can be inside a wake into our host.
     mTaskQueue->setWake(nullptr);
 
@@ -1339,6 +1341,10 @@ public:
   /** Tasks posted from other threads (popup callbacks) to run on this
    *  document's owning thread.  See glint_element::ownerThreadPoster(). */
   const std::shared_ptr<glint_task_queue>& taskQueue() const { return mTaskQueue; }
+
+  /** Expires at the start of this document's destructor.  Lets tools on other
+   *  threads (the inspector) notice the document is gone and stop using it. */
+  std::weak_ptr<void> documentLifeToken() const { return mDocLife; }
 
   void DrawToCanvas(SkCanvas& canvas)
   {
@@ -3099,19 +3105,19 @@ private:
           if (tf)
           {
             glint_font_registry::registerTypeface(graphicsFontId, tf);
-            glint_font_registry::loadedFonts().insert(graphicsFontId);
+            glint_font_registry::markLoaded(graphicsFontId);
 
             // Register under the exact font-family name used by CSS text nodes.
             glint_font_registry::registerTypeface(fontFamily, tf);
-            glint_font_registry::loadedFonts().insert(fontFamily);
+            glint_font_registry::markLoaded(fontFamily);
 
             // Concrete graphics/font ID for this specific @font-face variant.
             glint_font_registry::registerTypeface(variantFontID, tf);
-            glint_font_registry::loadedFonts().insert(variantFontID);
+            glint_font_registry::markLoaded(variantFontID);
 
             // Legacy weight key: "Kanit@100" → for getTypefaceWeighted().
             glint_font_registry::registerTypeface(weightedKey, tf);
-            glint_font_registry::loadedFonts().insert(weightedKey);
+            glint_font_registry::markLoaded(weightedKey);
 
             // Three-axis key: "Kanit@100@italic" → for getTypefaceByAxes().
             // fontId = concrete per-variant graphics font ID.
@@ -3128,6 +3134,7 @@ private:
   // ── Injected callbacks ───────────────────────────────────────────────────────
   std::function<void()>                                              mRequestRedraw;
   std::shared_ptr<glint_task_queue>  mTaskQueue = std::make_shared<glint_task_queue>();
+  std::shared_ptr<char>              mDocLife   = std::make_shared<char>(0);
   std::function<void(glint_element*)>                                 mRequestRedrawDetailed;
 
   // ── Tree mutex ────────────────────────────────────────────────────────────

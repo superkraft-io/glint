@@ -169,18 +169,29 @@ protected:
 
   // Pending timer callbacks posted from timer threads.
   struct TimerEvent { int id; };
-  std::vector<TimerEvent> mPendingTimers;   // guarded by mTimerMutex
-  std::mutex              mTimerMutex;
+
+  // Wake-pipe write end + pending timer events, shared (not owned by `this`)
+  // with timer threads: a timer thread may still be asleep when its timer is
+  // killed or the window deleted.  `mutex` also serializes pipe writes against
+  // run() closing the pipe, so no write lands on a closed / reused fd.
+  struct LinuxWake {
+    std::mutex              mutex;
+    int                     writeFd = -1;        // -1 once the loop has ended
+    std::vector<TimerEvent> pendingTimers;
+  };
+  std::shared_ptr<LinuxWake> mWake = std::make_shared<LinuxWake>();
+  /** Wake the event loop from any thread. */
+  static void wakeLoop(LinuxWake& wake, char c);
 
   // Pending cross-thread callbacks (guarded by mCallbackMutex).
   std::vector<std::function<void()>> mPendingCallbacks;
   std::mutex                         mCallbackMutex;
 
-  // Active timer threads (id → stop flag).
+  // Active timer threads (id → stop flag).  The flag is shared with the
+  // detached thread so killTimer() can drop the entry while it sleeps.
   struct TimerEntry {
     int  id;
-    std::atomic<bool> stop{false};
-    std::thread       thread;
+    std::shared_ptr<std::atomic<bool>> stop = std::make_shared<std::atomic<bool>>(false);
   };
   std::vector<std::unique_ptr<TimerEntry>> mTimers;   // main-thread only
 

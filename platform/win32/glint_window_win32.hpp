@@ -849,7 +849,7 @@ private:
   // ── Window creation (runs on the background thread) ───────────────────────
   bool createWindow()
   {
-    const HINSTANCE instance = ::GetModuleHandleW(nullptr);
+    const HINSTANCE instance = glint_win32_host::moduleInstance();
 
     WNDCLASSEXW existingClass = {};
     if (!::GetClassInfoExW(instance, windowClassName(), &existingClass))
@@ -1137,8 +1137,19 @@ private:
 
         if (failedBackend != glint_backend::CPU)
         {
+          const bool lost = mRenderer->deviceLost();
           destroyRenderer();
-          if (activateFallbackRenderer(failedBackend) && mRenderer)
+          // A lost device (driver update, TDR, GPU switch) usually comes back
+          // on a fresh device: retry the same backend once before falling back.
+          if (lost)
+          {
+            logRuntimeMessage("GLINT WINDOW: GPU device lost, recreating renderer");
+            if (activateRenderer(failedBackend) && mRenderer)
+              canvas = mRenderer->beginFrame();
+            if (!canvas)
+              destroyRenderer();
+          }
+          if (!canvas && activateFallbackRenderer(failedBackend) && mRenderer)
             canvas = mRenderer->beginFrame();
         }
 

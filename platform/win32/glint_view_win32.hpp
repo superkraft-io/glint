@@ -301,7 +301,7 @@ private:
     windowClass.cbSize = sizeof(windowClass);
     windowClass.style = CS_DBLCLKS | CS_OWNDC;
     windowClass.lpfnWndProc = WndProc;
-    windowClass.hInstance = ::GetModuleHandleW(nullptr);
+    windowClass.hInstance = glint_win32_host::moduleInstance();
     windowClass.hCursor = ::LoadCursor(nullptr, IDC_ARROW);
     windowClass.hbrBackground = reinterpret_cast<HBRUSH>(::GetStockObject(BLACK_BRUSH));
     windowClass.lpszClassName = L"glint_view_win32";
@@ -346,7 +346,7 @@ private:
       mHpx,
       mParent,
       nullptr,
-      ::GetModuleHandleW(nullptr),
+      glint_win32_host::moduleInstance(),
       this);
 
     return mHWND != nullptr && mDocument != nullptr;
@@ -591,24 +591,33 @@ private:
 
       if (failedBackend != glint_backend::CPU)
       {
+        const bool lost = mRenderer->deviceLost();
         destroyRenderer();
-        if (!activateFallbackRenderer(failedBackend))
+        // A lost device (driver update, TDR, GPU switch) usually comes back on
+        // a fresh device: retry the same backend once before falling back.
+        if (lost)
         {
-          acknowledgePendingPaint();
-          return;
+          logRuntimeMessage("GLINT VIEW: GPU device lost, recreating renderer");
+          if (activateRenderer(failedBackend) && mRenderer)
+            canvas = mRenderer->beginFrame();
+          if (!canvas)
+            destroyRenderer();
         }
 
-        if (!mRenderer)
-        {
-          acknowledgePendingPaint();
-          return;
-        }
-
-        canvas = mRenderer->beginFrame();
         if (!canvas)
         {
-          acknowledgePendingPaint();
-          return;
+          if (!activateFallbackRenderer(failedBackend) || !mRenderer)
+          {
+            acknowledgePendingPaint();
+            return;
+          }
+
+          canvas = mRenderer->beginFrame();
+          if (!canvas)
+          {
+            acknowledgePendingPaint();
+            return;
+          }
         }
       }
       else

@@ -449,7 +449,17 @@ public:
 	int Width() const { return mWidth; }
 	int Height() const { return mHeight; }
 #if defined(_WIN32)
-	HMODULE GetWinModuleHandle() const { return ::GetModuleHandleW(nullptr); }
+	// The module this copy of glint is compiled into (a plugin DLL, not the host
+	// EXE), so resources embedded next to glint are found.
+	HMODULE GetWinModuleHandle() const
+	{
+		static const int anchor = 0;
+		HMODULE module = nullptr;
+		::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+		                     | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		                     reinterpret_cast<LPCWSTR>(&anchor), &module);
+		return module ? module : ::GetModuleHandleW(nullptr);
+	}
 #endif
 
 	void SetDrawContext(void* drawContext) { mDrawContext = drawContext; }

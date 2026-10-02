@@ -610,10 +610,10 @@ inline bool flushAndPresentDirect3D(
   grContext->flush(surface, SkSurfaces::BackendSurfaceAccess::kPresent, flushInfo);
   grContext->submit();
 
-  if (FAILED(swapChain->Present(1, 0)))
-    return false;
-
-  return SUCCEEDED(queue->Signal(fence.get(), fenceValue));
+  // Signal even if Present failed so waits on fenceValue cannot hang.
+  const bool presented = SUCCEEDED(swapChain->Present(1, 0));
+  const bool signaled  = SUCCEEDED(queue->Signal(fence.get(), fenceValue));
+  return presented && signaled;
 }
 #endif
 #endif

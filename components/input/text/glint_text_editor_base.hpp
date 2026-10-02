@@ -432,12 +432,17 @@ protected:
   /** Advance one Unicode codepoint from `pos`. */
   static int nextCodepoint(const std::string& s, int pos)
   {
-    if (pos >= static_cast<int>(s.size())) return pos;
+    const int n = static_cast<int>(s.size());
+    if (pos >= n) return pos;
     const auto c = static_cast<unsigned char>(s[pos]);
-    if      (c < 0x80) return pos + 1;
-    else if (c < 0xE0) return pos + 2;
-    else if (c < 0xF0) return pos + 3;
-    else               return pos + 4;
+    int len;
+    if      (c < 0x80) len = 1;
+    else if (c < 0xE0) len = 2;
+    else if (c < 0xF0) len = 3;
+    else               len = 4;
+    // Invalid or truncated UTF-8 (e.g. Latin-1 text passed to setValue) must
+    // not step past the end: callers then insert at the result.
+    return std::min(pos + len, n);
   }
 
   /** Retreat one Unicode codepoint from `pos`. */

@@ -97,6 +97,14 @@ static int keysymToVK(KeySym sym)
 
 // ─── glint_window_linux member implementations ────────────────────────────────
 
+// Wake the event loop from any thread (see glint_window_linux::LinuxWake).
+void glint_window_linux::wakeLoop(LinuxWake& wake, char c)
+{
+  std::lock_guard<std::mutex> lk(wake.mutex);
+  if (wake.writeFd != -1)
+    (void)::write(wake.writeFd, &c, 1);
+}
+
 glint_window_linux::~glint_window_linux()
 {
   stopThread();
@@ -129,21 +137,13 @@ void glint_window_linux::startThread()
 void glint_window_linux::stopThread()
 {
   mRunning.store(false, std::memory_order_relaxed);
-  if (mWakeFd[1] != -1)
-  {
-    const char c = 'Q';
-    (void)::write(mWakeFd[1], &c, 1);
-  }
+  wakeLoop(*mWake, 'Q');
 }
 
 void glint_window_linux::requestRedraw()
 {
   mRedrawRequested.store(true, std::memory_order_relaxed);
-  if (mWakeFd[1] != -1)
-  {
-    const char c = 'R';
-    (void)::write(mWakeFd[1], &c, 1);
-  }
+  wakeLoop(*mWake, 'R');
 }
 
 void glint_window_linux::setTimer(int timerId, double intervalSec, bool /*oneShot*/)
@@ -152,30 +152,27 @@ void glint_window_linux::setTimer(int timerId, double intervalSec, bool /*oneSho
 
   auto entry = std::make_unique<TimerEntry>();
   entry->id = timerId;
-  auto* raw = entry.get();
+  // Capture only shared state, never `this` or the entry: either may be gone
+  // while this thread sleeps.
+  std::shared_ptr<std::atomic<bool>> stop = entry->stop;
+  std::shared_ptr<LinuxWake>         wake = mWake;
   mTimers.push_back(std::move(entry));
 
-  raw->thread = std::thread([this, raw, intervalSec, timerId]() {
+  std::thread([stop, wake, intervalSec, timerId]() {
     const auto interval = std::chrono::duration<double>(intervalSec);
-    while (!raw->stop.load(std::memory_order_relaxed))
+    while (!stop->load(std::memory_order_relaxed))
     {
       std::this_thread::sleep_for(interval);
-      if (raw->stop.load(std::memory_order_relaxed))
+      if (stop->load(std::memory_order_relaxed))
         break;
-      if (!mRunning.load(std::memory_order_relaxed))
-        break;
-      {
-        std::lock_guard<std::mutex> lk(mTimerMutex);
-        mPendingTimers.push_back({timerId});
-      }
-      if (mWakeFd[1] != -1)
-      {
-        const char c = 'T';
-        (void)::write(mWakeFd[1], &c, 1);
-      }
+      std::lock_guard<std::mutex> lk(wake->mutex);
+      if (wake->writeFd == -1)
+        break;  // the window's event loop has ended
+      wake->pendingTimers.push_back({timerId});
+      const char c = 'T';
+      (void)::write(wake->writeFd, &c, 1);
     }
-  });
-  raw->thread.detach();
+  }).detach();
 }
 
 void glint_window_linux::killTimer(int timerId)
@@ -184,7 +181,7 @@ void glint_window_linux::killTimer(int timerId)
   {
     if ((*it)->id == timerId)
     {
-      (*it)->stop.store(true, std::memory_order_relaxed);
+      (*it)->stop->store(true, std::memory_order_relaxed);
       it = mTimers.erase(it);
     }
     else ++it;
@@ -195,8 +192,8 @@ void glint_window_linux::drainTimerEvents()
 {
   std::vector<TimerEvent> events;
   {
-    std::lock_guard<std::mutex> lk(mTimerMutex);
-    events.swap(mPendingTimers);
+    std::lock_guard<std::mutex> lk(mWake->mutex);
+    events.swap(mWake->pendingTimers);
   }
   for (auto& ev : events)
     onTimerFired(ev.id);
@@ -208,11 +205,7 @@ void glint_window_linux::postCallback(std::function<void()> fn)
     std::lock_guard<std::mutex> lk(mCallbackMutex);
     mPendingCallbacks.push_back(std::move(fn));
   }
-  if (mWakeFd[1] != -1)
-  {
-    const char c = 'C';
-    (void)::write(mWakeFd[1], &c, 1);
-  }
+  wakeLoop(*mWake, 'C');
 }
 
 void glint_window_linux::drainCallbacks()
@@ -874,11 +867,7 @@ void glint_window_linux::initRoot()
     bounds, nullptr,
     [this] {
       mRedrawRequested.store(true, std::memory_order_relaxed);
-      if (mWakeFd[1] != -1)
-      {
-        const char c = 'R';
-        (void)::write(mWakeFd[1], &c, 1);
-      }
+      wakeLoop(*mWake, 'R');
     });
 
   mOwnRoot->devicePixelRatio = mDpr;
@@ -1234,9 +1223,17 @@ void glint_window_linux::run()
   }
   // Make the read end non-blocking so we can drain it without stalling
   ::fcntl(mWakeFd[0], F_SETFL, O_NONBLOCK);
+  {
+    std::lock_guard<std::mutex> lk(mWake->mutex);
+    mWake->writeFd = mWakeFd[1];
+  }
 
   if (!createXWindow())
   {
+    {
+      std::lock_guard<std::mutex> lk(mWake->mutex);
+      mWake->writeFd = -1;
+    }
     ::close(mWakeFd[0]);
     ::close(mWakeFd[1]);
     mWakeFd[0] = mWakeFd[1] = -1;
@@ -1377,6 +1374,11 @@ cleanup:
   mXWindow = 0;
 
   if (timerFd != -1) ::close(timerFd);
+  {
+    // Under the lock: no other thread can be mid-write when the fd closes.
+    std::lock_guard<std::mutex> lk(mWake->mutex);
+    mWake->writeFd = -1;
+  }
   ::close(mWakeFd[0]);
   ::close(mWakeFd[1]);
   mWakeFd[0] = mWakeFd[1] = -1;

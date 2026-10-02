@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -84,6 +85,16 @@ class glint_element;
 //   glint_load_font(pGraphics, "Kanit-Regular", KANIT_REGULAR_FN);
 namespace glint_font_registry
 {
+  // Every glint window runs on its own thread and all of them resolve fonts
+  // through the maps below, so one lock guards them all.  Recursive because
+  // these functions call each other.  Heap-allocated and never destroyed for
+  // the same static-destruction-order reason as the maps.
+  inline std::recursive_mutex& registryMutex()
+  {
+    static auto* m = new std::recursive_mutex();
+    return *m;
+  }
+
   inline std::unordered_set<std::string>& loadedFonts()
   {
     // Heap-allocated and intentionally never destroyed: protects against the
@@ -94,14 +105,23 @@ namespace glint_font_registry
     return *s;
   }
 
+  /** Thread-safe insert into loadedFonts(); use instead of inserting directly. */
+  inline void markLoaded(const std::string& fontID)
+  {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
+    loadedFonts().insert(fontID);
+  }
+
   inline bool isLoaded(const char* fontID)
   {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
     if (!fontID) return false;
     return loadedFonts().count(fontID) > 0;
   }
 
   inline bool isLoaded(const std::string& fontID)
   {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
     return loadedFonts().count(fontID) > 0;
   }
 
@@ -118,11 +138,13 @@ namespace glint_font_registry
 
   inline void registerTypeface(const std::string& fontID, sk_sp<SkTypeface> tf)
   {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
     if (tf) loadedTypefaces()[fontID] = std::move(tf);
   }
 
   inline sk_sp<SkTypeface> getTypeface(const char* fontID)
   {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
     if (!fontID) return nullptr;
     auto& m = loadedTypefaces();
     auto  it = m.find(fontID);
@@ -139,6 +161,7 @@ namespace glint_font_registry
    */
   inline sk_sp<SkTypeface> getTypefaceWeighted(const char* fontID, int weight)
   {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
     if (!fontID) return nullptr;
 
     const std::string key = std::string(fontID) + "@" + std::to_string(weight);
@@ -227,6 +250,7 @@ namespace glint_font_registry
                                     sk_sp<SkTypeface> tf,
                                     const std::string& fontId)
   {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
     if (!tf) return;
     const std::string key = family + "@" + std::to_string(weight) + "@" + style;
     axisTypefaces()[key]  = tf;
@@ -257,6 +281,7 @@ namespace glint_font_registry
                                               int         weight,
                                               const char* style)
   {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
     if (!family || !family[0]) return nullptr;
 
     const std::string fam   = family;
@@ -376,6 +401,7 @@ namespace glint_font_registry
                                                    int         weight,
                                                    const char* style)
   {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
     if (!family || !family[0]) return nullptr;
 
     const std::string sty = style ? style : "normal";
@@ -425,6 +451,7 @@ namespace glint_font_registry
                            int         weight,
                            const char* style)
   {
+    std::lock_guard<std::recursive_mutex> lk(registryMutex());
     if (!family || !family[0]) return "";
     const std::string fam    = family;
     const std::string sty    = style ? style : "normal";
@@ -507,7 +534,7 @@ inline bool glint_load_font(glint_canvas* pGraphics,
   const bool ok = pGraphics->LoadFont(fontID, fileNameOrResID);
   if (ok)
   {
-    glint_font_registry::loadedFonts().insert(fontID);
+    glint_font_registry::markLoaded(fontID);
 
     [&]() {
       sk_sp<SkData> fontData;

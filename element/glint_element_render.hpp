@@ -192,6 +192,8 @@ public:
     const bool hasFamily = family && family[0];
     if (hasFamily)
     {
+      // sTfCache is shared by every window thread; same lock as the font registry.
+      std::lock_guard<std::recursive_mutex> lk(glint_font_registry::registryMutex());
       _TfKey key{ std::string(family), weight, std::string(style ? style : "") };
       auto it = sTfCache.find(key);
       if (it != sTfCache.end()) {

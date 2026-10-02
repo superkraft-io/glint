@@ -66,6 +66,10 @@ public:
   virtual glint_backend backend() const = 0;
   virtual bool isGpu() const = 0;
   virtual const char* diagnostic() const = 0;
+  /** True once the GPU device was removed or reset (driver update, TDR, GPU
+   *  switch).  The host should recreate the renderer; a fresh device usually
+   *  works, unlike the lost one. */
+  virtual bool deviceLost() const { return false; }
 };
 
 class glint_cpu_renderer_backend_win32 final : public glint_renderer_backend_win32
@@ -418,6 +422,12 @@ public:
 
   SkCanvas* beginFrame() override
   {
+    if (mDeviceLost)
+    {
+      mDiagnostic = "D3D12 device lost";
+      return nullptr;
+    }
+
     if (!mHWND || !mGrContext || !mSwapChain || mWidth <= 0 || mHeight <= 0)
     {
       mDiagnostic = "D3D12 backend is not ready";
@@ -467,13 +477,27 @@ public:
     if (!mSwapChain || !mQueue || !mFence)
       return;
 
-    if (FAILED(mSwapChain->Present(1, 0)))
+    const HRESULT presentResult = mSwapChain->Present(1, 0);
+    // Signal even when Present failed: beginFrame already advanced this
+    // buffer's fence value and the next acquire / resize waits for it, so
+    // skipping the signal hangs the window thread.  After device removal
+    // fences read as complete, so this cannot hang either.
+    const HRESULT signalResult = mQueue->Signal(mFence.get(), mFenceValues[mBufferIndex]);
+
+    if (presentResult == DXGI_ERROR_DEVICE_REMOVED || presentResult == DXGI_ERROR_DEVICE_RESET)
+    {
+      mDeviceLost = true;
+      mDiagnostic = "D3D12 device lost";
+    }
+    else if (FAILED(presentResult))
       mDiagnostic = "D3D12 Present failed";
-    else if (FAILED(mQueue->Signal(mFence.get(), mFenceValues[mBufferIndex])))
+    else if (FAILED(signalResult))
       mDiagnostic = "D3D12 queue signal failed";
     else
       mDiagnostic.clear();
   }
+
+  bool deviceLost() const override { return mDeviceLost; }
 
   glint_backend backend() const override
   {
@@ -546,6 +570,7 @@ private:
   std::array<gr_cp<ID3D12Resource>, kBufferCount> mBuffers;
   std::array<sk_sp<SkSurface>, kBufferCount>      mSurfaces;
   std::array<uint64_t, kBufferCount>              mFenceValues = {};
+  bool                                            mDeviceLost  = false;
   unsigned int                      mBufferIndex = 0;
   SkCanvas*                         mCanvas = nullptr;
   SkSurface*                        mCurrentSurface = nullptr;

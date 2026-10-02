@@ -1489,9 +1489,17 @@ public:
   virtual std::string getGlobalSelText() const
   {
     if (mSelStart < 0 || mSelStart == mSelEnd) return {};
-    const int lo = std::min(mSelStart, mSelEnd);
-    const int hi = std::max(mSelStart, mSelEnd);
-    return innerText.substr(static_cast<size_t>(lo), static_cast<size_t>(hi - lo));
+    return _selectedInnerText();
+  }
+
+  /** innerText within [mSelStart, mSelEnd], clamped: innerText is a plain
+   *  string, so it can be shortened while a selection is still set. */
+  std::string _selectedInnerText() const
+  {
+    const size_t n  = innerText.size();
+    const size_t lo = std::min(static_cast<size_t>(std::max(std::min(mSelStart, mSelEnd), 0)), n);
+    const size_t hi = std::min(static_cast<size_t>(std::max(std::max(mSelStart, mSelEnd), 0)), n);
+    return hi > lo ? innerText.substr(lo, hi - lo) : std::string{};
   }
 
   /** True when this component intercepts Ctrl+A for its own text selection,
@@ -2302,10 +2310,7 @@ public:
       }
       if (key.vk == 'C' && mSelStart >= 0 && mSelStart != mSelEnd)
       {
-        const int lo = std::min(mSelStart, mSelEnd);
-        const int hi = std::max(mSelStart, mSelEnd);
-        _txtCopyToClipboard(innerText.substr(static_cast<size_t>(lo),
-                                             static_cast<size_t>(hi - lo)));
+        _txtCopyToClipboard(_selectedInnerText());
         return true;
       }
       if (key.vk == 0x25 || key.vk == 0x27)  // Ctrl+Left/Right

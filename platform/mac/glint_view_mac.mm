@@ -553,9 +553,24 @@ void glint_view_mac::_cvDisplayLinkFired()
   bool expected = false;
   if (!mFramePending.compare_exchange_strong(expected, true))
     return;  // already have a pending dispatch
+  if (!mViewHandle)
+  {
+    mFramePending.store(false);
+    return;
+  }
+  // The block may still be queued when close() / the destructor runs, so it
+  // must not capture `this`.  Keep the NSView alive and reach the C++ object
+  // through view->cppView, which close() nulls (same pattern as requestRedraw
+  // and glint_window_mac).
+  GlintMacView* view = (__bridge GlintMacView*) mViewHandle;
+  [view retain];
   dispatch_async(dispatch_get_main_queue(), ^{
-    mFramePending.store(false);  // clear BEFORE so the next tick can queue back-to-back
-    _handleAnimationTimer();
+    if (glint_view_mac* cpp = view->cppView)
+    {
+      cpp->mFramePending.store(false);  // clear BEFORE so the next tick can queue back-to-back
+      cpp->_handleAnimationTimer();
+    }
+    [view release];
   });
 }
 

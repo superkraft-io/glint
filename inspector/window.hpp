@@ -679,6 +679,7 @@ class InspFpsChart : public glint_element
 {
 public:
   glint_document* mMainRoot    = nullptr;
+  std::weak_ptr<void> mMainLife;     // the inspected document's life token
   int         mRefreshRate = 60;     // screen Hz fetched in the constructor
 
   const char* typeName() const override { return "fps-chart"; }
@@ -724,7 +725,7 @@ public:
     if (W <= 0.f || H <= 0.f) return;
 
     std::vector<float> samples;
-    if (mMainRoot) samples = mMainRoot->getFrameSamples();
+    if (mMainRoot && !mMainLife.expired()) samples = mMainRoot->getFrameSamples();
 
     // -- Y-axis auto-scale --------------------------------------------------
     // Ceiling = max(samples, refHz) * 1.15, snapped up to the nearest 10.
@@ -898,7 +899,7 @@ public:
 
 private:
   explicit glint_inspector_window(glint_document* mainRoot)
-    : mMainRoot(mainRoot)
+    : mMainRoot(mainRoot), mMainLife(mainRoot->documentLifeToken())
   {
     if (!mainRoot->name.empty()) {
 #if defined(_WIN32)
@@ -926,6 +927,7 @@ private:
 
   // -- State ------------------------------------------------------------------
   glint_document*      mMainRoot     = nullptr;   // not owned
+  std::weak_ptr<void>  mMainLife;                 // expires when mMainRoot is destroyed
   glint_element* mSelectedComp = nullptr;   // last persistently selected component
   uint64_t      mSelectedNodeId = 0;       // stable id for refresh / deletion fallback
   std::vector<uint64_t> mRemovedNodeUndoStack;    // most recently removed node IDs (LIFO)
@@ -1059,7 +1061,7 @@ private:
       wc.cbSize         = sizeof(wc);
       wc.style          = CS_HREDRAW | CS_VREDRAW;
       wc.lpfnWndProc    = WndProc;
-      wc.hInstance      = ::GetModuleHandleW(nullptr);
+      wc.hInstance      = glint_win32_host::moduleInstance();
       wc.hCursor        = ::LoadCursor(nullptr, IDC_ARROW);
       wc.hbrBackground  = reinterpret_cast<HBRUSH>(::CreateSolidBrush(RGB(26, 26, 26)));
       wc.lpszClassName  = L"glint_inspector";
@@ -1075,7 +1077,7 @@ private:
       CW_USEDEFAULT, CW_USEDEFAULT,
       mW, mH,
       nullptr, nullptr,
-      ::GetModuleHandleW(nullptr),
+      glint_win32_host::moduleInstance(),
       this   // passed to WM_NCCREATE as lpCreateParams
     );
     if (!mHWND) return false;
@@ -2524,8 +2526,26 @@ function exportAbsoluteJSON() {
 
   // Shared timer handler — called from handleMessage(WM_TIMER) on Win32
   // and from onTimerFired() on macOS.
+  /** The inspected document can be destroyed (its window closed) while the
+   *  inspector stays open.  Once its life token expires, drop every pointer
+   *  into it, so the existing `if (mMainRoot)` checks hold, and close. */
+  void _dropMainRootIfGone()
+  {
+    if (!mMainRoot || !mMainLife.expired()) return;
+    mMainRoot       = nullptr;
+    mSelectedComp   = nullptr;
+    mSelectedNodeId = 0;
+    if (mStylePanel)
+    {
+      mStylePanel->mDocument = nullptr;   // before clear(): it would write to it
+      mStylePanel->clear();
+    }
+    stopThread();
+  }
+
   void handleTimerFired(int timerId)
   {
+    _dropMainRootIfGone();
     if (timerId == static_cast<int>(WM_INSP_PREVIEW_SHOW_TIMER))
     {
 #if defined(_WIN32)
@@ -2628,6 +2648,7 @@ function exportAbsoluteJSON() {
 #if defined(_WIN32)
   LRESULT handleMessage(UINT msg, WPARAM wp, LPARAM lp) override
   {
+    _dropMainRootIfGone();
     switch (msg)
     {
     case WM_INSP_TREE_CHANGED:
@@ -3077,6 +3098,7 @@ function exportAbsoluteJSON() {
           selectInspectorNodeById(node.id);
         };
         tree->onHover = [this](const glint_tree_node* node) {
+          _dropMainRootIfGone();
           if (!mMainRoot) return;
           if (node) {
             if (auto* comp = mMainRoot->getNodeById(node->id))
@@ -3087,6 +3109,7 @@ function exportAbsoluteJSON() {
           mMainRoot->setDirty(false);
         };
         tree->onEyeToggle = [this](uint64_t id, bool active) {
+          _dropMainRootIfGone();
           if (!mMainRoot) return;
           if (active && id != 0) {
             if (auto* comp = mMainRoot->getNodeById(id))
@@ -3339,6 +3362,7 @@ function exportAbsoluteJSON() {
       {
         auto* chart = new InspFpsChart();
         chart->mMainRoot           = mMainRoot;
+        chart->mMainLife           = mMainLife;
         chart->style.width         = 300.f;
         chart->style.height        = 100.f;
         chart->style.backgroundColor = "#1c1c1c";

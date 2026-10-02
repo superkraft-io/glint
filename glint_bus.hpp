@@ -22,9 +22,12 @@
  *   glint_bus::publish(glint_tree_changed_event{ this });
  *
  * Thread safety:
- *   subscribe/unsubscribe/publish all acquire the same mutex and are safe to
- *   call from any thread.  Handler lists are copied before dispatch so it is
- *   safe to subscribe/unsubscribe from within a handler without deadlock.
+ *   subscribe/unsubscribe/publish are safe to call from any thread.  Handler
+ *   lists are copied before dispatch so it is safe to subscribe/unsubscribe
+ *   from within a handler without deadlock.  Once unsubscribe() returns, that
+ *   handler is not running on any other thread and will not be called again,
+ *   so the subscriber may be destroyed right after.  Handlers must therefore
+ *   not block on a thread that may be unsubscribing them (post, don't wait).
  *
  * Filtering:
  *   Events carry a `root` pointer.  Subscribers filter on it.  No window IDs
@@ -34,6 +37,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <typeindex>
 #include <typeinfo>
@@ -88,12 +92,13 @@ public:
   template<typename EventT>
   static int subscribe(std::function<void(const EventT&)> handler)
   {
+    auto sub = std::make_shared<Subscription>();
+    sub->fn = [h = std::move(handler)](const void* e) {
+      h(*static_cast<const EventT*>(e));
+    };
     std::lock_guard<std::mutex> lock(mutex());
     const int id = nextId()++;
-    handlers()[std::type_index(typeid(EventT))][id] =
-        [h = std::move(handler)](const void* e) {
-          h(*static_cast<const EventT*>(e));
-        };
+    handlers()[std::type_index(typeid(EventT))][id] = std::move(sub);
     return id;
   }
 
@@ -101,9 +106,22 @@ public:
    *  No-op if the ID is not found (safe to call after the window is gone). */
   static void unsubscribe(int id)
   {
-    std::lock_guard<std::mutex> lock(mutex());
-    for (auto& [type, map] : handlers())
-      map.erase(id);
+    std::shared_ptr<Subscription> sub;
+    {
+      std::lock_guard<std::mutex> lock(mutex());
+      for (auto& [type, map] : handlers())
+      {
+        auto it = map.find(id);
+        if (it == map.end()) continue;
+        sub = std::move(it->second);
+        map.erase(it);
+      }
+    }
+    if (!sub) return;
+    // Waits for an in-flight call on another thread to finish; recursive, so
+    // a handler may unsubscribe itself.
+    std::lock_guard<std::recursive_mutex> callLock(sub->callMutex);
+    sub->active = false;
   }
 
   /** Publish an event.  All matching subscribers are called synchronously.
@@ -112,22 +130,33 @@ public:
   template<typename EventT>
   static void publish(const EventT& event)
   {
-    std::vector<std::function<void(const void*)>> toCall;
+    std::vector<std::shared_ptr<Subscription>> toCall;
     {
       std::lock_guard<std::mutex> lock(mutex());
       auto it = handlers().find(std::type_index(typeid(EventT)));
       if (it != handlers().end())
-        for (auto& [id, fn] : it->second)
-          toCall.push_back(fn);
+        for (auto& [id, sub] : it->second)
+          toCall.push_back(sub);
     }
-    for (auto& fn : toCall)
-      fn(&event);
+    for (auto& sub : toCall)
+    {
+      // Hold the subscription's lock while calling so unsubscribe() can wait
+      // for us; skip handlers unsubscribed after the copy above.
+      std::lock_guard<std::recursive_mutex> callLock(sub->callMutex);
+      if (sub->active) sub->fn(&event);
+    }
   }
 
 private:
   // Meyers-singleton storage avoids static-init-order issues.
   using HandlerFn  = std::function<void(const void*)>;
-  using HandlerMap = std::map<int, HandlerFn>;
+  struct Subscription
+  {
+    HandlerFn            fn;
+    std::recursive_mutex callMutex;  // held while fn runs
+    bool                 active = true;
+  };
+  using HandlerMap = std::map<int, std::shared_ptr<Subscription>>;
   using TypeMap    = std::map<std::type_index, HandlerMap>;
 
   static TypeMap&    handlers() { static TypeMap    m;  return m;  }
