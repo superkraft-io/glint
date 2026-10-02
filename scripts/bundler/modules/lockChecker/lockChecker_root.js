@@ -4,7 +4,7 @@ var utils = require('../glint_utils.js')
 
 module.exports = class LockChecker_Root {
     constructor(){
-        
+
     }
 
     async init(){
@@ -15,21 +15,25 @@ module.exports = class LockChecker_Root {
         })
     }
 
+    // Returns the failed checks (locked, missing or unreadable files).  Only a
+    // few run at once: each check on Windows starts a PowerShell process.
     async checkFiles(){
-        var promises = []
-        for (let i=0; i<this.filesToCheck.length; i++){
-            var p = this.filesToCheck[i]
-            promises.push(this.checkFileLocked(p))
+        var failed = []
+        var next = 0
+
+        const worker = async () => {
+            while (next < this.filesToCheck.length) {
+                const filePath = this.filesToCheck[next++]
+                try {
+                    await this.checkFileLocked(filePath)
+                } catch (reason) {
+                    failed.push(reason)
+                }
+            }
         }
 
-        var res = await Promise.allSettled(promises)
+        await Promise.all(Array.from({ length: Math.min(8, this.filesToCheck.length) }, worker))
 
-        var rejected = []
-
-        for (var file of res){
-            if (file.status === 'rejected') rejected.push(file.reason)
-        }
-
-        return rejected
+        return failed.sort((a, b) => String(a && a.path).localeCompare(String(b && b.path)))
     }
 }

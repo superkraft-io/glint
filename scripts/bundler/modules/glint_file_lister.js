@@ -3,19 +3,27 @@ const path = require('path');
 
 const fileGrouper = require('./glint_files_grouper.js');
 
-var ignoreExtensions = [
+// Matched against whole names and extensions, not substrings: ".git" must not
+// hide "my.github.io.png", nor ".md" hide "docs.mdx".
+var ignoreNames = new Set([
     '.DS_Store',
     '.git',
+    '.gitattributes',
+    '.github',
     '.gitignore',
+    '.gitkeep',
+    '.gitmodules',
+    '.retain'
+])
+
+var ignoreExtensions = new Set([
     '.md',
     '.retain'
-]
+])
 
 global.shouldIgnoreFile = file => {
-    for (var i = 0; i < ignoreExtensions.length; i++) {
-        if (file.indexOf(ignoreExtensions[i]) > -1) return true
-    }
-    return false
+    const name = path.basename(file)
+    return ignoreNames.has(name) || ignoreExtensions.has(path.extname(name).toLowerCase())
 }
 
 module.exports = {

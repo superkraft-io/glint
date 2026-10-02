@@ -8,7 +8,7 @@ namespace {
 size_t s_offsets_<!id!>[<!offsets_arr_size!>] = {<!offsets!>};
 size_t s_sizes_<!id!>[<!sizes_arr_size!>] = {<!sizes!>};
 size_t s_data_size_<!id!> = <!data_size!>;
-unsigned char s_data_<!id!>[<!data_size!>] = {<!data!>};
+unsigned char s_data_<!id!>[<!data_array_size!>] = {<!data!>};
 
 } // namespace
 

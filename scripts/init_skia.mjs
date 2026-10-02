@@ -578,8 +578,9 @@ function createUniversalMacLibraries(configs, lipoCommand) {
   }
 }
 
-function copyLibraries(outDir, configName) {
-  const libDst = path.join(depsDir, 'win', 'x64', configName);
+function copyLibraries(outDir, configName, arch) {
+  // win/<arch>/<config>: CMake picks win/arm64 for ARM64 builds.
+  const libDst = path.join(depsDir, 'win', arch, configName);
   ensureDirectory(libDst);
 
   for (const libraryName of libraryNames) {
@@ -686,29 +687,73 @@ async function downloadFile(url, destPath) {
   });
 }
 
+// Every entry must land inside destDir: a "../" or absolute entry name would
+// otherwise write anywhere ("zip slip").  Both extractors check all entries
+// before writing any.
 async function extractZip(zipPath, destDir) {
   if (process.platform === 'win32') {
+    // Paths go in as single-quoted PowerShell literals (a '$' in them is not
+    // expanded) and the script as -EncodedCommand (no command-line quoting).
+    // Errors are written as plain text: with -EncodedCommand, PowerShell
+    // reports error and progress records on a redirected stderr as CLIXML.
+    const psLiteral = (value) => `'${String(value).replace(/'/g, "''")}'`;
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "$ProgressPreference = 'SilentlyContinue'",
+      'try {',
+      '  Add-Type -AssemblyName System.IO.Compression.FileSystem',
+      `  $dest = [IO.Path]::GetFullPath(${psLiteral(destDir)}).TrimEnd('\\') + '\\'`,
+      `  $zip = [IO.Compression.ZipFile]::OpenRead(${psLiteral(zipPath)})`,
+      '  try {',
+      '    $plan = foreach ($entry in $zip.Entries) {',
+      '      $target = [IO.Path]::GetFullPath([IO.Path]::Combine($dest, $entry.FullName))',
+      '      if (-not $target.StartsWith($dest, [StringComparison]::OrdinalIgnoreCase)) {',
+      '        throw "Zip entry escapes the destination folder: $($entry.FullName)"',
+      '      }',
+      '      [pscustomobject]@{ Entry = $entry; Target = $target }',
+      '    }',
+      '    foreach ($item in $plan) {',
+      '      if ([string]::IsNullOrEmpty($item.Entry.Name)) {',
+      '        [void][IO.Directory]::CreateDirectory($item.Target)',
+      '      } else {',
+      '        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($item.Target))',
+      '        [IO.Compression.ZipFileExtensions]::ExtractToFile($item.Entry, $item.Target, $true)',
+      '      }',
+      '    }',
+      '  } finally {',
+      '    $zip.Dispose()',
+      '  }',
+      '} catch {',
+      '  [Console]::Error.WriteLine($_.Exception.Message)',
+      '  exit 1',
+      '}'
+    ].join('\n');
     const result = spawnSync('powershell', [
-      '-NoProfile', '-NonInteractive', '-Command',
-      `$ErrorActionPreference = 'Stop'; Expand-Archive -Force -Path "${zipPath}" -DestinationPath "${destDir}"`
+      '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')
     ], { stdio: 'inherit' });
-    if (result.status !== 0) fail('Failed to extract zip with PowerShell Expand-Archive.');
+    if (result.status !== 0) fail('Failed to extract zip with PowerShell.');
   } else {
     // On Linux/macOS, zip files created on Windows store backslash path separators.
     // unzip treats backslashes as filename characters (not separators), dumping everything flat.
     // Use Python's zipfile module with explicit backslash→slash normalisation to handle both cases.
     const pyScript = [
-      'import zipfile, os, sys',
+      'import os, shutil, sys, zipfile',
+      'dest = os.path.abspath(sys.argv[2])',
       'with zipfile.ZipFile(sys.argv[1]) as z:',
-      '    for m in z.namelist():',
-      '        p = m.replace("\\\\", "/").replace("\\\\\\\\", "/")',
-      '        t = os.path.join(sys.argv[2], p)',
+      '    plan = []',
+      '    for m in z.infolist():',
+      String.raw`        p = m.filename.replace("\\", "/")`,
+      '        t = os.path.abspath(os.path.join(dest, p))',
+      '        if os.path.commonpath([dest, t]) != dest:',
+      '            sys.exit("Zip entry escapes the destination folder: " + m.filename)',
+      '        plan.append((p, t, m))',
+      '    for p, t, m in plan:',
       '        if p.endswith("/"):',
       '            os.makedirs(t, exist_ok=True)',
       '        else:',
       '            os.makedirs(os.path.dirname(t), exist_ok=True)',
-      '            data = z.read(m)',
-      '            open(t, "wb").write(data)',
+      '            with z.open(m) as src, open(t, "wb") as out:',
+      '                shutil.copyfileobj(src, out)',
     ].join('\n');
 
     const python = findCommand(['python3', 'python']);
@@ -935,9 +980,7 @@ function main() {
 
       const outDir = process.platform === 'linux'
         ? path.join(linuxNativeBuildBase, arch, configName)
-        : process.platform === 'darwin'
-          ? path.join(tmpDir, 'build', options.target, arch, configName)
-          : path.join(tmpDir, 'build', 'x64', configName);
+        : path.join(tmpDir, 'build', options.target, arch, configName);
       ensureDirectory(outDir);
 
       console.log(`Generating GN build files for ${configName} (${options.target}, ${arch})...`);
@@ -957,7 +1000,7 @@ function main() {
       } else if (process.platform === 'linux') {
         copyLinuxLibraries(outDir, configName, arch);
       } else {
-        copyLibraries(outDir, configName);
+        copyLibraries(outDir, configName, arch);
       }
     }
   }
@@ -968,10 +1011,12 @@ function main() {
   }
 
   console.log('Cleaning up tmp build directory...');
+  // Only the build outputs: depot_tools and a temporary Skia checkout stay in
+  // tmp/, and the next run reuses them instead of cloning them again.
   if (linuxNativeBuildBase) {
     fs.rmSync(linuxNativeBuildBase, { recursive: true, force: true });
   } else {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(path.join(tmpDir, 'build'), { recursive: true, force: true });
   }
 
   console.log('');

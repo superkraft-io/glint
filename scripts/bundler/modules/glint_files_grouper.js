@@ -1,9 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const utils = require('./glint_utils.js');
 
 function formatBufferForCpp(buffer, valuesPerLine = 32) {
+    // A group of empty files still gets one element (see <!data_array_size!>):
+    // zero-length arrays are not C++ (MSVC error C2466).
     if (!buffer || buffer.length === 0)
-        return '';
+        return '0';
 
     const lines = [];
 
@@ -101,6 +104,7 @@ class FileGroup {
             .split('<!namespace!>').join(bundleNamespace)
             .split('<!id!>').join(this.id)
             .split('<!data_size!>').join(this.buffer.length)
+            .split('<!data_array_size!>').join(Math.max(1, this.buffer.length))
             .replace('<!data!>', formatBufferForCpp(this.buffer))
 
         if (glint.bundle_mode === 'shallow') fs.writeFileSync(shallowGroupsDataRoot + '/' + this.id + '.bin', this.buffer)
@@ -218,7 +222,8 @@ module.exports = {
 
             for (var u in group.files) {
                 var file = group.files[u]
-                var entryLine = `       {"${(file.altPath ? file.altPath.substr(0, file.altPath.length - 1) + file.path : file.path)}", new glint_bundle_entry_info(${file.offset}, ${file.size}, ${groupIdx}, ${file.idx}, groups[${groupIdx}], false, "${file.filename}", "", "")}`
+                var entryPath = file.altPath ? file.altPath.substr(0, file.altPath.length - 1) + file.path : file.path
+                var entryLine = `       {"${utils.cppEscape(entryPath)}", new glint_bundle_entry_info(${file.offset}, ${file.size}, ${groupIdx}, ${file.idx}, groups[${groupIdx}], false, "${utils.cppEscape(file.filename)}", "", "")}`
                 entriesDefs.push(entryLine)
             }
         }

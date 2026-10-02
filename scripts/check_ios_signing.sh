@@ -13,8 +13,11 @@ issues=()
 identity_output=""
 identity_list=""
 profile_summaries=()
+expired_matches=()
 expected_team=""
 expected_bundle=""
+# Plist dates are ISO-8601 UTC, which compare correctly as plain strings.
+now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 cleanup() {
   rm -rf "$tmp_dir"
@@ -48,8 +51,15 @@ else
     platforms="$(/usr/libexec/PlistBuddy -c 'Print :Platform' "$decoded" 2>/dev/null || true)"
     team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$decoded" 2>/dev/null || true)"
     app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$decoded" 2>/dev/null || true)"
+    expires="$(plutil -extract ExpirationDate xml1 -o - "$decoded" 2>/dev/null | sed -n 's:.*<date>\(.*\)</date>.*:\1:p' || true)"
+    expired=0
+    expiry_note=""
+    if [[ -n "$expires" && "$expires" < "$now_utc" ]]; then
+      expired=1
+      expiry_note=" (EXPIRED)"
+    fi
 
-    profile_summaries+=("  - ${name}: platform=${platform:-unknown}, team=${team:-unknown}, app-id=${app_id:-unknown}")
+    profile_summaries+=("  - ${name}: platform=${platform:-unknown}, team=${team:-unknown}, app-id=${app_id:-unknown}, expires=${expires:-unknown}${expiry_note}")
 
     if ! printf '%s\n' "$platforms" | grep -Eq 'iOS|iPhoneOS'; then
       continue
@@ -61,15 +71,19 @@ else
       continue
     fi
 
+    # application-identifier is "<team>.<bundle id>", and the bundle part may
+    # be a wildcard: "*" or e.g. "io.superkraft.*".
     if [[ -n "$expected_bundle" && -n "$app_id" ]]; then
-      expected_app_id="$expected_bundle"
-      if [[ -n "$expected_team" ]]; then
-        expected_app_id="${expected_team}.${expected_bundle}"
-      fi
-
-      if [[ "$app_id" != "$expected_app_id" && "$app_id" != "${expected_team}.*" ]]; then
+      app_bundle="${app_id#*.}"
+      if [[ "$expected_bundle" != ${~app_bundle} ]]; then
         continue
       fi
+    fi
+
+    # Signing with an expired profile fails at build time.
+    if (( expired )); then
+      expired_matches+=("${name} (expired ${expires})")
+      continue
     fi
 
     found_matching_ios_profile=1
@@ -79,8 +93,12 @@ fi
 
 if [[ "$found_ios_profile" -eq 0 ]]; then
   issues+=("No iOS provisioning profile is installed on this Mac.")
-elif [[ -n "$expected_bundle" && "$found_matching_ios_profile" -eq 0 ]]; then
-  issues+=("No installed iOS provisioning profile matches team ${expected_team:-<unset>} and bundle ${expected_bundle}.")
+elif [[ "$found_matching_ios_profile" -eq 0 ]]; then
+  if (( ${#expired_matches[@]} > 0 )); then
+    issues+=("Every iOS provisioning profile for team ${expected_team:-<unset>} and bundle ${expected_bundle:-<unset>} has expired: ${(j:, :)expired_matches}.")
+  else
+    issues+=("No installed iOS provisioning profile matches team ${expected_team:-<unset>} and bundle ${expected_bundle:-<unset>}.")
+  fi
 fi
 
 if (( ${#issues[@]} > 0 )); then
@@ -105,7 +123,7 @@ if (( ${#issues[@]} > 0 )); then
   cat <<'EOF'
 Open Xcode > Settings > Accounts, sign in to your Apple Developer account, and install:
   - an Apple Development certificate for iOS
-  - an iOS provisioning profile that matches the bundle identifier above
+  - an unexpired iOS provisioning profile that matches the bundle identifier above
 EOF
   exit 1
 fi

@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const utils = require('./glint_utils.js');
 
 
 class Folder {
@@ -70,7 +71,7 @@ module.exports = {
             var folder = entries[i]
             var refPath = (folder.altPath ? folder.altPath.substr(0, folder.altPath.length - 1) + folder.path: folder.path)
             if (folder.altPath && folder.path === '/') refPath = folder.altPath.substr(0, folder.altPath.length - 1)
-            var cppEntry = `       {"${refPath}", new glint_bundle_entry_info(0, 0, 0, 0, 0, true, "", "${folder.entries.folders.join(',')}", "${folder.entries.files.join(',')}")}`
+            var cppEntry = `       {"${utils.cppEscape(refPath)}", new glint_bundle_entry_info(0, 0, 0, 0, 0, true, "", "${utils.cppEscape(folder.entries.folders.join(','))}", "${utils.cppEscape(folder.entries.files.join(','))}")}`
             cppEntries.push(cppEntry)
         }
         

@@ -3,6 +3,9 @@ param(
   [string]$Path
 )
 
+# Keep stdout to the one answer line, and progress records (Add-Type) off stderr.
+$ProgressPreference = 'SilentlyContinue'
+
 # 1) Quick existence + quick "not locked" check
 if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { Write-Host "not_found"; exit 2 }
 try {
@@ -56,6 +59,7 @@ if (-not $procs -or $procs.Length -eq 0) {
   Write-Host "locked,-1:unknown"; exit 1
 }
 
-Write-Host ("locked," + (($procs | ForEach-Object { "$($_.Process.dwProcessId):$($_.AppName)" }) -join ''))
+# "locked,<pid>:<name>,<pid>:<name>..." (commas in names would split entries)
+Write-Host ("locked," + (($procs | ForEach-Object { "$($_.Process.dwProcessId):$($_.AppName -replace ',', ' ')" }) -join ','))
 
 exit 1

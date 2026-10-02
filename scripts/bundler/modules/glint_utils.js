@@ -89,20 +89,36 @@ module.exports = {
 
         defOpts = {...defOpts, ...opts}
 
+        // Point at the caller ("file(line,col): error ..." is what IDE problem
+        // matchers jump to).  Stack frames of ES modules are file:// URLs.
         if (defOpts.line < 0){
             var callerInfo = this.getCallerInfo(1)
-            if (!defOpts.file) defOpts.file = callerInfo.file
-            if (!defOpts.line) defOpts.line = callerInfo.line
-            if (!defOpts.col) defOpts.col = callerInfo.column
+            if (callerInfo) {
+                if (!defOpts.file) defOpts.file = callerInfo.file
+                defOpts.line = callerInfo.line
+                defOpts.col = callerInfo.column
+            }
         }
 
-        const abs = path.resolve(defOpts.file);
+        var file = String(defOpts.file || '')
+        if (file.startsWith('file:')) file = require('url').fileURLToPath(file)
+        const abs = path.resolve(file);
 
         console.error(`${abs}(${defOpts.line},${defOpts.col}): error ${defOpts.code}: ${defOpts.msg}`);
 
         if (!defOpts.keepAlive) process.exit(1)
     },
     
+    // Escapes text for a C++ string literal: file names on macOS / Linux may
+    // contain quotes, backslashes or even newlines.
+    cppEscape(text) {
+        return String(text)
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r');
+    },
+
     runPs1(scriptPath, args = []){
         const shell = 'powershell.exe'
 

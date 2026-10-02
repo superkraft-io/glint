@@ -8,21 +8,38 @@ print_section() {
   printf '%*s\n' "${#title}" '' | tr ' ' '-'
 }
 
+# A certificate's team is its Organizational Unit (OU).  The 10-character ID in
+# parentheses at the end of an identity's name is the team only for
+# distribution certificates; for "Apple Development" / "iPhone Developer" ones
+# it identifies the developer.
 extract_team_ids_from_identities() {
+  local identity
   security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/.*(\([A-Z0-9]\{10\}\)).*/\1/p' \
+    | sed -n 's/^ *[0-9][0-9]*) [0-9A-F]* "\(.*\)"$/\1/p' \
+    | sort -u \
+    | while IFS= read -r identity; do
+        security find-certificate -a -c "$identity" -p 2>/dev/null \
+          | openssl x509 -noout -subject 2>/dev/null \
+          | sed -n 's/.*OU *= *\([A-Z0-9]\{10\}\).*/\1/p' || true
+      done \
     | sort -u
 }
 
+# Profiles are signed plists with the team under TeamIdentifier, on its own
+# line: decode them instead of grepping the raw files.
 extract_team_ids_from_profiles() {
   local profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
   if [[ ! -d "$profiles_dir" ]]; then
     return 0
   fi
 
-  grep -aRho 'TeamIdentifier[^[:cntrl:]]*[A-Z0-9]\{10\}' "$profiles_dir" 2>/dev/null \
-    | sed -n 's/.*\([A-Z0-9]\{10\}\)$/\1/p' \
-    | sort -u
+  local decoded profile
+  decoded="$(mktemp)"
+  for profile in "$profiles_dir"/*.mobileprovision(.N) "$profiles_dir"/*.provisionprofile(.N); do
+    security cms -D -i "$profile" > "$decoded" 2>/dev/null || continue
+    /usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$decoded" 2>/dev/null || true
+  done | sort -u
+  rm -f "$decoded"
 }
 
 identity_ids="$(extract_team_ids_from_identities || true)"

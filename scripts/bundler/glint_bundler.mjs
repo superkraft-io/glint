@@ -40,6 +40,38 @@ if (!outputDir) utils.reportError({ msg: '[glint_bundler] --output is required' 
 if (!fs.existsSync(inputDir)) utils.reportError({ msg: `[glint_bundler] --input path does not exist: ${inputDir}` });
 if (!['deep', 'shallow'].includes(mode)) utils.reportError({ msg: `[glint_bundler] --mode must be "deep" or "shallow", got: ${mode}` });
 
+// ── Output folder safety ─────────────────────────────────────────────────────
+// The output folder is deleted and rewritten on every run, so only accept one
+// that is (or will become) a bundle: a mistyped --output (".", the project
+// root, a source folder, or a folder holding the input) would be wiped.
+const BUNDLE_OUTPUT_ENTRIES = new Set([
+    'deep', 'shallow',
+    'glint_bundle_group_root.hpp', 'glint_bundle_groups.hpp', 'glint_bundle_entry.hpp',
+    'glint_bundle_entries_files.hpp', 'glint_bundle_entries_folders.hpp',
+    'glint_bundle_include.hpp', 'glint_bundle_library.hpp'
+]);
+const OS_CLUTTER = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+
+function isSameOrInside(child, parent) {
+    const rel = path.relative(parent, child);
+    return rel === '' || (rel.split(path.sep)[0] !== '..' && !path.isAbsolute(rel));
+}
+
+function checkOutputDir() {
+    const refuse = (why) => utils.reportError({ msg: `[glint_bundler] Refusing to use --output "${outputDir}": ${why}` });
+    if (path.parse(outputDir).root === outputDir) refuse('it is a filesystem root.');
+    if (isSameOrInside(inputDir, outputDir))      refuse('it is the input folder or contains it.');
+    if (isSameOrInside(outputDir, inputDir))      refuse('it is inside the input folder (the bundle would include itself).');
+    if (!fs.existsSync(outputDir)) return;
+    if (!fs.statSync(outputDir).isDirectory())    refuse('it is not a folder.');
+
+    const entries = fs.readdirSync(outputDir).filter(e => !OS_CLUTTER.has(e));
+    if (entries.length > 0 && !entries.some(e => BUNDLE_OUTPUT_ENTRIES.has(e)))
+        refuse('it is deleted before every run, and it is not empty and holds no previous bundle. Use a dedicated folder.');
+}
+
+checkOutputDir();
+
 // ── Globals (mirrors skxx pattern, used by modules) ──────────────────────────
 global.glint = { bundle_mode: mode };
 global.bundleNamespace = namespace;
@@ -68,25 +100,30 @@ const run = async () => {
 
     // 1. Check for locked files
     console.log('[glint_bundler] Checking for locked files...');
-    const LockChecker = require(`./modules/lockChecker/lockChecker_${utils.getOS()}.js`);
+    // Windows and macOS have checkers of their own; on Linux and other POSIX
+    // systems open files never block replacing the output.
+    const osName      = utils.getOS();
+    const LockChecker = require(`./modules/lockChecker/lockChecker_${osName === 'win' || osName === 'macos' ? osName : 'linux'}.js`);
     const lockChecker = new LockChecker();
     await lockChecker.init();
     const lockedFiles = await lockChecker.checkFiles();
 
     if (lockedFiles.length > 0) {
-        const pids = [...new Set(lockedFiles.flatMap(f => (f.procList || []).map(p => p.pid)))];
+        const pids = [...new Set(lockedFiles.flatMap(f => (f.procList || []).map(p => p.pid)))].filter(pid => Number(pid) > 0);
         utils.reportError({ keepAlive: true, msg: `[glint_bundler] Some files are locked. Close the locking applications then try again.` });
-        if (pids.length) utils.reportError({ keepAlive: true, msg: `taskkill /PID ${pids.join(' /PID ')} /F` });
+        if (pids.length) utils.reportError({ keepAlive: true, msg: osName === 'win' ? `taskkill /PID ${pids.join(' /PID ')} /F` : `kill ${pids.join(' ')}` });
         for (const f of lockedFiles) {
             if (f.status === 'not_found') utils.reportError({ keepAlive: true, msg: `[glint_bundler] File not found: "${f.path}"` });
+            else if (f.status === 'error') utils.reportError({ keepAlive: true, msg: `[glint_bundler] Could not check "${f.path}": ${f.error}` });
             else utils.reportError({ keepAlive: true, msg: `[glint_bundler] Locked: "${path.basename(f.path)}" by ${(f.procList || []).map(p => `${p.name} (PID ${p.pid})`).join(', ')}` });
         }
         process.exit(1);
     }
 
-    // 2. Clean and recreate output dirs
+    // 2. Clean and recreate output dirs (a failure here aborts: stale group
+    //    files would otherwise be compiled into the new bundle)
     console.log('[glint_bundler] Cleaning previous bundle...');
-    try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch {}
+    fs.rmSync(outputDir, { recursive: true, force: true });
     fs.mkdirSync(bundleDeepRoot,        { recursive: true });
     fs.mkdirSync(deepGroupsRoot,        { recursive: true });
     fs.mkdirSync(bundleShallowRoot,     { recursive: true });
@@ -104,7 +141,8 @@ const run = async () => {
     const groupResult   = grouper.forFiles({ files: allEntries, groupSize: 0.3 });
     const folderEntries = foldersAssembler.forFolders({ folders: allEntries });
 
-    // 5. Write master headers from templates
+    // 5. Write master headers from templates.  Placeholders are replaced with
+    //    split/join: String.replace would expand "$&", "$'"... in file names.
     const T = (name) => path.resolve(__dirname, 'templates', name);
     const O = (name) => path.join(outputDir, name);
 
@@ -114,7 +152,7 @@ const run = async () => {
 
     modTemplate(T('glint_bundle_groups_template.hpp'), O('glint_bundle_groups.hpp'), data =>
         data.split('<!namespace!>').join(namespace)
-            .replace('<!groups!>', groupResult.groupsDefs + '\n')
+            .split('<!groups!>').join(groupResult.groupsDefs + '\n')
     );
 
     modTemplate(T('glint_bundle_entry_template.hpp'), O('glint_bundle_entry.hpp'), data =>
@@ -124,18 +162,18 @@ const run = async () => {
     modTemplate(T('glint_bundle_entries_template.hpp'), O('glint_bundle_entries_files.hpp'), data =>
         data.split('<!namespace!>').join(namespace)
             .split('<!type!>').join('Files')
-            .replace('<!entries!>', groupResult.entriesDefs + '\n')
+            .split('<!entries!>').join(groupResult.entriesDefs + '\n')
     );
 
     modTemplate(T('glint_bundle_entries_template.hpp'), O('glint_bundle_entries_folders.hpp'), data =>
         data.split('<!namespace!>').join(namespace)
             .split('<!type!>').join('Folders')
-            .replace('<!entries!>', folderEntries.join(',\n') + '\n')
+            .split('<!entries!>').join(folderEntries.join(',\n') + '\n')
     );
 
     modTemplate(T('glint_bundle_include_template.hpp'), O('glint_bundle_include.hpp'), data =>
-        data.replace('<!deep_group_includes!>',    groupResult.includesDef.deep)
-            .replace('<!shallow_group_includes!>', groupResult.includesDef.shallow)
+        data.split('<!deep_group_includes!>').join(groupResult.includesDef.deep)
+            .split('<!shallow_group_includes!>').join(groupResult.includesDef.shallow)
     );
 
     modTemplate(T('glint_bundle_library_template.hpp'), O('glint_bundle_library.hpp'), data =>
@@ -146,5 +184,5 @@ const run = async () => {
     console.log('[glint_bundler] Done.');
 };
 
-run();
+run().catch(err => utils.reportError({ msg: `[glint_bundler] ${err && err.stack ? err.stack : err}` }));
 
