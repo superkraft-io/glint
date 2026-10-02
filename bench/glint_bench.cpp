@@ -58,13 +58,17 @@ namespace
 // Every plain operator new/delete in the process goes through these, so the
 // bench can report how much heap a page holds (Skia's own malloc-based
 // allocations are not included). Each block carries its size in a header.
+// The header is __STDCPP_DEFAULT_NEW_ALIGNMENT__ bytes (16 on x64) so blocks
+// keep the alignment compilers assume for operator new: clang-compiled Skia
+// uses aligned SSE stores on them (alignof(max_align_t) is only 8 on MSVC).
 std::atomic<int64_t> gHeapLive{ 0 };
+constexpr std::size_t kHeapHeader = __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 
 } // namespace
 
 void* operator new(std::size_t n)
 {
-  constexpr std::size_t kHeader = alignof(std::max_align_t);
+  constexpr std::size_t kHeader = kHeapHeader;
   auto* p = static_cast<unsigned char*>(std::malloc(n + kHeader));
   if (!p) throw std::bad_alloc();
   *reinterpret_cast<std::size_t*>(p) = n;
@@ -74,7 +78,7 @@ void* operator new(std::size_t n)
 void operator delete(void* ptr) noexcept
 {
   if (!ptr) return;
-  constexpr std::size_t kHeader = alignof(std::max_align_t);
+  constexpr std::size_t kHeader = kHeapHeader;
   auto* p = static_cast<unsigned char*>(ptr) - kHeader;
   gHeapLive.fetch_sub(static_cast<int64_t>(*reinterpret_cast<std::size_t*>(p)), std::memory_order_relaxed);
   std::free(p);

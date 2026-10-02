@@ -24,6 +24,15 @@ Node.js
 Git
 ```
 
+To build Skia from source (section 4, option B) you also need:
+
+```text
+Visual Studio component "C++ Clang Compiler for Windows" (clang-cl)
+Python 3
+```
+
+Add the Clang component in the Visual Studio Installer under Modify → Individual components, or install LLVM separately. Your app itself still builds with MSVC; only Skia needs clang-cl (see section 4).
+
 ## 2. Create a new project layout
 
 Start with a simple layout like this:
@@ -78,6 +87,17 @@ node .\third_party\glint\scripts\init_skia.mjs --source --config Both --backend 
 # Direct3D 12 (GPU, Graphite backend, Windows only)
 node .\third_party\glint\scripts\init_skia.mjs --source --config Both --backend d3d12
 ```
+
+On Windows, the source build uses **clang-cl**, found automatically from your Visual Studio installation or a standalone LLVM install (or set `CLANG_WIN` to an LLVM folder that contains `bin\clang-cl.exe`). Skia's CPU renderer relies on Clang's vector extensions; built with MSVC it falls back to scalar code, and text, anti-aliased shapes and shadows draw **10–40× slower**. This matters even for GPU apps, because Glint falls back to CPU rendering when the GPU can't be used (Remote Desktop, virtual machines, broken drivers). The script stops with installation instructions when clang-cl is missing; `--allow-msvc` builds with MSVC anyway, which is not recommended.
+
+Useful options:
+
+```powershell
+# Reuse an existing Skia checkout (deps already synced) instead of cloning one
+node .\third_party\glint\scripts\init_skia.mjs --source --backend d3d12 --skia-src D:\skia --skip-sync
+```
+
+The script records the compiler in `third_party/skia/win/<arch>/<config>/glint_skia_build.json`. When you configure, CMake prints which compiler built the Skia libraries, and warns if it was MSVC.
 
 In both cases, the script generates `third_party/glint/glint_render_backend.h`, which is included automatically by `glint.hpp` and activates the correct compile-time paths. No CMake flags are needed.
 

@@ -51,6 +51,7 @@ That guide covers:
 - Available backends: `cpu` (default), `opengl`, `d3d12`, `dawn`, `metal`.
 - The stock host integrations use `glint_backend::Auto`, which resolves to the compiled-in backend automatically. No app-side configuration is needed.
 - The stock host integrations fall back to CPU automatically if GPU initialization or surface creation fails.
+- On Windows, Skia must be built with clang-cl: built with MSVC, its CPU rasterizer (text, anti-aliased shapes, shadows) runs 10–40× slower. `init_skia.mjs --source` uses clang-cl automatically, and CMake warns when the Skia libraries were built with MSVC. See [guide.md](guide.md), section 4.
 - The public `document()` API stays the same regardless of whether the active runtime path is CPU or GPU.
 
 ## Runtime verification

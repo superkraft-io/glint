@@ -158,6 +158,39 @@ set(GLINT_MSVC_RUNTIME_LIBRARY_EXPR "${_GLINT_MSVC_RUNTIME_LIBRARY_EXPR}" CACHE 
   "Resolved MSVC runtime library expression for the active Skia bundle" FORCE)
 
 set(_SKIA_LIB_DIR "${_SKIA_LIB_ROOT}/${_SKIA_CONFIG_DIR}")
+
+# Skia's CPU rasterizer needs Clang's vector extensions: built with MSVC, text
+# and anti-aliased drawing run 10-40x slower. init_skia.mjs records the
+# compiler next to the libraries (glint_skia_build.json).
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  # _SKIA_LIB_DIR may be a generator expression (multi-config generators):
+  # check each config directory that exists.
+  foreach(_glint_skia_cfg Release Debug)
+    set(_glint_skia_cfg_dir "${_SKIA_LIB_ROOT}/${_glint_skia_cfg}")
+    if(NOT EXISTS "${_glint_skia_cfg_dir}")
+      continue()
+    endif()
+    set(_GLINT_SKIA_BUILD_INFO "${_glint_skia_cfg_dir}/glint_skia_build.json")
+    if(EXISTS "${_GLINT_SKIA_BUILD_INFO}")
+      file(READ "${_GLINT_SKIA_BUILD_INFO}" _glint_skia_build_info)
+      if(_glint_skia_build_info MATCHES "\"compiler\": *\"msvc\"")
+        message(WARNING
+          "glint: the Skia ${_glint_skia_cfg} libraries in ${_glint_skia_cfg_dir} were built "
+          "with MSVC. Their CPU rendering (text, anti-aliased shapes, shadows) is 10-40x "
+          "slower than a clang-cl build. Rebuild with: "
+          "node third_party/glint/scripts/init_skia.mjs --source")
+      else()
+        message(STATUS "glint: Skia ${_glint_skia_cfg} libraries built with clang-cl")
+      endif()
+    else()
+      message(STATUS
+        "glint: unknown compiler for the Skia ${_glint_skia_cfg} libraries (no "
+        "glint_skia_build.json). A Skia built with MSVC renders 10-40x slower on the CPU; "
+        "see guide.md.")
+    endif()
+  endforeach()
+endif()
+
 set(_GLINT_SKIA_LIBRARY_NAMES
   skia
   skottie

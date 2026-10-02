@@ -77,6 +77,11 @@ Targets (default: host platform):
 Options:
   --target <target>  Build for a specific target platform
   --skip-sync  Skip 'python tools/git-sync-deps' (use if deps are already present)
+  --skia-src <dir>   Build from an existing Skia checkout (with deps synced) instead
+                     of cloning one into third_party/skia/tmp
+  --allow-msvc       Windows only: build with MSVC when clang-cl is not installed.
+                     Not recommended: Skia's CPU rasterizer is 10-40x slower when
+                     compiled with MSVC (text, anti-aliased shapes, shadows).
   --arch       Target architecture(s). Default: host. On macOS, use 'universal'
                to build both arm64 and x64 libs and lipo them into mac/universal/.
 
@@ -102,7 +107,9 @@ function parseArgs(argv) {
     backend: 'cpu',
     target: defaultTargetForPlatform(),
     skipSync: false,
-    arch: 'host'
+    arch: 'host',
+    skiaSrc: null,
+    allowMsvc: false
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -155,6 +162,21 @@ function parseArgs(argv) {
 
     if (arg === '--skip-sync' || arg === '-skip-sync') {
       options.skipSync = true;
+      continue;
+    }
+
+    if (arg === '--allow-msvc' || arg === '-allow-msvc') {
+      options.allowMsvc = true;
+      continue;
+    }
+
+    if (arg === '--skia-src' || arg === '-skia-src') {
+      const next = argv[index + 1];
+      if (!next) {
+        fail('Missing value for --skia-src. Expected a path to a Skia checkout.');
+      }
+      options.skiaSrc = path.resolve(next);
+      index += 1;
       continue;
     }
 
@@ -297,50 +319,51 @@ function findFirstExistingFile(paths) {
   return null;
 }
 
-function resolveClangToolchain() {
-  const preferredClang = findFirstExistingFile([
-    path.join('C:', 'Program Files', 'Microsoft Visual Studio', '2022', 'Community', 'VC', 'Tools', 'Llvm', 'x64', 'bin', 'clang.exe'),
-    path.join('C:', 'Program Files', 'LLVM', 'bin', 'clang.exe')
-  ]);
+// Windows: locate clang-cl for Skia's `clang_win` GN arg. Skia's CPU
+// rasterizer (SkRasterPipeline, text and anti-aliased path blitting) relies on
+// Clang vector extensions; compiled with MSVC it falls back to portable scalar
+// code and runs 10-40x slower. Searched, in order: LLVM_ROOT / CLANG_WIN,
+// every Visual Studio install that has the "C++ Clang tools" component (via
+// vswhere), then a standalone LLVM in Program Files.
+function resolveClangWinToolchain() {
+  if (process.platform !== 'win32') return null;
 
-  if (preferredClang) {
-    const versionResult = spawnSync(preferredClang, ['--version'], {
+  const roots = [];
+  for (const envName of ['CLANG_WIN', 'LLVM_ROOT']) {
+    if (process.env[envName]) roots.push(process.env[envName]);
+  }
+
+  const vswhere = path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
+                            'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
+  if (fs.existsSync(vswhere)) {
+    const result = spawnSync(vswhere, ['-all', '-products', '*', '-property', 'installationPath'], {
       stdio: 'pipe',
       encoding: 'utf8'
     });
+    for (const installDir of (result.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
+      roots.push(path.join(installDir, 'VC', 'Tools', 'Llvm', 'x64'));
+    }
+  }
+  roots.push(path.join(process.env.ProgramFiles || 'C:\\Program Files', 'LLVM'));
 
+  for (const root of roots) {
+    const clangCl = path.join(root, 'bin', 'clang-cl.exe');
+    if (!fs.existsSync(clangCl)) continue;
+    const versionResult = spawnSync(clangCl, ['--version'], { stdio: 'pipe', encoding: 'utf8' });
     return {
-      command: preferredClang,
-      binDir: path.dirname(preferredClang),
-      rootDir: path.dirname(path.dirname(preferredClang)),
+      rootDir: root,
+      clangCl,
       version: (versionResult.stdout || versionResult.stderr || '').trim().split(/\r?\n/)[0]
     };
   }
+  return null;
+}
 
-  const clang = findCommand(['clang']);
-  if (!clang) {
-    return null;
-  }
-
-  const whereResult = spawnSync('where', ['clang'], {
-    stdio: 'pipe',
-    encoding: 'utf8'
-  });
-
-  const firstMatch = whereResult.status === 0
-    ? (whereResult.stdout || '').trim().split(/\r?\n/).find(Boolean)
-    : null;
-
-  const clangPath = firstMatch || 'clang';
-  const binDir = firstMatch ? path.dirname(firstMatch) : null;
-  const rootDir = binDir ? path.dirname(binDir) : null;
-
-  return {
-    command: clangPath,
-    binDir,
-    rootDir,
-    version: clang.version
-  };
+// Records which compiler built the libraries, next to them. Glint's CMake
+// warns when it finds a Windows Skia built with MSVC.
+function writeBuildInfo(libDir, info) {
+  ensureDirectory(libDir);
+  fs.writeFileSync(path.join(libDir, 'glint_skia_build.json'), JSON.stringify(info, null, 2) + '\n');
 }
 
 function resolveNinjaTool() {
@@ -466,7 +489,7 @@ function resolveRequestedArchs(archOption, target) {
   return [archOption];
 }
 
-function buildGnArgs(configName, backend, target, arch) {
+function buildGnArgs(configName, backend, target, arch, clangWin = null) {
   const isDebug = configName === 'Debug';
 
   const common = `is_debug = ${isDebug ? 'true' : 'false'}
@@ -505,7 +528,15 @@ extra_ldflags = [ "-stdlib=libc++" ]`;
 
   if (target === 'win') {
     const extraCFlag = isDebug ? '"/MTd"' : '"/MT"';
-    return `${common}\nextra_cflags = [ ${extraCFlag} ]`;
+    // clang-cl + recent MSVC intrin.h: Skia's per-CPU-target files include
+    // <immintrin.h> under a target() pragma, and clang's rtmintrin.h then
+    // redefines _xend, which intrin.h also declares ("target multiversioning
+    // cannot be combined with always_inline"). Skia uses no RTM intrinsics,
+    // so skip that header via its include guard.
+    const clangCFlags = clangWin ? ', "-D__RTMINTRIN_H"' : '';
+    // GN strings: forward slashes avoid escaping backslashes.
+    const clangArg = clangWin ? `\nclang_win = "${clangWin.rootDir.replace(/\\/g, '/')}"` : '';
+    return `${common}\nextra_cflags = [ ${extraCFlag}${clangCFlags} ]${clangArg}`;
   }
 
   if (target === 'mac') {
@@ -887,6 +918,24 @@ function main() {
   if (!git) fail('git not found. Install Git and add it to PATH.');
   console.log(`  Git: ${git.version}`);
 
+  let clangWin = null;
+  if (options.target === 'win') {
+    clangWin = resolveClangWinToolchain();
+    if (clangWin) {
+      console.log(`  Compiler: ${clangWin.version} (${clangWin.rootDir})`);
+    } else if (options.allowMsvc) {
+      console.warn('  Compiler: MSVC (--allow-msvc). Skia\'s CPU rendering will be 10-40x slower than a clang-cl build.');
+    } else {
+      fail('clang-cl not found. Skia must be built with clang-cl on Windows: with MSVC its CPU '
+         + 'rasterizer (text, anti-aliased shapes, shadows) runs 10-40x slower.\n'
+         + '  Install it with the Visual Studio Installer: Modify -> Individual components -> '
+         + '"C++ Clang Compiler for Windows" (+ "MSBuild support for LLVM (clang-cl) toolset"),\n'
+         + '  or install LLVM from https://github.com/llvm/llvm-project/releases, '
+         + 'or set CLANG_WIN to an LLVM root (the folder containing bin\\clang-cl.exe).\n'
+         + '  To build with MSVC anyway, pass --allow-msvc.');
+    }
+  }
+
   ensureDirectory(depsDir);
   ensureDirectory(tmpDir);
 
@@ -898,15 +947,31 @@ function main() {
     console.log('depot_tools already present, skipping clone.');
   }
 
+  // Skia's build steps run `python3` by name. On Windows a python.org install
+  // only provides python.exe, so `python3` resolves to the Microsoft Store
+  // stub (WindowsApps\python3.exe) and the build fails; a shim fixes that.
+  let pythonShimDir = '';
+  if (process.platform === 'win32') {
+    pythonShimDir = path.join(tmpDir, 'python-shim');
+    ensureDirectory(pythonShimDir);
+    fs.writeFileSync(path.join(pythonShimDir, 'python3.cmd'), `@"${python.name}" %*\r\n`);
+  }
+
   const env = {
     ...process.env,
-    PATH: `${python.binDir ? `${python.binDir}${path.delimiter}` : ''}${depotDir}${path.delimiter}${ninja.binDir ? `${ninja.binDir}${path.delimiter}` : ''}${process.env.PATH || ''}`
+    PATH: `${pythonShimDir ? `${pythonShimDir}${path.delimiter}` : ''}${python.binDir ? `${python.binDir}${path.delimiter}` : ''}${depotDir}${path.delimiter}${ninja.binDir ? `${ninja.binDir}${path.delimiter}` : ''}${process.env.PATH || ''}`
   };
 
   const tempBuildSrcDir = path.join(tmpDir, 'build-src', 'skia');
   let activeSkiaSrcDir = skiaSrcDir;
 
-  if (hasSkiaGnBuildFiles(skiaSrcDir)) {
+  if (options.skiaSrc) {
+    if (!hasSkiaGnBuildFiles(options.skiaSrc)) {
+      fail(`--skia-src ${options.skiaSrc} is not a Skia checkout with GN build files.`);
+    }
+    activeSkiaSrcDir = options.skiaSrc;
+    console.log(`Using Skia checkout from --skia-src: ${activeSkiaSrcDir}`);
+  } else if (hasSkiaGnBuildFiles(skiaSrcDir)) {
     console.log('Using existing vendored Skia source tree.');
   } else if (hasSkiaSourceTree(skiaSrcDir)) {
     activeSkiaSrcDir = tempBuildSrcDir;
@@ -984,7 +1049,11 @@ function main() {
       ensureDirectory(outDir);
 
       console.log(`Generating GN build files for ${configName} (${options.target}, ${arch})...`);
-      run(gnExecutable, ['gen', outDir, `--args=${buildGnArgs(configName, options.backend, options.target, arch)}`], { cwd: activeSkiaSrcDir, env });
+      // Hand GN the Python we resolved: its own lookup of "python3" can hit the
+      // Microsoft Store stub (WindowsApps\python3.exe) on Windows and fail.
+      run(gnExecutable, ['gen', outDir, `--script-executable=${python.name}`,
+                         `--args=${buildGnArgs(configName, options.backend, options.target, arch, clangWin)}`],
+          { cwd: activeSkiaSrcDir, env });
 
       console.log(`Building Skia ${configName} for ${options.target} (${arch}) with ninja...`);
       // On Linux (WSL) cap parallelism to reduce concurrent I/O.
@@ -1001,6 +1070,13 @@ function main() {
         copyLinuxLibraries(outDir, configName, arch);
       } else {
         copyLibraries(outDir, configName, arch);
+        writeBuildInfo(path.join(depsDir, 'win', arch, configName), {
+          compiler: clangWin ? 'clang-cl' : 'msvc',
+          compilerVersion: clangWin ? clangWin.version : '',
+          config: configName,
+          backend: options.backend,
+          builtAt: new Date().toISOString()
+        });
       }
     }
   }
