@@ -209,6 +209,8 @@ inline glint_style_info glint_style_serialize(const glint_style& s)
     m["align-items"]      = s.alignItems;
     m["gap"]              = s.gap.raw;
     m["flex-grow"]        = ftos(s.flexGrow);
+    m["flex-shrink"]      = s.flexShrink < 0.f ? std::string() : ftos(s.flexShrink);
+    m["flex-basis"]       = s.flexBasis.raw;
 
     // ── Misc ─────────────────────────────────────────────────────────────────
     m["object-fit"]        = s.objectFit;

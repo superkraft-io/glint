@@ -473,6 +473,8 @@ static inline void glint_style_set_by_name(glint_style& s,
   else if (key == "align-items")      s.alignItems     = val;
   else if (key == "gap")              s.gap = val;
   else if (key == "flex-grow")        s.flexGrow = f;
+  else if (key == "flex-shrink")      s.flexShrink = f;
+  else if (key == "flex-basis")       s.flexBasis = val;
   else if (key == "z-index")          s.zIndex = static_cast<int>(f);
   else if (key == "object-fit")       s.objectFit      = val;
   else if (key == "object-position")  s.objectPosition = val;

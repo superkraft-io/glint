@@ -17,6 +17,7 @@
 
 #include "glint_css_token.hpp"
 #include "glint_css_selector.hpp"
+#include "glint_css_media.hpp"
 
 #include <memory>
 #include <string>
@@ -99,8 +100,10 @@ struct GlintCssStylesheet
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   // Collect all qualified (style) rules, including nested in @media / @supports / @layer blocks.
+  // With `media`, rules inside an @media block whose query doesn't match are
+  // left out; without it (nullptr) every rule is collected.
   void collectQualifiedRules(std::vector<const GlintCssQualifiedRule*>& out,
-                              const std::string& mediaFeature = "") const
+                              const GlintCssMediaContext* media = nullptr) const
   {
     for (const auto& r : rules)
     {
@@ -111,6 +114,8 @@ struct GlintCssStylesheet
       else if (r.kind == Rule::Kind::AT && r.atRule)
       {
         const std::string& n = r.atRule->name;
+        if (n == "media" && media && !glint_css_media_matches(r.atRule->prelude, *media))
+          continue;
         if (n == "media" || n == "supports" || n == "layer" || n == "document")
         {
           for (const auto& child : r.atRule->children)
@@ -121,7 +126,15 @@ struct GlintCssStylesheet
         }
       }
     }
-    (void)mediaFeature;
+  }
+
+  // Append whether each top-level @media rule matches `media`, in order.
+  // Comparing two of these tells whether a viewport change flips any rule.
+  void collectMediaResults(std::vector<bool>& out, const GlintCssMediaContext& media) const
+  {
+    for (const auto& r : rules)
+      if (r.kind == Rule::Kind::AT && r.atRule && r.atRule->name == "media")
+        out.push_back(glint_css_media_matches(r.atRule->prelude, media));
   }
 
 };

@@ -149,6 +149,7 @@ public:
     mCanvas.mTreeMutex     = &mTreeMutex;
     mCanvas.mParentW       = bounds.W();
     mCanvas.mParentH       = bounds.H();
+    mMediaContext          = _currentMediaContext();
     mCanvas.typeNameOverride = "body";
     mCanvas.attachSubtree();
     // Take a mutable in-memory copy of the UA stylesheet so the inspector can
@@ -872,6 +873,10 @@ public:
    *  rects to the physical pixel space that SkImageFilters::RuntimeShader operates in. */
   float devicePixelRatio = 1.f;
 
+  /** Answer for `@media (prefers-color-scheme: dark)`.  Takes effect on the
+   *  next frame (stylesheets re-cascade if a rule's result changes). */
+  bool prefersDarkColorScheme = false;
+
   // ── Performance counters (read-only public accessors) ─────────────────────
 
   /** Smoothed frames-per-second.  Returns 0 if fewer than 2 frames recorded. */
@@ -1380,6 +1385,8 @@ public:
     // Run tasks posted from other threads first, so their changes are laid
     // out and drawn in this frame.
     mTaskQueue->drain();
+    // Hosts resize the canvas directly; re-evaluate @media rules here.
+    _refreshMediaQueries();
 
     _recordFrame();
     _tickHotReload();
@@ -2360,7 +2367,7 @@ private:
     {
       // Use resolveSkipping: disabled entries are skipped DURING reduction so
       // the next-best non-disabled declaration for the same property wins.
-      const auto decls = GlintCssCascade::resolveSkipping(adapter, sheets, {}, *mInspDisabledDecls, uaSheets);
+      const auto decls = GlintCssCascade::resolveSkipping(adapter, sheets, {}, *mInspDisabledDecls, uaSheets, &mMediaContext);
       glint_style cssStyle;
       GlintCssApply::apply(decls, cssStyle);
       el->setCssStyleLayer(cssStyle);
@@ -2372,7 +2379,7 @@ private:
     else
     {
       // Use computeDeclarations directly so we can read the important flag on each winner.
-      const auto winning = GlintCssCascade::computeDeclarations(adapter, sheets, {}, uaSheets);
+      const auto winning = GlintCssCascade::computeDeclarations(adapter, sheets, {}, uaSheets, &mMediaContext);
       std::vector<GlintCssDeclaration> decls;
       decls.reserve(winning.size());
       el->mCssImportantProps_.clear();
@@ -2635,6 +2642,38 @@ private:
 
   // Re-cascade el and every ancestor so that ancestor selectors like
   // "div:hover > child" are re-evaluated when pseudo-class state changes.
+  /** Viewport the @media rules are evaluated against (CSS px). */
+  GlintCssMediaContext _currentMediaContext() const
+  {
+    GlintCssMediaContext ctx;
+    ctx.width           = mCanvas.mRect.W();
+    ctx.height          = mCanvas.mRect.H();
+    ctx.dpr             = devicePixelRatio > 0.f ? devicePixelRatio : 1.f;
+    ctx.darkColorScheme = prefersDarkColorScheme;
+    return ctx;
+  }
+
+  /** If the viewport changed since the last cascade and that flips any
+   *  @media rule, re-cascade the tree with the new context. */
+  void _refreshMediaQueries()
+  {
+    const GlintCssMediaContext now = _currentMediaContext();
+    if (now == mMediaContext) return;
+    auto results = [this](const GlintCssMediaContext& ctx) {
+      std::vector<bool> r;
+      mUaSheet.collectMediaResults(r, ctx);
+      for (const auto& sheet : mStylesheets) sheet.collectMediaResults(r, ctx);
+      return r;
+    };
+    const bool flipped = results(now) != results(mMediaContext);
+    mMediaContext = now;
+    if (!flipped) return;
+    _rebuildQualifiedRuleCache();
+    _invalidateMatchedCssRuleCache(/*bumpStylesheetRevision=*/true);
+    _applyCssToTree(&mCanvas);
+    mLayoutDirty = true;
+  }
+
   void _reapplyCssChain(glint_element* el)
   {
     for (glint_element* n = el; n; n = n->mParent)
@@ -2651,6 +2690,9 @@ private:
     _reapplyCssChain(mActiveChainRoot);
     mActiveChainRoot = nullptr;
   }
+
+  // Context the current cascade evaluated @media rules against.
+  GlintCssMediaContext mMediaContext;
 
   // Inspector disabled-declaration filter — null when inspector is inactive.
   const std::unordered_set<std::string>* mInspDisabledDecls = nullptr;
@@ -2784,7 +2826,7 @@ private:
     auto appendRules = [this, &sourceOrder](const GlintCssStylesheet& sheet)
     {
       std::vector<const GlintCssQualifiedRule*> sheetRules;
-      sheet.collectQualifiedRules(sheetRules);
+      sheet.collectQualifiedRules(sheetRules, &mMediaContext);
       for (auto* rule : sheetRules)
       {
         if (!rule)
@@ -3620,6 +3662,22 @@ inline glint_element* glint_element::findMaskSourceElement(const std::string& st
 
 // ── glint_element::notifyDestroyed ─────────────────────────────────────────
 // Defined here because it calls glint_document::_onComponentDestroyed.
+
+inline void glint_element::_relativeUnitBases(float& rootFontPx, float& viewportW, float& viewportH) const
+{
+  static const float kInitialFontPx = glint_style{}.fontSize.toFloat();
+  rootFontPx = kInitialFontPx;
+  viewportW = viewportH = 0.f;
+  if (!mRoot) return;
+  const glint_element& root = mRoot->mCanvas;
+  if (&root != this)
+  {
+    const float f = root.computedStyle.fontSize.toFloat();
+    if (f > 0.f) rootFontPx = f;
+  }
+  viewportW = root.mRect.W();
+  viewportH = root.mRect.H();
+}
 
 inline glint_owner_poster glint_element::ownerThreadPoster() const
 {

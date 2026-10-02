@@ -825,13 +825,28 @@
     // Note: text-line caches on children are NOT cleared here. _buildRenderLines
     // self-invalidates when its inputs (text, font, content rect) change.
 
-    const bool  isRow     = (computedStyle.flexDirection != "column" && computedStyle.flexDirection != "column-reverse");
+    const std::string& flexDir = computedStyle.flexDirection;
+    const bool  isRow     = (flexDir != "column" && flexDir != "column-reverse");
+    const bool  isReverse = (flexDir == "row-reverse" || flexDir == "column-reverse");
     const float mainAvail = isRow ? cW : cH;
     const float crsAvail  = isRow ? cH : cW;
     const float gap       = computedStyle.gap.toFloat();
     const bool  doStretch = (computedStyle.alignItems == "stretch");
+    constexpr float kNoMax = 1e30f;
 
-    struct CI { glint_element* node; float main, cross, m1, m2, c1, c2, grow, extra; };
+    struct CI
+    {
+      glint_element* node;
+      float main, cross, m1, m2, c1, c2, grow, extra;
+      float shrink    = 1.f;
+      float minMain   = 0.f;
+      float maxMain   = kNoMax;
+      float violation = 0.f;
+      float contentMain = 0.f;   // content-based size, before flex-basis
+      bool  m1Auto = false, m2Auto = false, frozen = false;
+      bool  textLeaf = false;    // automatic minimum = longest word (measured lazily)
+      bool  cssShrink = false;   // flex-shrink set explicitly (else glint's original rule)
+    };
     std::vector<CI> infos;
 
     for (auto& child : mChildren)
@@ -842,7 +857,6 @@
       CI ci;
       ci.node  = child.get();
       ci.extra = 0.f;
-      ci.grow  = child->computedStyle.flexGrow;
       const float w = childPrefW(*child, cW);
       // For height, pass the child's available width so text wrapping is accounted for:
       // row-flex: child's own preferred width; column-flex: full container content width.
@@ -864,47 +878,137 @@
                    ? std::max(0.f, crsAvail - ci.c1 - ci.c2)
                    : w;
       }
+      ci.m1Auto = isRow ? child->computedStyle.marginLeft.isAuto()  : child->computedStyle.marginTop.isAuto();
+      ci.m2Auto = isRow ? child->computedStyle.marginRight.isAuto() : child->computedStyle.marginBottom.isAuto();
+
+      // Negative flex factors are invalid CSS (and made the totals explode).
+      ci.grow      = std::max(0.f, child->computedStyle.flexGrow);
+      ci.cssShrink = child->computedStyle.flexShrink >= 0.f;
+      ci.shrink    = ci.cssShrink ? child->computedStyle.flexShrink : 0.f;
+
+      // flex-basis: a definite basis replaces the width / content size.
+      ci.contentMain = ci.main;
+      const auto& basisRaw = child->computedStyle.flexBasis.raw;
+      const bool  hasBasis = !basisRaw.empty() && basisRaw != "auto" && basisRaw != "content";
+      if (hasBasis) ci.main = std::max(0.f, child->computedStyle.flexBasis.resolve(mainAvail));
+
+      // min / max on the main axis.  The CSS automatic minimum (min-width:
+      // auto) is approximated: a text leaf sized by its content keeps its
+      // longest word; anything else may shrink to 0.
+      const glint_length& minL = isRow ? child->computedStyle.minWidth : child->computedStyle.minHeight;
+      const glint_length& maxL = isRow ? child->computedStyle.maxWidth : child->computedStyle.maxHeight;
+      const float mainRef = isRow ? cW : cH;
+      if (!maxL.raw.empty() && maxL.raw != "none")
+        ci.maxMain = std::max(0.f, maxL.resolve(mainRef));
+      if (!minL.raw.empty() && minL.raw != "auto")
+        ci.minMain = std::max(0.f, minL.resolve(mainRef));
+      else
+        ci.textLeaf = ci.cssShrink && isRow && !hasBasis && !childHasExplicitW(*child)
+                   && !child->innerText.empty() && !_hasInFlowChildren(*child);
+      ci.minMain = std::min(ci.minMain, ci.maxMain);
+      ci.main    = std::min(std::max(ci.main, ci.minMain), ci.maxMain);   // hypothetical main size
+
+      // row-reverse / column-reverse lay out from the main end (mirrored
+      // below), so the margin before an item is its end-side margin.
+      if (isReverse) { std::swap(ci.m1, ci.m2); std::swap(ci.m1Auto, ci.m2Auto); }
       infos.push_back(ci);
     }
 
-    // Total fixed main size (before flex-grow)
-    float totalMain = 0.f;
-    for (const auto& ci : infos) totalMain += ci.m1 + ci.main + ci.m2;
-    if (!infos.empty()) totalMain += gap * (float)(infos.size() - 1);
-
-    // Distribute flex-grow
-    float totalGrow = 0.f;
-    for (const auto& ci : infos) totalGrow += ci.grow;
-    if (totalGrow > 0.f)
-    {
-      // Distribute surplus (grow) or deficit (shrink) among flex-grow items.
-      // Negative freeSpace means the container is too small; items with
-      // flexGrow > 0 shrink proportionally (using their grow weight).
-      const float freeSpace = mainAvail - totalMain;
+    // ── Resolve flexible lengths (CSS Flexbox §9.7) ─────────────────────────
+    // Grow shares positive free space by flex-grow.  An overflow is taken
+    // back by flex-shrink × base size for items with an explicit flex-shrink,
+    // and by flex-grow (glint's original rule) for the rest.  Items clamped
+    // by min/max are frozen and the rest re-distributed until nothing
+    // violates its limits.
+    auto shrinkWeight = [](const CI& ci) {
+      return ci.cssShrink ? ci.shrink * ci.main : ci.grow;
+    };
+    float outer = 0.f;   // margins + gaps
+    for (const auto& ci : infos) outer += ci.m1 + ci.m2;
+    if (!infos.empty()) outer += gap * (float)(infos.size() - 1);
+    float baseTotal = 0.f;
+    for (const auto& ci : infos) baseTotal += ci.main;
+    const float initialFree = mainAvail - outer - baseTotal;
+    const bool  growing     = initialFree > 0.f;
+    // Only an overflow needs the text leaves' longest-word minimum.
+    if (initialFree < 0.f)
       for (auto& ci : infos)
-        ci.extra = ci.grow / totalGrow * freeSpace;
+        if (ci.textLeaf)
+          ci.minMain = std::min(ci.maxMain, std::max(0.f,
+            ci.contentMain - (ci.node->preferredW() - ci.node->minContentW())));
+    for (auto& ci : infos)
+      ci.frozen = (initialFree == 0.f) || (growing ? ci.grow <= 0.f : shrinkWeight(ci) <= 0.f);
+
+    for (size_t iter = 0; iter <= infos.size(); ++iter)
+    {
+      float used = 0.f, factors = 0.f, scaledShrink = 0.f;
+      bool  anyOpen = false, allCssShrink = true;
+      for (const auto& ci : infos)
+      {
+        used += ci.frozen ? ci.main + ci.extra : ci.main;
+        if (ci.frozen) continue;
+        anyOpen       = true;
+        factors      += growing ? ci.grow : (ci.cssShrink ? ci.shrink : ci.grow);
+        scaledShrink += shrinkWeight(ci);
+        allCssShrink  = allCssShrink && ci.cssShrink;
+      }
+      if (!anyOpen) break;
+      float freeSpace = mainAvail - outer - used;
+      // Factors summing below 1 take only that fraction of the free space
+      // (not for glint's original shrink rule, which always fits the line).
+      if ((growing || allCssShrink) && factors < 1.f
+          && std::abs(initialFree * factors) < std::abs(freeSpace))
+        freeSpace = initialFree * factors;
+
+      float totalViolation = 0.f;
+      for (auto& ci : infos)
+      {
+        if (ci.frozen) continue;
+        if (growing) ci.extra = factors      > 0.f ? freeSpace * ci.grow / factors                 : 0.f;
+        else         ci.extra = scaledShrink > 0.f ? freeSpace * shrinkWeight(ci) / scaledShrink : 0.f;
+        const float target  = ci.main + ci.extra;
+        const float clamped = std::min(std::max(target, ci.minMain), ci.maxMain);
+        ci.violation   = clamped - target;
+        ci.extra       = clamped - ci.main;
+        totalViolation += ci.violation;
+      }
+      if (std::abs(totalViolation) < 0.001f) break;
+      for (auto& ci : infos)
+        if (!ci.frozen && ((totalViolation > 0.f && ci.violation > 0.f)
+                        || (totalViolation < 0.f && ci.violation < 0.f)))
+          ci.frozen = true;
     }
 
-    // justify-content: cursor start
+    // ── Leftover space: auto margins first, then justify-content ────────────
+    float usedMain = outer;
+    for (const auto& ci : infos) usedMain += std::max(0.f, ci.main + ci.extra);
+    const float remaining = mainAvail - usedMain;   // < 0: the line overflows
+    int autoMargins = 0;
+    for (const auto& ci : infos) autoMargins += (ci.m1Auto ? 1 : 0) + (ci.m2Auto ? 1 : 0);
+    const float autoMarginSize = (remaining > 0.f && autoMargins > 0) ? remaining / (float)autoMargins : 0.f;
+
     const float originMain = isRow ? content.L : content.T;
     const float originCrs  = isRow ? content.T : content.L;
     float cursor = originMain, itemSpacing = gap;
-    if (totalGrow == 0.f)
+    if (autoMargins == 0 && !infos.empty())
     {
-      const auto& jc = computedStyle.justifyContent;
-      const float  n = (float)infos.size();
+      std::string jc = computedStyle.justifyContent;
+      // With an overflow the space-* values fall back as in CSS.
+      if (remaining < 0.f && jc == "space-between") jc = "flex-start";
+      if (remaining < 0.f && (jc == "space-around" || jc == "space-evenly")) jc = "center";
+      const float n = (float)infos.size();
       if (jc == "center")
-        cursor = originMain + (mainAvail - totalMain) * 0.5f;
-      else if (jc == "flex-end")
-        cursor = originMain + mainAvail - totalMain;
+        cursor = originMain + remaining * 0.5f;
+      else if (jc == "flex-end" || jc == "end")
+        cursor = originMain + remaining;
       else if (jc == "space-between" && infos.size() > 1)
-        itemSpacing = (mainAvail - totalMain + gap * (n - 1.f)) / (n - 1.f);
+        itemSpacing = gap + remaining / (n - 1.f);
       else if (jc == "space-around") {
-        const float e = (mainAvail - totalMain) / n;
+        const float e = remaining / n;
         cursor = originMain + e * 0.5f; itemSpacing = gap + e;
       }
       else if (jc == "space-evenly") {
-        const float e = (mainAvail - totalMain) / (n + 1.f);
+        const float e = remaining / (n + 1.f);
         cursor = originMain + e; itemSpacing = gap + e;
       }
     }
@@ -913,7 +1017,7 @@
     const auto& ai = computedStyle.alignItems;
     for (auto& ci : infos)
     {
-      cursor += ci.m1;
+      cursor += ci.m1 + (ci.m1Auto ? autoMarginSize : 0.f);
       float crossPos = originCrs + ci.c1;
       // align-items: center — center the margin box, then offset by the cross-start margin.
       // Per CSS Flexbox spec §9.6.2: free space = crsAvail - (c1 + cross + c2);
@@ -922,9 +1026,11 @@
       if (ai == "center")        crossPos = originCrs + (crsAvail - ci.cross + ci.c1 - ci.c2) * 0.5f;
       else if (ai == "flex-end") crossPos = originCrs + crsAvail - ci.cross - ci.c2;
       // "stretch": crossPos stays at originCrs + ci.c1 (already the default)
-      const float mx = isRow ? cursor   : crossPos;
-      const float my = isRow ? crossPos : cursor;
-      const float mainSz = std::max(0.f, ci.main + ci.extra);  // clamp: shrink can't go negative
+      const float mainSz  = std::max(0.f, ci.main + ci.extra);
+      // Reverse directions run from the main end: mirror the position.
+      const float mainPos = isReverse ? (2.f * originMain + mainAvail - cursor - mainSz) : cursor;
+      const float mx = isRow ? mainPos  : crossPos;
+      const float my = isRow ? crossPos : mainPos;
       const float mw = std::max(0.f, isRow ? mainSz : ci.cross);
       const float mh = std::max(0.f, isRow ? ci.cross : mainSz);
       if (_hasSubpixelIntent(*ci.node, cW, cH))
@@ -935,7 +1041,7 @@
       // without affecting the flex cursor (siblings see the original slot size).
       if (ci.node->computedStyle.position == "relative")
         _applyRelativeOffset(ci.node, cW, cH);
-      cursor += mainSz + ci.m2 + itemSpacing;
+      cursor += mainSz + ci.m2 + (ci.m2Auto ? autoMarginSize : 0.f) + itemSpacing;
       ci.node->Layout(g);
     }
 
@@ -1905,17 +2011,32 @@
         // handle display values set via CSS classes as well as inline style.
         // Buttons set style.display = "inline-block" in their constructor, so they
         // are correctly excluded and keep their intrinsic / fit-content width.
+        const auto& wraw  = child->computedStyle.width.raw;
+        const bool  isAutoW = wraw.empty() || wraw == "auto";
+        const auto& cDisp = child->computedStyle.display;
+        const bool  isBlockChild = (cDisp != "inline" &&
+                                    cDisp != "inline-block" &&
+                                    cDisp != "inline-flex");
+        if (isAutoW && isBlockChild)
         {
-          const auto& wraw  = child->computedStyle.width.raw;
-          const bool  isAutoW = wraw.empty() || wraw == "auto";
-          const auto& cDisp = child->computedStyle.display;
-          const bool  isBlockChild = (cDisp != "inline" &&
-                                      cDisp != "inline-block" &&
-                                      cDisp != "inline-flex");
-          if (isAutoW && isBlockChild)
+          const float mR = child->computedStyle.marginRight.resolve(rW);
+          w = std::max(0.f, rW - mL - mR);
+        }
+        // margin-left / margin-right: auto on a block child with a definite
+        // width absorb the leftover space: both auto centers the box
+        // (margin: 0 auto), only the left one pushes it right.  An auto
+        // margin otherwise resolves to 0.
+        float autoMarginShift = 0.f;
+        if (isBlockChild && !isAutoW)
+        {
+          const bool autoL = child->computedStyle.marginLeft.isAuto();
+          const bool autoR = child->computedStyle.marginRight.isAuto();
+          if (autoL || autoR)
           {
-            const float mR = child->computedStyle.marginRight.resolve(rW);
-            w = std::max(0.f, rW - mL - mR);
+            const float mR   = child->computedStyle.marginRight.resolve(rW);
+            const float free = rW - w - mL - mR;
+            if (free > 0.f)
+              autoMarginShift = (autoL && autoR) ? free * 0.5f : (autoL ? free : 0.f);
           }
         }
         // Flow position.  For position:relative top/left are applied as visual
@@ -1924,7 +2045,8 @@
         // cursor always drives vertical position for static block children.
         // Builder-injected tops are stale build-time snapshots; ignoring them
         // here is both Chrome-correct AND required for live reflowing.
-        const float flowL = rect.L + (isRel ? 0.f : child->computedStyle.left.resolve(rW)) + mL;
+        const float flowL = rect.L + (isRel ? 0.f : child->computedStyle.left.resolve(rW)) + mL
+                          + autoMarginShift;
         const float flowT = rect.T + cursorY + mT;
         if (_hasSubpixelIntent(*child, rW, rH))
           child->mRect = child->mPaintRECT = glint_rect(flowL, flowT, flowL + w, flowT + h);

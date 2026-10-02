@@ -978,21 +978,32 @@ struct SKEdgeInsets
       clear();
       return *this;
     }
-    std::istringstream ss(css);
+    // Split on whitespace outside parentheses (calc(10px + 5%) is one value)
+    // and keep every token in its position: dropping one that stof can't
+    // read (e.g. `auto`) shifted the rest, so `margin: 20px auto` set all
+    // four sides to 20px.  Such tokens store 0 and keep their raw text, which
+    // resolve() and layout (auto margins) read.
     std::vector<float> v;
     std::vector<std::string> raw;
-    std::string tok;
-    while (ss >> tok)
     {
-      if (!tok.empty())
+      std::string cur;
+      int depth = 0;
+      auto flush = [&]() {
+        if (cur.empty()) return;
+        float num = 0.f;
+        try { num = std::stof(cur); } catch (...) {}
+        v.push_back(num);
+        raw.push_back(cur);
+        cur.clear();
+      };
+      for (const char* c = css; *c; ++c)
       {
-        try
-        {
-          v.push_back(std::stof(tok));
-          raw.push_back(tok);
-        }
-        catch (...) {}
+        if (*c == '(') ++depth;
+        else if (*c == ')' && depth > 0) --depth;
+        if (depth == 0 && std::isspace(static_cast<unsigned char>(*c))) { flush(); continue; }
+        cur += *c;
       }
+      flush();
     }
     if      (v.size() == 1)
     {
@@ -1108,7 +1119,9 @@ struct sk_side_proxy
       return *this;
     }
     if (_rawp) *_rawp = s;              // store raw string for resolve()
-    try { *_p = std::stof(s); } catch (...) {}  // stof stops at '%' or 'px' — stores numeric part
+    // stof stops at '%' or 'px' and stores the numeric part; anything it
+    // can't read (auto, calc(...)) stores 0 instead of keeping the old value.
+    try { *_p = std::stof(s); } catch (...) { *_p = 0.f; }
     return *this;
   }
   sk_side_proxy& operator=(const std::string& s)  { return operator=(s.c_str()); }
@@ -1128,6 +1141,9 @@ struct sk_side_proxy
   }
 
   operator float() const { return _p ? *_p : 0.f; } // NOLINT
+
+  /** True when the side was set to `auto` (e.g. margin: 0 auto). */
+  bool isAuto() const { return _rawp && *_rawp == "auto"; }
 };
 
 // ── glint_mat3 ─────────────────────────────────────────────────────────────────
@@ -2687,7 +2703,7 @@ struct glint_style
     , minWidth(o.minWidth), maxWidth(o.maxWidth), minHeight(o.minHeight), maxHeight(o.maxHeight)
     , zIndex(o.zIndex)
     , display(o.display), pointerEvents(o.pointerEvents), cursor(o.cursor), userSelect(o.userSelect), whiteSpace(o.whiteSpace), flexDirection(o.flexDirection)
-    , justifyContent(o.justifyContent), alignItems(o.alignItems), gap(o.gap), flexGrow(o.flexGrow)
+    , justifyContent(o.justifyContent), alignItems(o.alignItems), gap(o.gap), flexGrow(o.flexGrow), flexShrink(o.flexShrink), flexBasis(o.flexBasis)
     , overflowX(o.overflowX), overflowY(o.overflowY)
     , overflow(&overflowX, &overflowY)                   // rebind to THIS
     , scrollbarWidth(o.scrollbarWidth)
@@ -2814,6 +2830,8 @@ struct glint_style
     alignItems      = o.alignItems;
     gap             = o.gap;
     flexGrow        = o.flexGrow;
+    flexShrink      = o.flexShrink;
+    flexBasis       = o.flexBasis;
     objectFit          = o.objectFit;
     objectPosition     = o.objectPosition;
     overflowX          = o.overflowX;
@@ -2985,6 +3003,12 @@ struct glint_style
   std::string alignItems      = "flex-start";  // cross-axis alignment
   glint_length gap           = 0.f;           // gap between items (px or "8px" string)
   float       flexGrow        = 0.f;           // CSS flex-grow: expand to fill remaining space
+  // CSS flex-shrink.  -1 (unset) keeps glint's original rule, which existing
+  // layouts rely on: on overflow only flex-grow items shrink, by their grow
+  // weight.  Any explicit value (including via the `flex` shorthand) follows
+  // CSS: items shrink by flex-shrink x base size, text keeps its longest word.
+  float       flexShrink      = -1.f;
+  glint_length flexBasis;                      // CSS flex-basis: "" / "auto" = width / content size
 
   // CSS overflow-x / overflow-y — per-axis clip and scroll control.
   // "visible" (default): children paint outside the component bounds unclipped.
@@ -3255,3 +3279,113 @@ struct glint_style
 
 // ── glint_style ──────────────────────────────────────────────────────────────────
 // New API name for glint_style.
+
+// ── Relative length units ─────────────────────────────────────────────────────
+// glint resolves lengths from their raw text (px, %, calc()).  When an
+// element's style is computed, these rewrite em / rem / ex / ch / vw / vh /
+// vmin / vmax into px, like CSS computed values, so every consumer and calc()
+// sees px.  (They used to resolve to 0.)
+namespace glint_style_detail
+{
+  // Rewrite relative units in `raw`; returns true when anything changed.
+  // `percentIsEm` treats % as a fraction of emPx (for font-size itself).
+  inline bool rewriteRelativeUnits(std::string& raw, float emPx, float remPx,
+                                   float vwPx, float vhPx, bool percentIsEm = false)
+  {
+    // Fast path: px, plain numbers and keywords contain none of these.
+    if (raw.find_first_of(percentIsEm ? "ercvERCV%" : "ercvERCV") == std::string::npos)
+      return false;
+
+    std::string out;
+    out.reserve(raw.size() + 8);
+    bool changed = false;
+    const size_t n = raw.size();
+    size_t i = 0;
+    while (i < n)
+    {
+      const unsigned char c = static_cast<unsigned char>(raw[i]);
+      const bool startsNumber = std::isdigit(c)
+        || (c == '.' && i + 1 < n && std::isdigit(static_cast<unsigned char>(raw[i + 1])));
+      const bool insideIdent = i > 0
+        && (std::isalpha(static_cast<unsigned char>(raw[i - 1])) || raw[i - 1] == '_');
+      if (!startsNumber || insideIdent) { out += raw[i++]; continue; }
+
+      size_t j = i;
+      while (j < n && (std::isdigit(static_cast<unsigned char>(raw[j])) || raw[j] == '.')) ++j;
+      // Exponent (1e3) is part of the number; `1em` is a unit.
+      if (j + 1 < n && (raw[j] == 'e' || raw[j] == 'E'))
+      {
+        const unsigned char d = static_cast<unsigned char>(raw[j + 1]);
+        const bool signedExp = (d == '+' || d == '-') && j + 2 < n
+                            && std::isdigit(static_cast<unsigned char>(raw[j + 2]));
+        if (std::isdigit(d) || signedExp)
+        {
+          j += signedExp ? 3 : 2;
+          while (j < n && std::isdigit(static_cast<unsigned char>(raw[j]))) ++j;
+        }
+      }
+      size_t k = j;
+      if (k < n && raw[k] == '%') ++k;
+      else while (k < n && std::isalpha(static_cast<unsigned char>(raw[k]))) ++k;
+
+      std::string unit = raw.substr(j, k - j);
+      for (char& u : unit) u = static_cast<char>(std::tolower(static_cast<unsigned char>(u)));
+      float scale = -1.f;
+      if      (unit == "em")                 scale = emPx;
+      else if (unit == "rem")                scale = remPx;
+      else if (unit == "ex" || unit == "ch") scale = emPx * 0.5f;   // no font metrics here: CSS fallback
+      else if (unit == "vw")                 scale = vwPx;
+      else if (unit == "vh")                 scale = vhPx;
+      else if (unit == "vmin")               scale = std::min(vwPx, vhPx);
+      else if (unit == "vmax")               scale = std::max(vwPx, vhPx);
+      else if (unit == "%" && percentIsEm)   scale = emPx / 100.f;
+
+      if (scale < 0.f) { out.append(raw, i, k - i); i = k; continue; }   // px, %, deg...
+      const float value = std::strtof(raw.substr(i, j - i).c_str(), nullptr) * scale;
+      char buf[32];
+      std::snprintf(buf, sizeof(buf), "%gpx", value);
+      out += buf;
+      changed = true;
+      i = k;
+    }
+    if (changed) raw = out;
+    return changed;
+  }
+} // namespace glint_style_detail
+
+/** Convert relative length units in `s` to px.  font-size first (em and %
+ *  against the parent's font-size), then every other length against the
+ *  element's own font-size.  Viewport sizes are in CSS px. */
+inline void glint_style_resolve_relative_units(glint_style& s, float parentFontPx, float rootFontPx,
+                                               float viewportW, float viewportH)
+{
+  using glint_style_detail::rewriteRelativeUnits;
+  const float vw = viewportW / 100.f;
+  const float vh = viewportH / 100.f;
+
+  rewriteRelativeUnits(s.fontSize.raw, parentFontPx, rootFontPx, vw, vh, /*percentIsEm=*/true);
+  const float ownFont = s.fontSize.toFloat();
+  const float em = ownFont > 0.f ? ownFont : parentFontPx;
+
+  glint_length* lengths[] = {
+    &s.width, &s.height, &s.minWidth, &s.maxWidth, &s.minHeight, &s.maxHeight,
+    &s.left, &s.top, &s.right, &s.bottom, &s.gap,
+    &s.borderRadius, &s.borderTopLeftRadius, &s.borderTopRightRadius,
+    &s.borderBottomRightRadius, &s.borderBottomLeftRadius,
+    &s.borderTopWidth, &s.borderRightWidth, &s.borderBottomWidth, &s.borderLeftWidth,
+  };
+  for (glint_length* len : lengths)
+    rewriteRelativeUnits(len->raw, em, rootFontPx, vw, vh);
+
+  sk_side_proxy* sides[] = {
+    &s.marginTop, &s.marginRight, &s.marginBottom, &s.marginLeft,
+    &s.paddingTop, &s.paddingRight, &s.paddingBottom, &s.paddingLeft,
+  };
+  for (sk_side_proxy* side : sides)
+  {
+    if (!side->_rawp) continue;
+    std::string raw = *side->_rawp;
+    if (rewriteRelativeUnits(raw, em, rootFontPx, vw, vh))
+      *side = raw;   // updates the raw text and the stored number
+  }
+}

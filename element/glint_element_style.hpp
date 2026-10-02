@@ -484,7 +484,7 @@
     _IW_F(zIndex);
     // Flex / layout
     _IW_S(display);  _IW_S(flexDirection);  _IW_S(justifyContent);
-    _IW_S(alignItems);  _IW_L(gap);  _IW_F(flexGrow);
+    _IW_S(alignItems);  _IW_L(gap);  _IW_F(flexGrow);  _IW_F(flexShrink);  _IW_L(flexBasis);
     _IW_S(pointerEvents);  _IW_S(cursor);  _IW_S(userSelect);  _IW_S(whiteSpace);
     // Overflow / scrollbar
     _IW_S(overflowX);  _IW_S(overflowY);
@@ -596,5 +596,18 @@
         r.color = glint_color(255, 255, 255, 255);
     }
 
+    // Relative length units (em, rem, vw, ...) → px, like CSS computed values.
+    {
+      float rootFontPx = 0.f, viewportW = 0.f, viewportH = 0.f;
+      _relativeUnitBases(rootFontPx, viewportW, viewportH);
+      const float parentFontPx = mParent ? mParent->computedStyle.fontSize.toFloat() : 0.f;
+      glint_style_resolve_relative_units(r, parentFontPx > 0.f ? parentFontPx : rootFontPx,
+                                         rootFontPx, viewportW, viewportH);
+    }
+
     return r;
   }
+
+  /** Bases for rem / vw / vh: the document root's font-size and the
+   *  viewport size.  Defined in glint_document.hpp (needs the document). */
+  void _relativeUnitBases(float& rootFontPx, float& viewportW, float& viewportH) const;

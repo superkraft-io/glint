@@ -77,18 +77,19 @@ public:
     const GlintCssDomElement&                    element,
     const std::vector<const GlintCssStylesheet*>& selSheets,
     const std::vector<GlintCssDeclaration>&       inlineDecls,
-    const std::vector<const GlintCssStylesheet*>& agSheets = {})
+    const std::vector<const GlintCssStylesheet*>& agSheets = {},
+    const GlintCssMediaContext*                   media    = nullptr)   // nullptr: @media always applies
   {
     std::vector<GlintMatchedDeclaration> matched;
     size_t sourceOrder = 0;
 
     // ── 1. User-agent stylesheets ─────────────────────────────────────────
     for (const auto* sheet : agSheets)
-      collectFromSheet(element, *sheet, GlintCssOrigin::USER_AGENT, sourceOrder, matched);
+      collectFromSheet(element, *sheet, GlintCssOrigin::USER_AGENT, sourceOrder, matched, media);
 
     // ── 2. Author stylesheets ─────────────────────────────────────────────
     for (const auto* sheet : selSheets)
-      collectFromSheet(element, *sheet, GlintCssOrigin::AUTHOR, sourceOrder, matched);
+      collectFromSheet(element, *sheet, GlintCssOrigin::AUTHOR, sourceOrder, matched, media);
 
     // ── 3. Inline style declarations ──────────────────────────────────────
     //    Inline = author origin, specificity (1,0,0,0) (above any selector),
@@ -198,15 +199,16 @@ public:
     const std::vector<const GlintCssStylesheet*>&  sheets,
     const std::vector<GlintCssDeclaration>&        inlineDecls,
     const std::unordered_set<std::string>&        disabled,
-    const std::vector<const GlintCssStylesheet*>&  agSheets = {})
+    const std::vector<const GlintCssStylesheet*>&  agSheets = {},
+    const GlintCssMediaContext*                    media    = nullptr)
   {
     // Collect + sort identically to computeDeclarations.
     std::vector<GlintMatchedDeclaration> matched;
     size_t sourceOrder = 0;
     for (const auto* sheet : agSheets)
-      collectFromSheet(element, *sheet, GlintCssOrigin::USER_AGENT, sourceOrder, matched);
+      collectFromSheet(element, *sheet, GlintCssOrigin::USER_AGENT, sourceOrder, matched, media);
     for (const auto* sheet : sheets)
-      collectFromSheet(element, *sheet, GlintCssOrigin::AUTHOR, sourceOrder, matched);
+      collectFromSheet(element, *sheet, GlintCssOrigin::AUTHOR, sourceOrder, matched, media);
     for (const auto& d : inlineDecls)
     {
       GlintMatchedDeclaration md;
@@ -288,10 +290,11 @@ private:
     const GlintCssStylesheet&     sheet,
     GlintCssOrigin                origin,
     size_t&                      sourceOrder,
-    std::vector<GlintMatchedDeclaration>& out)
+    std::vector<GlintMatchedDeclaration>& out,
+    const GlintCssMediaContext*  media = nullptr)
   {
     std::vector<const GlintCssQualifiedRule*> rules;
-    sheet.collectQualifiedRules(rules);
+    sheet.collectQualifiedRules(rules, media);
 
     for (const auto* rule : rules)
     {

@@ -111,6 +111,7 @@
 #include "glint_css_rule.hpp"
 #include "../glint_style.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <sstream>
@@ -285,17 +286,40 @@ public:
     if (prop == "justify-content")  { style.justifyContent = val; return; }
     if (prop == "align-items")      { style.alignItems     = val; return; }
     if (prop == "gap")              { style.gap            = val.c_str(); return; }
-    if (prop == "flex-grow")        { style.flexGrow       = toFloat(val); return; }
+    if (prop == "flex-grow")        { style.flexGrow       = std::max(0.f, toFloat(val)); return; }
+    if (prop == "flex-shrink")      { style.flexShrink     = std::max(0.f, toFloat(val)); return; }
+    if (prop == "flex-basis")       { style.flexBasis      = val; return; }
     if (prop == "pointer-events")   { style.pointerEvents  = val; return; }
     if (prop == "cursor")           { style.cursor         = val; return; }
     if (prop == "user-select")      { style.userSelect     = val; return; }
     if (prop == "white-space")      { style.whiteSpace     = val; return; }
 
-    // flex shorthand: "flex-grow flex-shrink flex-basis" — map grow only for now
+    // flex shorthand: none | auto | initial | <grow> [<shrink>] [<basis>].
+    // A unitless first value is the grow factor and makes the basis 0
+    // (flex: 1 → 1 1 0%), so siblings share the space equally.
     if (prop == "flex")
     {
-      const float v = toFloat(val);
-      if (v > 0.f) style.flexGrow = v;
+      std::istringstream ss(val);
+      std::vector<std::string> parts;
+      for (std::string t; ss >> t;) parts.push_back(t);
+      if (parts.empty()) return;
+      if (parts.size() == 1 && parts[0] == "none")    { style.flexGrow = 0.f; style.flexShrink = 0.f; style.flexBasis = "auto"; return; }
+      if (parts.size() == 1 && parts[0] == "auto")    { style.flexGrow = 1.f; style.flexShrink = 1.f; style.flexBasis = "auto"; return; }
+      if (parts.size() == 1 && parts[0] == "initial") { style.flexGrow = 0.f; style.flexShrink = 1.f; style.flexBasis = "auto"; return; }
+      auto isNumber = [](const std::string& t) {
+        char* end = nullptr;
+        std::strtof(t.c_str(), &end);
+        return end != t.c_str() && *end == 0;
+      };
+      float grow = 1.f, shrink = 1.f;
+      std::string basis;
+      size_t i = 0;
+      if (i < parts.size() && isNumber(parts[i])) { grow = std::max(0.f, toFloat(parts[i++])); basis = "0"; }
+      if (i < parts.size() && isNumber(parts[i])) shrink = std::max(0.f, toFloat(parts[i++]));
+      if (i < parts.size()) basis = parts[i];
+      style.flexGrow   = grow;
+      style.flexShrink = shrink;
+      style.flexBasis  = basis.empty() ? std::string("auto") : basis;
       return;
     }
 

@@ -51,6 +51,9 @@ public:
   // ── Accessors ──────────────────────────────────────────────────────────────
 
   void SetLabel  (const std::string& s)     { innerText = s; setDirty(false); }
+
+  // The label is drawn on one line, so a button never shrinks below it.
+  float minContentW() const override { return preferredW(); }
   void SetOnClick(std::function<void()> cb) { onClick = std::move(cb); }
 
   const char* typeName() const override { return "button"; }

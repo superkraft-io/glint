@@ -1368,6 +1368,24 @@ public:
   // composite controls like glint_checkbox). The base implementation is a no-op.
   virtual void syncBeforeLayout() {}
 
+  /** Width of the longest unbreakable run of the text (its CSS min-content
+   *  width): what a flex item sized by its text can shrink to.  0 without
+   *  text.  Components that draw text on one line override this. */
+  virtual float minContentW() const
+  {
+    if (innerText.empty()) return 0.f;
+    const float sz = computedStyle.fontSize.toFloat() > 0.f ? computedStyle.fontSize.toFloat() : 14.f;
+    SkFont font = skFont(sz,
+                         computedStyle.fontFamily.c_str(),
+                         computedStyle.fontWeight,
+                         computedStyle.fontStyle.c_str());
+    float maxW = 0.f;
+    for (const auto& ln : _buildWrappedLines(font, 1.f))   // wrap at every opportunity
+      if (!ln.text.empty())
+        maxW = std::max(maxW, font.measureText(ln.text.c_str(), ln.text.size(), SkTextEncoding::kUTF8));
+    return maxW;
+  }
+
   virtual float preferredW() const
   {
     if (innerText.empty()) return 0.f;
