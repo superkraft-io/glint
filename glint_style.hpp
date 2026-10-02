@@ -22,10 +22,13 @@
  */
 
 #include "glint_graphics.hpp"
+#include "utils/glint_perf.hpp"
 #  include "include/core/SkBlendMode.h"
 #  include "include/core/SkM44.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <unordered_map>
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -309,12 +312,63 @@ private:
 
 inline bool tryResolveLengthExpression(const std::string& raw, float parentSize, float& outValue)
 {
+  GLINT_PERF_INC(lengthParses);
   calc_parser parser(raw, parentSize);
   const auto value = parser.parse();
   if (!value.valid)
     return false;
   outValue = value.value;
   return true;
+}
+
+// ── Parsed-length cache ──────────────────────────────────────────────────────
+// Layout resolves the same few length strings ("12px", "100%", "calc(...)")
+// hundreds of thousands of times per frame. The parser only reads the parent
+// size for '%' terms, so a string without '%' has one fixed result: parse it
+// once per thread and reuse it. '%' strings are parsed per call (callers that
+// resolve repeatedly against the same parent memoize on their side).
+struct parsed_length
+{
+  bool  valid           = false;
+  bool  dependsOnParent = false;   // contains a '%' term
+  float constant        = 0.f;     // result when !dependsOnParent
+};
+
+inline const parsed_length& classifyLength(const std::string& raw)
+{
+  static thread_local std::unordered_map<std::string, parsed_length> sCache;
+  auto it = sCache.find(raw);
+  if (it != sCache.end()) return it->second;
+  if (sCache.size() >= 8192) sCache.clear();   // bound memory for generated values
+  parsed_length p;
+  p.dependsOnParent = raw.find('%') != std::string::npos;
+  float v = 0.f;
+  p.valid    = tryResolveLengthExpression(raw, 0.f, v);
+  p.constant = v;
+  return sCache.emplace(raw, p).first->second;
+}
+
+/** Same result as tryResolveLengthExpression(), without re-parsing strings
+ *  whose value doesn't depend on parentSize. */
+inline bool resolveLengthCached(const std::string& raw, float parentSize, float& outValue)
+{
+  const parsed_length& p = classifyLength(raw);
+  if (!p.valid) return false;
+  if (!p.dependsOnParent)
+  {
+    outValue = p.constant;
+    return true;
+  }
+  return tryResolveLengthExpression(raw, parentSize, outValue);
+}
+
+/** FNV-1a of a raw length string — validates per-length memos cheaply even
+ *  when `raw` is assigned directly. */
+inline uint32_t rawHash(const std::string& raw)
+{
+  uint32_t h = 2166136261u;
+  for (const unsigned char c : raw) { h ^= c; h *= 16777619u; }
+  return h ^ static_cast<uint32_t>(raw.size());
 }
 
 } // namespace glint_style_detail
@@ -396,14 +450,34 @@ struct glint_length
   {
     if (raw.empty() || raw == "0" || raw == "auto") return 0.f;
 
+    const auto& parsed = glint_style_detail::classifyLength(raw);
+    if (!parsed.valid) return 0.f;
+    if (!parsed.dependsOnParent) return parsed.constant;
+
+    // '%' values: layout resolves the same length against the same parent
+    // many times per pass — memoize the last (raw, parent) -> result.
+    const uint32_t h = glint_style_detail::rawHash(raw);
+    if (mPctMemoValid && mPctMemoHash == h && mPctMemoParent == parentSize)
+      return mPctMemoValue;
     float resolved = 0.f;
     if (!glint_style_detail::tryResolveLengthExpression(raw, parentSize, resolved))
       return 0.f;
+    mPctMemoValid  = true;
+    mPctMemoHash   = h;
+    mPctMemoParent = parentSize;
+    mPctMemoValue  = resolved;
     return resolved;
   }
 
   // Allow reading back as float (resolve with no parent — percentages → 0).
   float toFloat() const { return resolve(0.f); }
+
+private:
+  // Last '%' resolution (see resolve()); validated by a hash of raw.
+  mutable bool     mPctMemoValid  = false;
+  mutable uint32_t mPctMemoHash   = 0;
+  mutable float    mPctMemoParent = 0.f;
+  mutable float    mPctMemoValue  = 0.f;
 };
 
 struct glint_text_align
@@ -1134,7 +1208,7 @@ struct sk_side_proxy
     if (_rawp && !_rawp->empty())
     {
       float resolved = 0.f;
-      if (glint_style_detail::tryResolveLengthExpression(*_rawp, containerWidth, resolved))
+      if (glint_style_detail::resolveLengthCached(*_rawp, containerWidth, resolved))
         return resolved;
     }
     return _p ? *_p : 0.f;

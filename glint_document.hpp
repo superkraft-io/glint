@@ -34,6 +34,7 @@ class glint_window_linux;  // forward declaration for linuxWindow field
 #endif
 #include "glint_css_parser/glint_css.hpp"
 #include "glint_css_parser/glint_css_dom_adapter.hpp"
+#include "glint_style_diff.hpp"
 
 #include <array>
 #include <fstream>
@@ -117,6 +118,9 @@ class glint_document final
   // outlives it: the canvas is destroyed after every other member, and its
   // elements' destructors still call _onComponentDestroyed().
   bool mDestroying = false;
+
+  // Elements call back into the document for restyles (_restyleClassDependents).
+  friend class glint_element;
 
 public:
   // ── Canvas ─────────────────────────────────────────────────────────────────
@@ -1010,7 +1014,10 @@ public:
       {
         n->mIsFocusWithin = false;
         _applyCssToElement(n);
+        _restyleDependents(n, _pseudoDeps("focus-within"));
       }
+      _restyleDependents(mFocusedNode, _pseudoDeps("focus"));
+      _restyleDependents(mFocusedNode, _pseudoDeps("focus-visible"));
       mFocusedNode->onFocusLost();
       glint_keyboard_event blur;
       blur.type    = "blur";
@@ -1031,7 +1038,10 @@ public:
       {
         n->mIsFocusWithin = true;
         _applyCssToElement(n);
+        _restyleDependents(n, _pseudoDeps("focus-within"));
       }
+      _restyleDependents(mFocusedNode, _pseudoDeps("focus"));
+      _restyleDependents(mFocusedNode, _pseudoDeps("focus-visible"));
       mFocusedNode->onFocusGained();
       glint_keyboard_event focus;
       focus.type    = "focus";
@@ -1163,6 +1173,25 @@ public:
    *  hooks on glint_element. Cleared after a layout pass completes. Starts
    *  true so the very first frame always lays out. */
   bool mLayoutDirty = true;
+
+  // Frame phase stats (see lastFrameStats()).
+  glint_frame_stats   mLastFrameStats;
+  // Indexed cascade state (see _ensureCascadeIndex()).
+  GlintCssCascade::RuleIndex               mCascadeIndex;
+  bool                                     mCascadeIndexValid = false;
+  std::vector<uint32_t>                    mCascadeCandScratch;
+  std::vector<GlintCssCascade::FastMatch>  mCascadeMatchScratch;
+  std::vector<const GlintCssDeclaration*>  mCascadeWinners;
+  /** Use the indexed cascade (same results; off = reference path). */
+  static inline bool sCascadeIndexEnabled = true;
+  /** Also run the reference cascade and count mismatches in
+   *  glint_perf().cascadeVerifyFailures (tools / debugging). */
+  static inline bool sVerifyCascadeIndex  = false;
+  // Components queued for a local Layout() by _invalidateAfterRestyle().
+  std::vector<std::pair<glint_element*, std::weak_ptr<void>>> mPendingLocalLayouts;
+  glint_perf_counters mFrameStatsMark;
+  bool                mFrameLayoutRan = false;
+  uint64_t            mLayoutFontGen  = 0;   // font registry generation at the last frame
 
   void setDetailedRedrawReporter(std::function<void(glint_element*)> reporter)
   {
@@ -1432,6 +1461,85 @@ public:
    *  threads (the inspector) notice the document is gone and stop using it. */
   std::weak_ptr<void> documentLifeToken() const { return mDocLife; }
 
+  /**
+   * Run the style + layout half of a frame without painting: drain posted
+   * tasks, refresh @media, tick transitions, and lay out if dirty.
+   * DrawToCanvas() does all of this itself; this is for headless tools and
+   * benchmarks that measure reflow in isolation.
+   */
+  void updateStyleAndLayout()
+  {
+    mTaskQueue->drain();
+    _refreshMediaQueries();
+    _tickAndLayout(nullptr);
+    _finishFrameStats();
+  }
+
+  /** Re-run the CSS cascade for every element and relayout (e.g. after
+   *  external changes the cascade can't observe). Also a reference point for
+   *  verifying incremental restyles. */
+  void restyleAll()
+  {
+    _applyCssToTree(&mCanvas);
+    mLayoutDirty = true;
+  }
+
+  /** Phase breakdown of the most recent frame (see glint_frame_stats). */
+  const glint_frame_stats& lastFrameStats() const { return mLastFrameStats; }
+
+  // Pre-pass: tick all transitions BEFORE layout so animated width/height
+  // values are visible to childPrefH/W during the layout pass. Layout is
+  // skipped on frames where nothing has called setDirty() / markLayoutDirty()
+  // since the previous Layout(); paint-only redraws bypass it.
+  void _tickAndLayout(glint_canvas* g)
+  {
+    auto& perf = glint_perf();
+    if (++glint_element::sStyleFrame == 0) glint_element::sStyleFrame = 1;
+    // Font set changes alter every text measurement: no subtree may skip.
+    const uint64_t fontGen = glint_font_registry::generation().load();
+    glint_element::sLayoutSkipsDisabled = (fontGen != mLayoutFontGen);
+    mLayoutFontGen = fontGen;
+    {
+      glint_perf_timer t(perf.tickMs);
+      mCanvas.tickTransitionsAll();
+    }
+    mFrameLayoutRan = mLayoutDirty;
+    if (mLayoutDirty)
+    {
+      glint_perf_timer t(perf.layoutMs);
+      ++perf.layoutPasses;
+      glint_element::_bumpLayoutPass();
+      mCanvas.Layout(g);
+      mCanvas.mHasLaidOut         = true;
+      mCanvas.mSubtreeLayoutDirty = false;
+      mLayoutDirty = false;
+    }
+    else if (!mPendingLocalLayouts.empty())
+    {
+      // Paint-only restyles of components: re-run just their Layout() now that
+      // the tick has merged the new styles (see _invalidateAfterRestyle).
+      glint_perf_timer t(perf.layoutMs);
+      auto pending = std::move(mPendingLocalLayouts);
+      glint_element::_bumpLayoutPass();
+      for (auto& [el, life] : pending)
+        if (!life.expired()) el->Layout(g);
+    }
+    mPendingLocalLayouts.clear();
+  }
+
+  void _finishFrameStats()
+  {
+    const auto& perf = glint_perf();
+    // A counter below its mark means someone reset() the counters mid-frame.
+    auto delta = [](double cur, double mark) { return cur >= mark ? cur - mark : cur; };
+    mLastFrameStats.cascadeMs = delta(perf.cascadeMs, mFrameStatsMark.cascadeMs);
+    mLastFrameStats.tickMs    = delta(perf.tickMs,    mFrameStatsMark.tickMs);
+    mLastFrameStats.layoutMs  = delta(perf.layoutMs,  mFrameStatsMark.layoutMs);
+    mLastFrameStats.paintMs   = delta(perf.paintMs,   mFrameStatsMark.paintMs);
+    mLastFrameStats.layoutRan = mFrameLayoutRan;
+    mFrameStatsMark = perf;
+  }
+
   void DrawToCanvas(SkCanvas& canvas)
   {
     // Run tasks posted from other threads first, so their changes are laid
@@ -1443,13 +1551,12 @@ public:
     _recordFrame();
     _tickHotReload();
 
-    mCanvas.tickTransitionsAll();
-    if (mLayoutDirty)
+    _tickAndLayout(nullptr);
     {
-      mCanvas.Layout(nullptr);
-      mLayoutDirty = false;
+      glint_perf_timer t(glint_perf().paintMs);
+      mCanvas.DrawToCanvas(&canvas);
     }
-    mCanvas.DrawToCanvas(&canvas);
+    _finishFrameStats();
 
     // Phase 3 — inspector highlights (mirrors Draw(glint_canvas&) but using Skia).
     glint_element* hovered   = mInspHovered;
@@ -1593,21 +1700,15 @@ public:
 
     _tickHotReload();
 
-    // Pre-pass: tick all transitions BEFORE layout so animated width/height
-    // values are visible to childPrefH/W during the layout pass.
-    mCanvas.tickTransitionsAll();
-
-    // Phase 1 — layout: re-compute mRect for every node from current style.
-    // Skipped on frames where nothing has called setDirty() / markLayoutDirty()
-    // since the previous Layout(); paint-only redraws (e.g. scroll) bypass this.
-    if (mLayoutDirty)
-    {
-      mCanvas.Layout(&g);
-      mLayoutDirty = false;
-    }
+    // Pre-pass ticks transitions, then Phase 1 lays out (see _tickAndLayout).
+    _tickAndLayout(&g);
 
     // Phase 2 — draw traversal.
-    mCanvas.Draw(g);
+    {
+      glint_perf_timer t(glint_perf().paintMs);
+      mCanvas.Draw(g);
+    }
+    _finishFrameStats();
 
     // Phase 3 — inspector highlights (drawn on top of everything).
     // hoveredNode = transient faint blue (tree row hover / inspect-mode cursor).
@@ -2028,12 +2129,25 @@ public:
       // Must happen before any events fire so that OnMouseOver() / OnMouseOut()
       // overrides (e.g. glint_button::_startStateTransition) read current cssStyle_.
 
+      // restyleFlags / restyled feed the final invalidation: a color-only
+      // :hover rule repaints without a reflow (see _invalidateAfterRestyle).
+      uint8_t restyleFlags = glint_restyle_none;
+      std::vector<glint_element*> restyled;
+      const auto* hoverDeps = _pseudoDeps("hover");
+      auto restyle = [&](glint_element* node) {
+        const uint8_t f = _applyCssToElement(node);
+        restyleFlags |= f;
+        if (f != glint_restyle_none) restyled.push_back(node);
+        // `.card:hover .title` etc.: elements whose match depends on this one.
+        restyleFlags |= _restyleDependents(node, hoverDeps, &restyled);
+      };
+
       // Clear :hover on nodes leaving the chain.
       for (auto* node : oldChain)
         if (!inChain(newChain, node))
         {
           node->mIsHovered = false;
-          _applyCssToElement(node);
+          restyle(node);
         }
       // Set :hover on nodes entering the chain (shallowest-first so ancestors cascade before children).
       {
@@ -2043,9 +2157,23 @@ public:
         for (int i = static_cast<int>(toEnter.size()) - 1; i >= 0; --i)
         {
           toEnter[i]->mIsHovered = true;
-          _applyCssToElement(toEnter[i]);
+          restyle(toEnter[i]);
         }
       }
+
+      // The events below run arbitrary code (listeners, component hover
+      // hooks) that may change styles without invalidating; only a quiet
+      // transition — plain targets, no hover listeners — may skip reflow.
+      auto hoverListened = [](const std::vector<glint_element*>& chain) {
+        for (auto* n : chain)
+          if (n->element.hasEventListener("mouseover")  || n->element.hasEventListener("mouseout")
+           || n->element.hasEventListener("mouseenter") || n->element.hasEventListener("mouseleave"))
+            return true;
+        return false;
+      };
+      if ((mHoveredNode && !mHoveredNode->_isPlainElement()) || (hit && !hit->_isPlainElement())
+          || hoverListened(oldChain) || hoverListened(newChain))
+        restyleFlags |= glint_restyle_layout;
 
       // ── Pass 2: dispatch DOM events ───────────────────────────────────────
       // Any listener may destroy nodes on either chain (e.g. a mouseleave
@@ -2111,7 +2239,7 @@ public:
         }
       }
 
-      setDirty(false);
+      _invalidateAfterRestyle(restyleFlags, restyled);
     }
 
     // Browser-spec mousemove: fire on every pointer move over the current hit
@@ -2134,10 +2262,12 @@ public:
       glint_mouse_mod mod{};
 
       // Pass 1: clear flags + re-cascade CSS before any events fire.
+      const auto* hoverDeps = _pseudoDeps("hover");
       for (glint_element* node = mHoveredNode; node; node = node->mParent)
       {
         node->mIsHovered = false;
         _applyCssToElement(node);
+        _restyleDependents(node, hoverDeps);
       }
 
       // Pass 2: dispatch events.
@@ -2188,6 +2318,13 @@ public:
     mPointerMod = mod;
 
     auto* hit = hitTest(x, y);
+
+    // Scrolling itself is paint-only (see _onScrollOffsetChanged); a wheel
+    // listener anywhere on the hit path may mutate styles, so keep the full
+    // reflow when one exists.
+    bool wheelListened = false;
+    for (glint_element* n = hit; n && !wheelListened; n = n->mParent)
+      wheelListened = n->element.hasEventListener("wheel");
 
     // Dispatch "wheel" DOM event first — listener can call preventDefault() to
     // prevent the default scroll action.
@@ -2268,7 +2405,8 @@ public:
       node = node->mParent;
     }
 
-    setDirty(false);
+    if (wheelListened) setDirty(false);
+    else               setPaintOnlyDirty();
   }
 
   void OnGesture(float x, float y, glint_gesture_kind kind,
@@ -2396,9 +2534,14 @@ private:
   // When mInspDisabledDecls is set (inspector active), winning declarations
   // whose composite id "url|line|property" appears in the set are skipped so
   // the inspector checkbox can silence a rule without mutating the stylesheet.
-  void _applyCssToElement(glint_element* el)
+  /** Re-run the cascade for `el`. Returns glint_restyle_flags describing what
+   *  changed since its previous cascade (layout when unknown). */
+  uint8_t _applyCssToElement(glint_element* el)
   {
-    if (!el) return;
+    if (!el) return glint_restyle_none;
+    glint_perf_timer perfTimer(glint_perf().cascadeMs);
+    GLINT_PERF_INC(applyCss);
+    el->mCascadedClassName_ = el->className;
     GlintCssDomAdapter adapter(el);
     std::vector<const GlintCssStylesheet*> sheets;
     sheets.reserve(mStylesheets.size());
@@ -2417,11 +2560,33 @@ private:
       const auto decls = GlintCssCascade::resolveSkipping(adapter, sheets, {}, *mInspDisabledDecls, uaSheets, &mMediaContext);
       glint_style cssStyle;
       GlintCssApply::apply(decls, cssStyle);
-      el->setCssStyleLayer(cssStyle);
+      el->setCssStyleLayer(cssStyle, !decls.empty());
       // Collect !important winners so _mergedStyle() can suppress inline overrides.
       el->mCssImportantProps_.clear();
       for (const auto& d : decls)
         if (d.important) el->mCssImportantProps_.insert(d.property);
+      return _recordCssDecls(el, decls);
+    }
+    else if (sCascadeIndexEnabled)
+    {
+      // Indexed cascade: only rules keyed by this element's id / classes / tag
+      // (plus universal ones) are tested, and winners point into the sheets
+      // instead of being copied. Same winners, same order as the path below.
+      _ensureCascadeIndex();
+      const std::string tag = GlintCssCascade::RuleIndex::lower(adapter.tagName());
+      const std::string id  = adapter.id();
+      GlintCssCascade::computeWinnersIndexed(adapter, tag, id, adapter._classTokens(), mCascadeIndex,
+                                             mCascadeCandScratch, mCascadeMatchScratch, mCascadeWinners);
+      if (sVerifyCascadeIndex) _verifyIndexedCascade(adapter, sheets, uaSheets);
+      el->mCssImportantProps_.clear();
+      glint_style cssStyle;
+      for (const auto* d : mCascadeWinners)
+      {
+        GlintCssApply::applyOne(d->property, d->value, cssStyle);
+        if (d->important) el->mCssImportantProps_.insert(d->property);
+      }
+      el->setCssStyleLayer(cssStyle, !mCascadeWinners.empty());
+      return _recordCssDecls(el, mCascadeWinners);
     }
     else
     {
@@ -2438,7 +2603,112 @@ private:
       }
       glint_style cssStyle;
       GlintCssApply::apply(decls, cssStyle);
-      el->setCssStyleLayer(cssStyle);
+      el->setCssStyleLayer(cssStyle, !decls.empty());
+      return _recordCssDecls(el, decls);
+    }
+  }
+
+  /** Store the winning declarations on `el` and classify the change against
+   *  the previous record (see glint_style_diff.hpp). */
+  static uint8_t _recordCssDecls(glint_element* el, const std::vector<GlintCssDeclaration>& decls)
+  {
+    std::map<std::string, std::string> rec;
+    for (const auto& d : decls)
+      rec[d.property] = d.important ? d.value + " !important" : d.value;
+    return _recordCssDeclMap(el, std::move(rec));
+  }
+
+  static uint8_t _recordCssDecls(glint_element* el, const std::vector<const GlintCssDeclaration*>& decls)
+  {
+    std::map<std::string, std::string> rec;
+    for (const auto* d : decls)
+      rec[d->property] = d->important ? d->value + " !important" : d->value;
+    return _recordCssDeclMap(el, std::move(rec));
+  }
+
+  static uint8_t _recordCssDeclMap(glint_element* el, std::map<std::string, std::string> rec)
+  {
+
+    uint8_t flags = glint_restyle_layout;
+    if (el->mCssDeclRecordValid_)
+      flags = (rec == el->mCssDeclRecord_) ? glint_restyle_none
+                                           : _classifyCssChange(*el, el->mCssDeclRecord_, rec);
+    el->mCssDeclRecord_      = std::move(rec);
+    el->mCssDeclRecordValid_ = true;
+    ++el->mCssLayerGen_;   // mCssImportantProps_ may have changed with the layer
+    return flags;
+  }
+
+  static uint8_t _classifyCssChange(const glint_element& el,
+                                    const std::map<std::string, std::string>& before,
+                                    const std::map<std::string, std::string>& after)
+  {
+    static const std::string kEmpty;
+    const bool inlineBox = el.computedStyle.display.compare(0, 6, "inline") == 0;
+    uint8_t flags = glint_restyle_none;
+    auto classify = [&](const std::string& prop, const std::string& was, const std::string& now) {
+      if (!glint_css_prop_is_paint_only(prop)) return false;
+      if (prop == "transform" && glint_css_value_is_none(was) != glint_css_value_is_none(now))
+        return false;
+      if (inlineBox && glint_css_prop_is_background(prop)) return false;
+      flags |= glint_restyle_paint;
+      if (glint_css_prop_is_inherited_paint(prop)) flags |= glint_restyle_inherited_paint;
+      return true;
+    };
+    // Merge-walk the two sorted maps; any differing property is a change.
+    auto a = before.begin(), b = after.begin();
+    while (a != before.end() || b != after.end())
+    {
+      bool ok = true;
+      if (b == after.end() || (a != before.end() && a->first < b->first))
+      { ok = classify(a->first, a->second, kEmpty); ++a; }
+      else if (a == before.end() || b->first < a->first)
+      { ok = classify(b->first, kEmpty, b->second); ++b; }
+      else
+      {
+        if (a->second != b->second) ok = classify(a->first, a->second, b->second);
+        ++a; ++b;
+      }
+      if (!ok) return glint_restyle_layout;
+    }
+    return flags;
+  }
+
+  /**
+   * Request the cheapest invalidation that covers a restyle of `restyled`
+   * (flags OR-ed from their _applyCssToElement results). Paint-only changes on
+   * plain elements just repaint; components among them (whose Layout() may
+   * copy their own paint styles into children) get a local Layout() after the
+   * next style tick instead of a whole-document reflow.
+   */
+  void _invalidateAfterRestyle(uint8_t flags, const std::vector<glint_element*>& restyled)
+  {
+    if (flags & glint_restyle_layout)
+    {
+      setDirty(false);
+      return;
+    }
+    for (auto* el : restyled)
+    {
+      if (!el->_isPlainElement()) _queueLocalLayout(el);
+      if (flags & glint_restyle_inherited_paint) _queueComponentDescendants(el);
+    }
+    setPaintOnlyDirty();
+  }
+
+  void _queueLocalLayout(glint_element* el)
+  {
+    mPendingLocalLayouts.emplace_back(el, el->lifeToken());
+  }
+
+  // Inherited paint (color) reaches descendants through the style merge;
+  // queue the topmost component descendants so their Layout() re-propagates.
+  void _queueComponentDescendants(glint_element* el)
+  {
+    for (auto& c : el->mChildren)
+    {
+      if (!c->_isPlainElement()) _queueLocalLayout(c.get());
+      else                       _queueComponentDescendants(c.get());
     }
   }
 
@@ -2721,10 +2991,15 @@ private:
     mLayoutDirty = true;
   }
 
+  // Re-cascade an :active chain (and elements depending on its :active state).
   void _reapplyCssChain(glint_element* el)
   {
+    const auto* activeDeps = _pseudoDeps("active");
     for (glint_element* n = el; n; n = n->mParent)
+    {
       _applyCssToElement(n);
+      _restyleDependents(n, activeDeps);
+    }
   }
 
   /** Clear :active left on the ancestors of a pressed node that was destroyed
@@ -2865,8 +3140,142 @@ private:
     return hash;
   }
 
+  /** Index of every active style rule for the indexed cascade fast path;
+   *  rebuilt lazily after any stylesheet or @media change. */
+  void _ensureCascadeIndex()
+  {
+    if (mCascadeIndexValid) return;
+    mCascadeIndex.clear();
+    std::vector<const GlintCssQualifiedRule*> rules;
+    mUaSheet.collectQualifiedRules(rules, &mMediaContext);
+    for (const auto* r : rules)
+      if (r) mCascadeIndex.add(r, GlintCssOrigin::USER_AGENT);
+    for (const auto& sheet : mStylesheets)
+    {
+      rules.clear();
+      sheet.collectQualifiedRules(rules, &mMediaContext);
+      for (const auto* r : rules)
+        if (r) mCascadeIndex.add(r, GlintCssOrigin::AUTHOR);
+    }
+    mCascadeIndexValid = true;
+  }
+
+  /** Does `el` match `compound`, ignoring pseudo-classes and classes (the
+   *  states that change)? A conservative filter for dependency restyles. */
+  static bool _compoundMatchesLoosely(const GlintCompoundSelector& compound,
+                                      const GlintCssDomElement& el)
+  {
+    for (const auto& ss : compound.simples)
+    {
+      if (ss.kind == GlintSimpleKind::PSEUDO_CLASS || ss.kind == GlintSimpleKind::PSEUDO_ELEMENT
+          || ss.kind == GlintSimpleKind::CLASS)
+        continue;
+      if (!ss.matches(el)) return false;
+    }
+    return true;
+  }
+
+  /** Re-cascade `root`'s descendants (not `root` itself). */
+  uint8_t _restyleSubtree(glint_element* root, std::vector<glint_element*>* restyled)
+  {
+    uint8_t flags = glint_restyle_none;
+    for (auto& c : root->mChildren)
+    {
+      const uint8_t f = _applyCssToElement(c.get());
+      flags |= f;
+      if (restyled && f != glint_restyle_none) restyled->push_back(c.get());
+      flags |= _restyleSubtree(c.get(), restyled);
+    }
+    return flags;
+  }
+
+  /**
+   * After `el`'s state changed in a way the given dependency list cares about
+   * (see GlintCssCascade::RuleIndex::Dependency), re-cascade the elements whose
+   * matching it can affect: its descendants and/or its following siblings
+   * (with their descendants). Returns the OR-ed glint_restyle_flags.
+   */
+  uint8_t _restyleDependents(glint_element* el,
+                             const std::vector<GlintCssCascade::RuleIndex::Dependency>* deps,
+                             std::vector<glint_element*>* restyled = nullptr)
+  {
+    if (!el || !deps || deps->empty()) return glint_restyle_none;
+    bool desc = false, sib = false;
+    GlintCssDomAdapter adapter(el);
+    for (const auto& d : *deps)
+    {
+      bool& want = d.siblings ? sib : desc;
+      if (!want && _compoundMatchesLoosely(*d.compound, adapter)) want = true;
+      if (desc && sib) break;
+    }
+    uint8_t flags = glint_restyle_none;
+    if (desc) flags |= _restyleSubtree(el, restyled);
+    if (sib && el->mParent)
+    {
+      bool after = false;
+      for (auto& s : el->mParent->mChildren)
+      {
+        if (s.get() == el) { after = true; continue; }
+        if (!after) continue;
+        const uint8_t f = _applyCssToElement(s.get());
+        flags |= f;
+        if (restyled && f != glint_restyle_none) restyled->push_back(s.get());
+        flags |= _restyleSubtree(s.get(), restyled);
+      }
+    }
+    return flags;
+  }
+
+  const std::vector<GlintCssCascade::RuleIndex::Dependency>* _pseudoDeps(const char* name)
+  {
+    _ensureCascadeIndex();
+    const auto it = mCascadeIndex.pseudoDeps.find(name);
+    return it == mCascadeIndex.pseudoDeps.end() ? nullptr : &it->second;
+  }
+
+  /** className / classList changed on `el` (previous class list: `before`). */
+  void _restyleClassDependents(glint_element* el, const std::string& before)
+  {
+    _ensureCascadeIndex();
+    if (mCascadeIndex.classDeps.empty()) return;
+    auto tokens = [](const std::string& s) {
+      std::vector<std::string> out;
+      std::istringstream ss(s);
+      std::string t;
+      while (ss >> t) out.push_back(t);
+      std::sort(out.begin(), out.end());
+      return out;
+    };
+    const auto a = tokens(before), b = tokens(el->className);
+    std::vector<std::string> changed;
+    std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(changed));
+    for (const auto& cls : changed)
+    {
+      const auto it = mCascadeIndex.classDeps.find(cls);
+      if (it != mCascadeIndex.classDeps.end()) _restyleDependents(el, &it->second);
+    }
+  }
+
+  /** Debug: compare the indexed winners against the reference cascade. */
+  void _verifyIndexedCascade(const GlintCssDomAdapter& adapter,
+                             const std::vector<const GlintCssStylesheet*>& sheets,
+                             const std::vector<const GlintCssStylesheet*>& uaSheets)
+  {
+    const auto winning = GlintCssCascade::computeDeclarations(adapter, sheets, {}, uaSheets, &mMediaContext);
+    const auto ordered = GlintCssCascade::inCascadeOrder(winning);
+    bool same = ordered.size() == mCascadeWinners.size();
+    for (size_t i = 0; same && i < ordered.size(); ++i)
+    {
+      const auto& a = ordered[i]->decl;
+      const auto* b = mCascadeWinners[i];
+      same = a.property == b->property && a.value == b->value && a.important == b->important;
+    }
+    if (!same) ++glint_perf().cascadeVerifyFailures;
+  }
+
   void _rebuildQualifiedRuleCache()
   {
+    mCascadeIndexValid = false;
     mQualifiedRuleCache.clear();
 
     size_t sourceOrder = 0;
@@ -2913,6 +3322,7 @@ private:
 
   void _invalidateMatchedCssRuleCache(bool bumpStylesheetRevision)
   {
+    mCascadeIndexValid = false;   // rules may have been edited in place (inspector)
     if (bumpStylesheetRevision)
       ++mStylesheetRevision;
     mMatchedCssRulesCache.clear();
@@ -3794,6 +4204,7 @@ inline bool glint_element::_debugColorizeBorders() const
 
 inline void glint_element::_markRootLayoutDirty()
 {
+  _markSubtreeLayoutDirty();
   if (mRoot) mRoot->mLayoutDirty = true;
 }
 
@@ -3805,6 +4216,39 @@ inline float glint_element::_getRootDpr() const
 inline void glint_element::_refreshRootHoverFromPointer()
 {
   if (mRoot) mRoot->RefreshHoverFromCurrentPointer();
+}
+
+inline void glint_element::_onClassListChanged()
+{
+  const std::string before = mCascadedClassName_;
+  if (mApplyCss) mApplyCss(this);
+  if (mRoot) mRoot->_restyleClassDependents(this, before);
+  setDirty(false);
+}
+
+inline void glint_element::_onScrollOffsetChanged()
+{
+  // A "scroll" listener may mutate styles without invalidating (e.g. a
+  // virtualized list repositioning rows): keep the full reflow for those.
+  if (element.hasEventListener("scroll"))
+  {
+    setDirty(false);
+    return;
+  }
+  if (mRoot)
+  {
+    for (const auto& c : mRoot->mCanvas.mChildren)
+    {
+      if (c->mRelayoutOnScroll)
+      {
+        setDirty(false);
+        return;
+      }
+    }
+  }
+  if (mScrollbarV) mScrollbarV->Layout(nullptr);
+  if (mScrollbarH) mScrollbarH->Layout(nullptr);
+  setPaintOnlyDirty();
 }
 
 // ── glint_document ─────────────────────────────────────────────────────────────────

@@ -115,6 +115,13 @@ public:
             mListeners.end());
     }
 
+    /** True when at least one listener for `type` is registered on this element. */
+    bool hasEventListener(const std::string& type) const
+    {
+        return std::any_of(mListeners.begin(), mListeners.end(),
+                           [&type](const Entry& e) { return e.type == type; });
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     /**

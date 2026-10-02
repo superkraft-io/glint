@@ -89,6 +89,11 @@ public:
     style = panelStyle;
   }
 
+  // A draw lambda only paints; Layout() and hover hooks stay stock.
+  bool _isPlainElement() const override { return typeid(*this) == typeid(glint_div); }
+  // ...but it may paint anywhere, so only lambda-free divs are cullable.
+  bool _paintsWithinBounds() const override { return _isPlainElement() && !mDraw; }
+
 protected:
   void drawContent(glint_canvas& g) override
   {

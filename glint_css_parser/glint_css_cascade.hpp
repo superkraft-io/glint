@@ -22,6 +22,7 @@
 #include "glint_css_rule.hpp"
 #include "glint_css_selector.hpp"
 #include "glint_css_parser.hpp"
+#include "../utils/glint_perf.hpp"
 
 #include <algorithm>
 #include <string>
@@ -255,30 +256,221 @@ public:
     return out;
   }
 
+  // ── Indexed fast path ───────────────────────────────────────────────────
+  // Rules bucketed by the key every match of their subject compound requires
+  // (id, else first class, else tag, else universal). An element only needs
+  // the rules in its own buckets: a rule that matches has a selector whose
+  // subject compound matches, so the element carries that compound's key.
+  struct RuleIndex
+  {
+    struct Entry
+    {
+      const GlintCssQualifiedRule* rule = nullptr;
+      GlintCssOrigin               origin = GlintCssOrigin::AUTHOR;
+    };
+    std::vector<Entry> rules;   // flattened in cascade source order
+    std::unordered_map<std::string, std::vector<uint32_t>> byId, byClass, byTag;
+    std::vector<uint32_t> universal;
+
+    // ── Invalidation dependencies ──────────────────────────────────────────
+    // A pseudo-class or class in a NON-subject compound ("A:hover B",
+    // ".open > .item", "a:focus ~ b") means a state change on one element
+    // restyles others: its descendants (descendant/child combinator next to
+    // the compound) or its following siblings (+ / ~). Each entry keeps the
+    // compound so callers can skip elements that can't match it anyway.
+    struct Dependency
+    {
+      const GlintCompoundSelector* compound = nullptr;
+      bool                         siblings = false;   // else descendants
+    };
+    std::unordered_map<std::string, std::vector<Dependency>> pseudoDeps;  // lower-case name
+    std::unordered_map<std::string, std::vector<Dependency>> classDeps;
+
+    void clear()
+    {
+      rules.clear(); byId.clear(); byClass.clear(); byTag.clear(); universal.clear();
+      pseudoDeps.clear(); classDeps.clear();
+    }
+
+    void addDependencies(const GlintCompoundSelector& compound, bool siblings,
+                         const GlintCompoundSelector& owner)
+    {
+      for (const auto& ss : compound.simples)
+      {
+        if (ss.kind == GlintSimpleKind::PSEUDO_CLASS)
+          pseudoDeps[lower(ss.name)].push_back({ &owner, siblings });
+        else if (ss.kind == GlintSimpleKind::CLASS)
+          classDeps[ss.name].push_back({ &owner, siblings });
+        // Features inside :not() / :is() / :where() count for the owner too.
+        for (const auto& nested : ss.nestedSelectors)
+          if (nested)
+            for (const auto& st : nested->steps)
+              addDependencies(st.compound, siblings, owner);
+      }
+    }
+
+    static std::string lower(std::string s)
+    {
+      for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      return s;
+    }
+
+    void add(const GlintCssQualifiedRule* rule, GlintCssOrigin origin)
+    {
+      const uint32_t idx = static_cast<uint32_t>(rules.size());
+      rules.push_back({ rule, origin });
+      auto push = [idx](std::vector<uint32_t>& bucket) {
+        if (bucket.empty() || bucket.back() != idx) bucket.push_back(idx);
+      };
+      for (const auto& complexSel : rule->selectorList.selectors)
+      {
+        if (complexSel.steps.empty()) { push(universal); continue; }
+        const auto& simples = complexSel.steps[0].compound.simples;
+        const GlintSimpleSelector* idSel = nullptr;
+        const GlintSimpleSelector* classSel = nullptr;
+        const GlintSimpleSelector* typeSel = nullptr;
+        for (const auto& ss : simples)
+        {
+          if      (ss.kind == GlintSimpleKind::ID    && !idSel)    idSel = &ss;
+          else if (ss.kind == GlintSimpleKind::CLASS && !classSel) classSel = &ss;
+          else if (ss.kind == GlintSimpleKind::TYPE  && !typeSel && ss.name != "*") typeSel = &ss;
+        }
+        if      (idSel)    push(byId[idSel->name]);
+        else if (classSel) push(byClass[classSel->name]);
+        else if (typeSel)  push(byTag[lower(typeSel->name)]);
+        else               push(universal);
+
+        // steps[k].combinator links compound k to compound k-1 (toward the
+        // subject): a sibling combinator there puts the subject under a
+        // following sibling of the element matching compound k.
+        for (size_t k = 1; k < complexSel.steps.size(); ++k)
+        {
+          const auto comb = complexSel.steps[k].combinator;
+          const bool siblings = comb == GlintCombinator::ADJACENT_SIBLING
+                             || comb == GlintCombinator::GENERAL_SIBLING;
+          addDependencies(complexSel.steps[k].compound, siblings, complexSel.steps[k].compound);
+        }
+      }
+    }
+  };
+
+  /** Lightweight match record: points into the stylesheet instead of copying. */
+  struct FastMatch
+  {
+    const GlintCssDeclaration* decl;
+    GlintCssSpecificity        specificity;
+    int                        weight;       // weightOf(), computed once
+    size_t                     sourceOrder;
+  };
+
+  /**
+   * Winning declarations for `element`, in the order they must be applied —
+   * identical to computeDeclarations() + inCascadeOrder() over the same rules
+   * (no inline declarations), without copying declarations. Disabled
+   * declarations are excluded, as in computeDeclarations().
+   */
+  static void computeWinnersIndexed(const GlintCssDomElement& element,
+                                    const std::string& tagLower,
+                                    const std::string& id,
+                                    const std::vector<std::string>& classes,
+                                    const RuleIndex& index,
+                                    std::vector<uint32_t>& candidateScratch,
+                                    std::vector<FastMatch>& matchScratch,
+                                    std::vector<const GlintCssDeclaration*>& out)
+  {
+    out.clear();
+    auto& cand = candidateScratch;
+    cand.clear();
+    auto addBucket = [&](const std::vector<uint32_t>* b) {
+      if (b) cand.insert(cand.end(), b->begin(), b->end());
+    };
+    auto find = [](const std::unordered_map<std::string, std::vector<uint32_t>>& m,
+                   const std::string& key) -> const std::vector<uint32_t>* {
+      const auto it = m.find(key);
+      return it == m.end() ? nullptr : &it->second;
+    };
+    if (!id.empty()) addBucket(find(index.byId, id));
+    for (const auto& c : classes) addBucket(find(index.byClass, c));
+    if (!tagLower.empty()) addBucket(find(index.byTag, tagLower));
+    addBucket(&index.universal);
+    std::sort(cand.begin(), cand.end());
+    cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
+
+    auto& matched = matchScratch;
+    matched.clear();
+    size_t sourceOrder = 0;
+    for (const uint32_t ri : cand)
+    {
+      const auto& entry = index.rules[ri];
+      GLINT_PERF_INC(rulesTested);
+      bool any = false;
+      GlintCssSpecificity spec{};
+      for (const auto& sel : entry.rule->selectorList.selectors)
+      {
+        if (!sel.matches(element)) continue;
+        const GlintCssSpecificity s = sel.specificity();
+        if (!any || spec < s) spec = s;
+        any = true;
+      }
+      if (!any) continue;
+      for (const auto& decl : entry.rule->declarations)
+        matched.push_back({ &decl, spec, weightOf(entry.origin, decl.important, false), sourceOrder++ });
+    }
+
+    std::sort(matched.begin(), matched.end(),
+      [](const FastMatch& a, const FastMatch& b)
+      {
+        if (a.weight != b.weight) return a.weight < b.weight;
+        if (a.specificity.value() != b.specificity.value())
+          return a.specificity.value() < b.specificity.value();
+        return a.sourceOrder < b.sourceOrder;
+      });
+
+    // Last non-disabled declaration per property wins; apply winners in rank order.
+    std::unordered_map<std::string_view, size_t> winner;
+    winner.reserve(matched.size());
+    for (size_t i = 0; i < matched.size(); ++i)
+    {
+      if (matched[i].decl->disabled) continue;
+      winner[matched[i].decl->property] = i;
+    }
+    std::vector<size_t> ranks;
+    ranks.reserve(winner.size());
+    for (const auto& kv : winner) ranks.push_back(kv.second);
+    std::sort(ranks.begin(), ranks.end());
+    out.reserve(ranks.size());
+    for (const size_t r : ranks) out.push_back(matched[r].decl);
+  }
+
 private:
   // ── Assign a numeric cascade weight for sorting ───────────────────────────
   // Higher = wins later (we sort ascending and take the last override).
   static int cascadeWeight(const GlintMatchedDeclaration& md)
   {
+    return weightOf(md.origin, md.decl.important, md.isInline);
+  }
+
+  static int weightOf(GlintCssOrigin origin, bool important, bool isInline)
+  {
     // Transitions win everything
-    if (md.origin == GlintCssOrigin::TRANSITION) return 100;
+    if (origin == GlintCssOrigin::TRANSITION) return 100;
 
     // !important user-agent is very high
-    if (md.decl.important && md.origin == GlintCssOrigin::USER_AGENT) return 80;
+    if (important && origin == GlintCssOrigin::USER_AGENT) return 80;
 
     // !important author
-    if (md.decl.important && (md.origin == GlintCssOrigin::AUTHOR   ||
-                               md.origin == GlintCssOrigin::USER))    return 70;
+    if (important && (origin == GlintCssOrigin::AUTHOR   ||
+                      origin == GlintCssOrigin::USER))    return 70;
 
     // Animations
-    if (md.origin == GlintCssOrigin::ANIMATION) return 60;
+    if (origin == GlintCssOrigin::ANIMATION) return 60;
 
     // Normal inline author
-    if (md.isInline && !md.decl.important) return 50;
+    if (isInline && !important) return 50;
 
     // Normal author / user
-    if (md.origin == GlintCssOrigin::AUTHOR) return 40;
-    if (md.origin == GlintCssOrigin::USER)   return 30;
+    if (origin == GlintCssOrigin::AUTHOR) return 40;
+    if (origin == GlintCssOrigin::USER)   return 30;
 
     // Normal user-agent
     return 10;
@@ -298,6 +490,7 @@ private:
 
     for (const auto* rule : rules)
     {
+      GLINT_PERF_INC(rulesTested);
       if (!rule->selectorList.matches(element)) continue;
       const GlintCssSpecificity spec = rule->selectorList.matchingSpecificity(element);
 

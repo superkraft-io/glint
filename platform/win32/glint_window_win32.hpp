@@ -71,6 +71,7 @@ protected:
   uint64_t mRedrawRequestCount = 0;
   uint64_t mTimerWakeCount = 0;
   double mPaintDrawMsTotal = 0.0;
+  glint_perf_counters mLastPerfSample;   // reflow phase totals at the last title update
   double mPaintPresentMsTotal = 0.0;
   double mRenderTransformDirectMsTotal = 0.0;
   double mRenderTransformOffscreenMsTotal = 0.0;
@@ -716,6 +717,7 @@ private:
       mLastRenderChildrenMsSample = mRenderChildrenMsTotal;
       mLastRenderMaskMsSample = mRenderMaskMsTotal;
       mLastRenderChildSubtreeMsSample = mRenderChildSubtreeMs;
+      mLastPerfSample = glint_perf();
       return;
     }
 
@@ -743,6 +745,14 @@ private:
     const double timerPerSecond = elapsedSeconds > 0.0 ? static_cast<double>(timerDelta) / elapsedSeconds : 0.0;
     const double avgDrawMs = paintDelta > 0 ? drawMsDelta / static_cast<double>(paintDelta) : 0.0;
     const double avgPresentMs = paintDelta > 0 ? presentMsDelta / static_cast<double>(paintDelta) : 0.0;
+    // Reflow breakdown of the "draw" time: style (cascade + merge/tick), layout, paint traversal.
+    const glint_perf_counters& perf = glint_perf();
+    const double perPaint = paintDelta > 0 ? 1.0 / static_cast<double>(paintDelta) : 0.0;
+    const double avgStyleMs  = ((perf.cascadeMs - mLastPerfSample.cascadeMs)
+                              + (perf.tickMs - mLastPerfSample.tickMs)) * perPaint;
+    const double avgLayoutMs = (perf.layoutMs - mLastPerfSample.layoutMs) * perPaint;
+    const double avgTravMs   = (perf.paintMs - mLastPerfSample.paintMs) * perPaint;
+    const unsigned long long layoutPasses = perf.layoutPasses - mLastPerfSample.layoutPasses;
     const std::string topRequesters = formatTopRedrawRequesters(
       mRedrawByType,
       mLastRedrawByTypeSample,
@@ -780,11 +790,15 @@ private:
     std::swprintf(
       title,
       sizeof(title) / sizeof(title[0]),
-      L"%ls | %.1f fps | %.2f ms | draw %.2f | present %.2f | phases %ls | subtrees %ls | paint/s %.1f | req/s %.1f | timer/s %.1f | top %ls | pending %d",
+      L"%ls | %.1f fps | %.2f ms | draw %.2f (style %.2f layout %.2f x%llu paint %.2f) | present %.2f | phases %ls | subtrees %ls | paint/s %.1f | req/s %.1f | timer/s %.1f | top %ls | pending %d",
       windowTitle(),
       static_cast<double>(mOwnRoot->getFPS()),
       static_cast<double>(mOwnRoot->getFrameTimeMs()),
       avgDrawMs,
+      avgStyleMs,
+      avgLayoutMs,
+      layoutPasses,
+      avgTravMs,
       avgPresentMs,
       topRenderPhasesWide,
       topChildSubtreesWide,
@@ -832,6 +846,7 @@ private:
     mLastRenderMaskMsSample = mRenderMaskMsTotal;
     mLastRenderChildSubtreeMsSample = mRenderChildSubtreeMs;
     mLastRedrawByTypeSample = mRedrawByType;
+    mLastPerfSample = perf;
   }
 
 protected:
@@ -1113,6 +1128,7 @@ private:
 
     double drawMs = 0.0;
     double presentMs = 0.0;
+    glint_element::setRenderTimingEnabled(telemetryEnabled());
     if (telemetryEnabled())
       glint_element::resetRenderTimingProfile();
 

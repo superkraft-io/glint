@@ -107,17 +107,48 @@
     float baseline = 0.f;
   };
 
+  // computedStyle = merged base + in-flight transition/@keyframes values;
+  // re-apply the latter so a refresh mid-animation doesn't snap to the target.
   static void _refreshLayoutStyle(glint_element* node)
   {
     if (!node) return;
+    GLINT_PERF_INC(refreshLayoutStyle);
+    if (!node->_isPlainElement()) _bumpLayoutPass();
+    // Nothing writes a plain node's style between this frame's tick and its
+    // layout unless a component ancestor's Layout() does: the tick result
+    // (merge + animation overrides) is final.
+    if (sIncrementalStyle && !sVerifyIncrementalStyle && node->_isPlainElement()
+        && !node->mUnderComponent && node->mTickFrame_ == sStyleFrame
+        && node->mComputedInputHash_ != 0)
+    {
+      GLINT_PERF_INC(styleSkips);
+      return;
+    }
+    // Incremental style: the tick (or an earlier refresh this pass) already
+    // merged these exact inputs.
+    const uint64_t inputHash = sIncrementalStyle ? node->_styleInputHash() : 0;
+    if (inputHash && node->_computedStyleIsCurrent(inputHash))
+    {
+      GLINT_PERF_INC(styleSkips);
+      node->_verifySkippedMerge();
+      return;
+    }
     node->computedStyle = node->mergedStyleForLayout();
+    node->_markSubtreeLayoutDirty();
+    if (node->_isAnimating())
+    {
+      node->_applyAnimationOverrides(node->computedStyle);
+      node->mComputedInputHash_ = 0;   // not a pure merge result
+    }
+    else
+    {
+      node->mComputedInputHash_ = inputHash;
+    }
   }
 
   static void _refreshLayoutStyle(const glint_element* node)
   {
-    if (!node) return;
-    auto* mutableNode = const_cast<glint_element*>(node);
-    mutableNode->computedStyle = mutableNode->mergedStyleForLayout();
+    _refreshLayoutStyle(const_cast<glint_element*>(node));
   }
 
   template <typename T>
@@ -281,6 +312,7 @@
 
   static float measureIntrinsicH(const glint_element& c, float refW, float refH)
   {
+    GLINT_PERF_INC(measureIntrinsicH);
     // Use computedStyle for padding+border — same source getContent() reads.
     const float padT = static_cast<float>(c.computedStyle.paddingTop);
     const float padB = static_cast<float>(c.computedStyle.paddingBottom);
@@ -547,6 +579,7 @@
   static float measureIntrinsicW(const glint_element& c, float refW, float refH,
                                  bool refWDefinite = true)
   {
+    GLINT_PERF_INC(measureIntrinsicW);
     // Use computedStyle for padding+border — same source getContent() reads.
     const float padL = static_cast<float>(c.computedStyle.paddingLeft);
     const float padR = static_cast<float>(c.computedStyle.paddingRight);
@@ -606,9 +639,176 @@
   //                           (measureIntrinsicH pass); per CSS spec §10.5
   //                           percentage heights resolve to 'auto' to avoid the
   //                           circular dependency that would inflate the parent.
-  static float childPrefH(const glint_element& c, float parentH, float parentW = 0.f,
-                           bool parentHDefinite = true)
+  // ── Incremental layout ───────────────────────────────────────────────────
+  // A child's Layout() is a function of the rect its parent assigns it and of
+  // its subtree's styles, text and children. When none of those changed since
+  // the child was last laid out, _layoutChild() skips the call: the subtree's
+  // rects, scroll extents and text lines are already correct.
+  //
+  // "Changed" is tracked by dirty marks: a real style merge (inputs changed),
+  // setDirty(), or a tree mutation marks the node and every ancestor; the mark
+  // is cleared once the node is laid out. Skipping is restricted to subtrees
+  // that are plain all the way down (component Layout() overrides may read
+  // other state, or rewrite child styles mid-layout), whose absolute
+  // descendants resolve against a containing block inside the subtree, and
+  // whose parent is plain too.
+  bool       mSubtreeLayoutDirty  = true;   // something in this subtree changed since its last layout
+  bool       mHasLaidOut          = false;
+  bool       mUnderComponent      = false;  // some ancestor is a component (refreshed at tick)
+  bool       mSubtreeHasComponent = false;  // ...a descendant is (scrollbars excepted)
+  bool       mSubtreeEscapingAbs  = false;  // ...an absolute descendant's CB is above this node
+  bool       mSubtreeHasFixed     = false;
+  uint32_t   mTickFrame_          = 0;      // sStyleFrame at this node's last tick
+  glint_rect mLastLayoutRect{};             // rects this node was last laid out with
+  glint_rect mLastLayoutPaintRect{};
+
+  static inline thread_local uint32_t sStyleFrame          = 1;   // bumped per document frame
+  static inline thread_local bool     sLayoutSkipsDisabled = false;
+
+  /** This node's layout inputs changed: it and all its ancestors relayout. */
+  void _markSubtreeLayoutDirty()
   {
+    for (glint_element* n = this; n; n = n->mParent)
+      n->mSubtreeLayoutDirty = true;
+  }
+
+  bool _isScrollbarPart(const glint_element* c) const
+  {
+    return c == mScrollbarV || c == mScrollbarH || c == mScrollCorner;
+  }
+
+  /** Refresh the subtree summary flags from the children (bottom-up, at tick). */
+  void _updateSubtreeLayoutFlags()
+  {
+    bool comp = false, esc = false, fixed = false;
+    const bool positioned = _isNonStaticPositioned();
+    for (const auto& c : mChildren)
+    {
+      if (_isScrollbarPart(c.get())) continue;   // positioned by _layoutScroll itself
+      comp  = comp || !c->_isPlainElement() || c->mSubtreeHasComponent;
+      const std::string& pos = c->computedStyle.position;
+      fixed = fixed || pos == "fixed" || c->mSubtreeHasFixed;
+      // An absolute child (or an escaping one deeper down) resolves against
+      // this node when it is positioned, else against something above it.
+      if (!positioned) esc = esc || pos == "absolute" || c->mSubtreeEscapingAbs;
+    }
+    mSubtreeHasComponent = comp;
+    mSubtreeEscapingAbs  = esc;
+    mSubtreeHasFixed     = fixed;
+  }
+
+  bool _canSkipChildLayout(const glint_element* child) const
+  {
+    return sIncrementalLayout && sIncrementalStyle && !sLayoutSkipsDisabled
+        && _isPlainElement() && !mUnderComponent
+        && child->mHasLaidOut && !child->mSubtreeLayoutDirty
+        && child->_isPlainElement()
+        && !child->mSubtreeHasComponent && !child->mSubtreeEscapingAbs && !child->mSubtreeHasFixed
+        && child->mRect.L == child->mLastLayoutRect.L && child->mRect.T == child->mLastLayoutRect.T
+        && child->mRect.R == child->mLastLayoutRect.R && child->mRect.B == child->mLastLayoutRect.B
+        && child->mPaintRECT.L == child->mLastLayoutPaintRect.L
+        && child->mPaintRECT.T == child->mLastLayoutPaintRect.T
+        && child->mPaintRECT.R == child->mLastLayoutPaintRect.R
+        && child->mPaintRECT.B == child->mLastLayoutPaintRect.B;
+  }
+
+  /** Lay out a child whose rect was just assigned — or skip it when nothing
+   *  that feeds its layout changed (see above). */
+  void _layoutChild(glint_element* child, glint_canvas* g)
+  {
+    if (_canSkipChildLayout(child))
+    {
+      GLINT_PERF_INC(layoutSkips);
+      return;
+    }
+    const glint_rect rect = child->mRect, paintRect = child->mPaintRECT;
+    child->Layout(g);
+    child->mLastLayoutRect      = rect;
+    child->mLastLayoutPaintRect = paintRect;
+    child->mHasLaidOut          = true;
+    child->mSubtreeLayoutDirty  = false;
+  }
+
+  // ── Intrinsic-size memo ──────────────────────────────────────────────────
+  // childPrefW / childPrefH recurse over the whole subtree and are called by
+  // every ancestor level, several times per child (O(n·depth) per pass). Within
+  // one layout pass their result depends only on styles and text, so each
+  // element memoizes its last few results, stamped with the pass id.
+  //
+  // Not memoized (marked volatile, propagated up the recursion): results that
+  // fell back to the element's previous rect, which changes when it is laid out.
+  // A new pass id starts at every root layout, every scroll-container probe
+  // (same children, different width), and before a component's style refresh
+  // (its Layout() may rewrite its children's styles mid-pass).
+  struct _MeasureMemoEntry
+  {
+    uint32_t pass = 0;          // 0 = empty
+    uint8_t  kind = 0;          // 1 = width, 2 = height
+    bool     definite = false;
+    float    a = 0.f, b = 0.f;  // width: parentW / height: parentH, parentW
+    float    result = 0.f;
+  };
+  static constexpr int kMeasureMemoSlots = 4;
+  mutable _MeasureMemoEntry mMeasureMemo[kMeasureMemoSlots];
+  mutable uint8_t           mMeasureMemoNext = 0;
+
+  static inline thread_local uint32_t sLayoutPassId    = 1;
+  static inline thread_local bool     sMeasureVolatile = false;
+
+  static void _bumpLayoutPass()
+  {
+    if (++sLayoutPassId == 0) sLayoutPassId = 1;
+  }
+
+  const float* _memoFind(uint8_t kind, float a, float b, bool definite) const
+  {
+    if (!sLayoutMemoEnabled) return nullptr;
+    for (const auto& e : mMeasureMemo)
+      if (e.pass == sLayoutPassId && e.kind == kind && e.definite == definite
+          && e.a == a && e.b == b)
+        return &e.result;
+    return nullptr;
+  }
+
+  void _memoStore(uint8_t kind, float a, float b, bool definite, float result) const
+  {
+    auto& e = mMeasureMemo[mMeasureMemoNext];
+    mMeasureMemoNext = static_cast<uint8_t>((mMeasureMemoNext + 1) % kMeasureMemoSlots);
+    e = { sLayoutPassId, kind, definite, a, b, result };
+  }
+
+  template <class Fn>
+  static float _memoized(const glint_element& c, uint8_t kind, float a, float b,
+                         bool definite, Fn&& compute)
+  {
+    if (const float* hit = c._memoFind(kind, a, b, definite)) return *hit;
+    const bool outerVolatile = sMeasureVolatile;
+    sMeasureVolatile = false;
+    const float r = compute();
+    const bool isVolatile = sMeasureVolatile;
+    if (!isVolatile && sLayoutMemoEnabled) c._memoStore(kind, a, b, definite, r);
+    sMeasureVolatile = outerVolatile || isVolatile;
+    return r;
+  }
+
+  static float childPrefH(const glint_element& c, float parentH, float parentW = 0.f,
+                          bool parentHDefinite = true)
+  {
+    return _memoized(c, 2, parentH, parentW, parentHDefinite,
+                     [&] { return _childPrefHImpl(c, parentH, parentW, parentHDefinite); });
+  }
+
+  static float childPrefW(const glint_element& c, float parentW,
+                          bool parentWDefinite = true)
+  {
+    return _memoized(c, 1, parentW, 0.f, parentWDefinite,
+                     [&] { return _childPrefWImpl(c, parentW, parentWDefinite); });
+  }
+
+  static float _childPrefHImpl(const glint_element& c, float parentH, float parentW,
+                               bool parentHDefinite)
+  {
+    GLINT_PERF_INC(childPrefH);
     float h;
     if (childHasExplicitH(c))
     {
@@ -677,9 +877,13 @@
           h = padT + brdT + pref + padB + brdB;
         }
         else
+        {
           // Stale fallback: use the tight paint rect, not the filter-inflated
           // visual rect, so filter spread never feeds back into intrinsic layout.
+          // It changes when `c` is laid out, so it must not be memoized.
           h = c.GetPaintRECT().H();
+          sMeasureVolatile = true;
+        }
       }
     }
     // Apply CSS min-height / max-height clamping (border-box sizing, matches Chrome).
@@ -755,9 +959,10 @@
   //   When padding >= declared width the box grows to exactly padL+padR.
   // Percentage sizes are also border-box (% already means "fraction of parent"):
   //   total = % resolved, content = total - padding (no extra expansion).
-  static float childPrefW(const glint_element& c, float parentW,
-                          bool parentWDefinite = true)
+  static float _childPrefWImpl(const glint_element& c, float parentW,
+                               bool parentWDefinite)
   {
+    GLINT_PERF_INC(childPrefW);
     float w;
     const auto& r = c.computedStyle.width.raw;
     if (!r.empty() && r != "fit-content" && r != "auto")
@@ -806,9 +1011,13 @@
           w = padL + brdL + pref + padR + brdR;
         }
         else
+        {
           // Stale fallback: use the tight paint rect, not the filter-inflated
           // visual rect, so filter spread never feeds back into intrinsic layout.
+          // It changes when `c` is laid out, so it must not be memoized.
           w = c.GetPaintRECT().W();
+          sMeasureVolatile = true;
+        }
       }
     }
     // Apply CSS min-width / max-width clamping (border-box sizing, matches Chrome).
@@ -1042,16 +1251,16 @@
       if (ci.node->computedStyle.position == "relative")
         _applyRelativeOffset(ci.node, cW, cH);
       cursor += mainSz + ci.m2 + (ci.m2Auto ? autoMarginSize : 0.f) + itemSpacing;
-      ci.node->Layout(g);
+      _layoutChild(ci.node, g);
     }
 
     // Absolute children — positioned against their CSS containing block
     // (nearest positioned ancestor, per CSS spec; falls back to direct parent).
     // Browser CSS rules: left wins over right; top wins over bottom.
     // Scrollbar children are excluded — _positionScrollbars() owns their rects.
+    // (Styles were refreshed by the first loop over all children.)
     for (auto& child : mChildren)
     {
-      _refreshLayoutStyle(child.get());
       if (child->computedStyle.position != "absolute") continue;
       if (child.get() == mScrollbarV || child.get() == mScrollbarH || child.get() == mScrollCorner) continue;
       const glint_rect cb  = _containingBlockContent(child.get());
@@ -1072,7 +1281,7 @@
         child->mRect = child->mPaintRECT = glint_rect(l, t, l + w, t + h);
       else
         child->mRect = child->mPaintRECT = _snapRect(l, t, l + w, t + h);
-      child->Layout(g);
+      _layoutChild(child.get(), g);
     }
   }
 
@@ -1155,12 +1364,14 @@
       if (word.empty()) return 0.f;
       SkFont font = skFont(sz);
       SkRect bounds;
+      GLINT_PERF_TEXT(word.size());
       return font.measureText(word.c_str(), word.size(), SkTextEncoding::kUTF8, &bounds);
     };
 
     auto skTextW = [&](const SkFont& font, const std::string& word) -> float {
       if (word.empty()) return 0.f;
       SkRect bounds;
+      GLINT_PERF_TEXT(word.size());
       return font.measureText(word.c_str(), word.size(), SkTextEncoding::kUTF8, &bounds);
     };
 
@@ -1186,6 +1397,7 @@
 
       SkRect inkBounds;
       const std::string probe = "Mg";
+      GLINT_PERF_TEXT(probe.size());
       font.measureText(probe.c_str(), probe.size(), SkTextEncoding::kUTF8, &inkBounds);
 
       _InlineFontMetrics fm;
@@ -1255,6 +1467,7 @@
                                  const _InlineFontMetrics& fm) -> _InlineInkMetrics {
       if (text.empty()) return {};
       SkRect bounds;
+      GLINT_PERF_TEXT(text.size());
       font.measureText(text.c_str(), text.size(), SkTextEncoding::kUTF8, &bounds);
       _InlineInkMetrics ink;
       ink.hasBounds = true;
@@ -1454,7 +1667,7 @@
           else
             item.node->mRect = item.node->mPaintRECT = _snapRect(l, paintT, l + item.w, paintT + paintH);
           if (item.node->computedStyle.position == "relative") _applyRelativeOffset(item.node, rW, rH);
-          item.node->Layout(g);
+          _layoutChild(item.node, g);
         }
       }
 
@@ -1486,7 +1699,7 @@
           _snapRect(rect.L, rect.T + cursorY, rect.L + rW, rect.T + cursorY + ch);
         if (child->computedStyle.position == "relative") _applyRelativeOffset(child, rW, rH);
         cursorY += ch;
-        child->Layout(g);
+        _layoutChild(child, g);
         continue;
       }
 
@@ -1621,10 +1834,12 @@
         }
 
         std::string line;
+        float lineAdv = 0.f;   // advance of `line` (sum of its tokens' advances)
         int lineByteStart = 0;
         int lineByteEnd = 0;
         bool lineStarted = false;
         const bool childSubpixel = _hasSubpixelIntent(*child, rW, rH);
+        const float spaceAdv = collapseWS ? skTextW(childFont, " ") : 0.f;
 
         auto emitFragment = [&]() {
           if (!lineStarted) return;
@@ -1651,6 +1866,7 @@
           cursorX += lineW;
           lineMaxH = std::max(lineMaxH, fm.lineHeight);
           line.clear();
+          lineAdv = 0.f;
           lineStarted = false;
         };
 
@@ -1664,28 +1880,32 @@
             continue;
           }
 
-          std::string probe;
-          if (collapseWS)
-          {
-            if (line.empty()) probe = tok.text;
-            else if (tok.isWord) probe = line + " " + tok.text;
-            else probe = line;
-          }
-          else
-          {
-            probe = line + tok.text;
-          }
+          // probe = line + (space) + token. Its advance comes from the running
+          // line advance: glyph advances add up, so this avoids re-measuring
+          // the whole line per word (O(words^2)). Near the wrap threshold the
+          // probe is measured exactly so wrap decisions match a full measure.
+          const bool appendsSpace = collapseWS && !line.empty() && tok.isWord;
+          const bool keepsLine    = collapseWS && !line.empty() && !tok.isWord;
+          const float tokAdv = keepsLine ? 0.f : skTextW(childFont, tok.text);
+          auto buildProbe = [&]() -> std::string {
+            if (line.empty()) return tok.text;
+            if (keepsLine)    return line;
+            return appendsSpace ? line + " " + tok.text : line + tok.text;
+          };
+          float probeW = line.empty() ? tokAdv
+                                      : lineAdv + (appendsSpace ? spaceAdv : 0.f) + tokAdv;
+          if (!line.empty() && std::fabs(cursorX + probeW - rW) < 0.05f)
+            probeW = skTextW(childFont, buildProbe());
 
-          float probeW = skTextW(childFont, probe);
           if (line.empty() && cursorX > 0.f && probeW > (rW - cursorX))
             flushLine();
 
-          probeW = skTextW(childFont, probe);
           if (!line.empty() && cursorX + probeW > rW)
           {
             emitFragment();
             flushLine();
             line = tok.text;
+            lineAdv = tokAdv;
             lineByteStart = tok.byteOff;
             lineByteEnd = tok.byteEnd;
             lineStarted = true;
@@ -1697,7 +1917,12 @@
               lineByteStart = tok.byteOff;
               lineStarted = true;
             }
-            line = std::move(probe);
+            if (!keepsLine)
+            {
+              if (appendsSpace) line += ' ';
+              line += tok.text;
+            }
+            lineAdv = probeW;
             lineByteEnd = tok.byteEnd;
           }
         }
@@ -1793,7 +2018,7 @@
       else
         child->mRect = child->mPaintRECT = _snapRect(bounds.l, bounds.t, bounds.r, bounds.b);
       if (child->computedStyle.position == "relative") _applyRelativeOffset(child, rW, rH);
-      child->Layout(g);
+      _layoutChild(child, g);
     }
 
     // Absolute-positioned children — positioned against their CSS containing block.
@@ -1815,7 +2040,7 @@
       else                                        t = cb.T;
       child->mRect = child->mPaintRECT =
         _snapRect(l, t, l + cw, t + ch);
-      child->Layout(g);
+      _layoutChild(child, g);
     }
   }
 
@@ -1857,7 +2082,7 @@
           else
             cell->mRect = cell->mPaintRECT = _snapRect(x, y, x + cellW, y + currentRowH);
           if (cell->computedStyle.position == "relative") _applyRelativeOffset(cell, rW, rH);
-          cell->Layout(g);
+          _layoutChild(cell, g);
           x += cellW;
         }
       };
@@ -1941,7 +2166,7 @@
       else if (!child->computedStyle.bottom.raw.empty()) t = cb.T + cbH - child->computedStyle.bottom.resolve(cbH) - ch;
       else                                               t = cb.T;
       child->mRect = child->mPaintRECT = _snapRect(l, t, l + cw, t + ch);
-      child->Layout(g);
+      _layoutChild(child, g);
     }
   }
 
@@ -1964,10 +2189,11 @@
       { layoutInline(g, rect, rW, rH); return; }
     }
 
+    // Every child's style was refreshed by the loop above (it only exits early
+    // into layoutInline).
     float cursorY = 0.f;
     for (auto& child : mChildren)
     {
-      _refreshLayoutStyle(child.get());
       if (child->computedStyle.display == "none") continue;
       const bool  isAbs = (child->computedStyle.position == "absolute");
       // Scrollbar children are excluded — _positionScrollbars() owns their rects.
@@ -2001,7 +2227,6 @@
       }
       else
       {
-        float w = std::max(0.f, childPrefW(*child, rW));
         const float h = std::max(0.f, childPrefH(*child, rH, rW));
         // Chrome block layout: block-level children with auto/unset width fill
         // the parent content width minus their own horizontal margins.
@@ -2017,10 +2242,15 @@
         const bool  isBlockChild = (cDisp != "inline" &&
                                     cDisp != "inline-block" &&
                                     cDisp != "inline-flex");
+        float w;
         if (isAutoW && isBlockChild)
         {
           const float mR = child->computedStyle.marginRight.resolve(rW);
           w = std::max(0.f, rW - mL - mR);
+        }
+        else
+        {
+          w = std::max(0.f, childPrefW(*child, rW));
         }
         // margin-left / margin-right: auto on a block child with a definite
         // width absorb the leftover space: both auto centers the box
@@ -2057,7 +2287,7 @@
         // Cursor advances by FLOW height — ignores any relative visual offset.
         cursorY = (flowT - rect.T) + h + mB;
       }
-      child->Layout(g);
+      _layoutChild(child.get(), g);
     }
   }
 
@@ -2083,7 +2313,7 @@
         glint_event se; se.type = "scroll"; se.bubbles = false; se.cancelable = false;
         dispatchDOMEvent(se);
         _refreshRootHoverFromPointer();
-        setDirty(false);
+        _onScrollOffsetChanged();
       },
       // scrollLeft getter
       [this]() -> float { return mScrollLeft; },
@@ -2097,7 +2327,7 @@
         glint_event se; se.type = "scroll"; se.bubbles = false; se.cancelable = false;
         dispatchDOMEvent(se);
         _refreshRootHoverFromPointer();
-        setDirty(false);
+        _onScrollOffsetChanged();
       }
     );
   }
@@ -2232,6 +2462,11 @@
     bool showSbarY = (computedStyle.overflowY == "scroll");
     bool showSbarX = (computedStyle.overflowX == "scroll");
 
+    // The last probe rect laid out (valid when the probe loop ran); the main
+    // pass below is skipped when it would repeat that exact layout.
+    glint_rect lastProbe;
+    bool       haveProbe = false;
+
     // ── "auto" overflow measurement — iterate to a stable X/Y decision ─────
     if (computedStyle.overflowY == "auto" || computedStyle.overflowX == "auto")
     {
@@ -2255,7 +2490,10 @@
         probe.R = std::max(probe.L, probe.R);
         probe.B = std::max(probe.T, probe.B);
 
+        _bumpLayoutPass();
         layoutForRect(probe);
+        lastProbe = probe;
+        haveProbe = true;
 
         float cW = 0.f, cH = 0.f;
         _measureContentExtent(probe, cW, cH);
@@ -2269,7 +2507,9 @@
     }
 
     // ── Create scrollbar children if they don't exist yet ────────────────────
+    const size_t childCountBefore = mChildren.size();
     _ensureScrollbars(showSbarX, showSbarY);
+    const bool scrollbarsCreated = mChildren.size() != childCountBefore;
 
     // ── Final content rect: getContent() minus reserved scrollbar strips ─────
     glint_rect contentR = getContent();
@@ -2279,12 +2519,21 @@
     contentR.B = std::max(contentR.T, contentR.B);
 
     // ── Main layout pass in the reduced content area ─────────────────────────
-    if (computedStyle.display == "flex")
-      layoutFlex(g, contentR, contentR.W(), contentR.H());
-    else if (_isTableDisplay(computedStyle.display))
-      layoutTable(g, contentR, contentR.W(), contentR.H());
-    else
-      layoutBlock(g, contentR, contentR.W(), contentR.H());
+    // Skipped when the last probe already laid out this exact rect and the
+    // child list is unchanged (the converged case): it would repeat that work.
+    const bool sameAsProbe = haveProbe && !scrollbarsCreated
+                          && lastProbe.L == contentR.L && lastProbe.T == contentR.T
+                          && lastProbe.R == contentR.R && lastProbe.B == contentR.B;
+    if (!sameAsProbe)
+    {
+      _bumpLayoutPass();
+      if (computedStyle.display == "flex")
+        layoutFlex(g, contentR, contentR.W(), contentR.H());
+      else if (_isTableDisplay(computedStyle.display))
+        layoutTable(g, contentR, contentR.W(), contentR.H());
+      else
+        layoutBlock(g, contentR, contentR.W(), contentR.H());
+    }
 
     // ── Measure final content extent ─────────────────────────────────────────
     float cW = 0.f, cH = 0.f;

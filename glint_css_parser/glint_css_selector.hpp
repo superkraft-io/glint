@@ -52,6 +52,14 @@ struct GlintCssDomElement
   // All class names (split on whitespace)
   virtual std::vector<std::string> classNames() const = 0;
 
+  // Class membership; adapters that can cache their class list override this
+  // (class selectors are the most frequently tested simple selectors).
+  virtual bool hasClass(const std::string& name) const
+  {
+    const auto cls = classNames();
+    return std::find(cls.begin(), cls.end(), name) != cls.end();
+  }
+
   // Attribute value; returns "" if not present, sets 'found' to false if absent
   virtual std::string attribute(const std::string& name, bool& found) const = 0;
 
@@ -317,10 +325,7 @@ inline bool GlintSimpleSelector::matches(const GlintCssDomElement& el) const
       return el.id() == name;
 
     case GlintSimpleKind::CLASS:
-    {
-      const auto cls = el.classNames();
-      return std::find(cls.begin(), cls.end(), name) != cls.end();
-    }
+      return el.hasClass(name);
 
     case GlintSimpleKind::ATTRIBUTE:
     {

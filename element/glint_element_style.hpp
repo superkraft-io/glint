@@ -30,6 +30,9 @@
    *  Using the merged base (not raw inline) means CSS-only property changes
    *  are detected, while in-flight lerp values never trigger false restarts. */
   glint_style                         mPrevStyle_;
+  /** False until the first tick: an element's initial style never
+   *  transitions (CSS Transitions §3 — no "before-change style" exists). */
+  bool                                mPrevStyleValid_ = false;
 
   /** Timing state for computing per-frame dt. */
   std::chrono::steady_clock::time_point mLastTransTick_;
@@ -60,11 +63,31 @@
    */
   void tickTransitions()
   {
+    // tickTransitionsAll() ticked this node earlier in the same frame: the
+    // draw-time tick must not advance it twice. A flag left over from an
+    // earlier frame (the node wasn't drawn — hidden or culled) is ignored, so
+    // undrawn nodes keep ticking.
     if (mSkipNextTick_)
     {
       mSkipNextTick_ = false;
+      if (mTickFrame_ == sStyleFrame) return;
+    }
+
+    mTickFrame_ = sStyleFrame;
+
+    // Incremental style: nothing the merge reads changed since the last tick
+    // merge, and computedStyle still holds that merge -> nothing to do (no
+    // transition can start, none is running).
+    const uint64_t inputHash = sIncrementalStyle ? _styleInputHash() : 0;
+    if (inputHash && inputHash == mTickInputHash_ && _computedStyleIsCurrent(inputHash))
+    {
+      GLINT_PERF_INC(styleSkips);
+      _verifySkippedMerge();
       return;
     }
+    mTickInputHash_     = inputHash;
+    mComputedInputHash_ = inputHash;   // computedStyle is (re)assigned from this merge below
+    _markSubtreeLayoutDirty();         // a merge may change anything layout reads
 
     // Resolve the active transition spec from the merged cascade:
     // inline style.transition wins when set; cssStyle_.transition is the fallback.
@@ -103,6 +126,7 @@
     {
       computedStyle = newMerged;
       mPrevStyle_ = newMerged;
+      mPrevStyleValid_ = true;
       mActiveTransitions_.clear();
       mActiveAnimations_.clear();
       mHasLastTick_ = false;
@@ -115,6 +139,7 @@
     {
       computedStyle = newMerged;
       mPrevStyle_   = newMerged;
+      mPrevStyleValid_ = true;
       return;
     }
 
@@ -131,6 +156,7 @@
     bool anyNewEntries = false;  // true when brand-new (not reversed) entries are added
     auto processTransKey = [&](const std::string& propKey, const glint_transition_spec& spec)
     {
+      if (!mPrevStyleValid_) return;
       const std::string oldVal = glint_style_get_by_name(mPrevStyle_,  propKey);
       const std::string newVal = glint_style_get_by_name(newMerged,    propKey);
       if (oldVal == newVal) return;
@@ -179,7 +205,7 @@
     }
 
     // ── Compute dt (ms since last tick, clamped to 100 ms to skip freeze jumps) ──
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = _animationNow();
     float dtMs = 16.f;
     if (mHasLastTick_)
     {
@@ -205,10 +231,18 @@
     // Must be newMerged (CSS+inline, no lerp overrides), NOT computedStyle (which
     // will be overwritten by the lerp below), and NOT raw style (which misses CSS).
     mPrevStyle_ = newMerged;
+    mPrevStyleValid_ = true;
     // ── Tick @keyframes animations (lower cascade than transitions) ─────────────
     // Animations apply first so that CSS transitions on the same property
     // can overwrite them, matching the CSS Cascade Level 5 origin order:
     //   animations (origin 3) < transitions (origin 4).
+    // Animation state before this frame advances it: the frame on which a
+    // transition / @keyframes run ends still has to be drawn (and laid out,
+    // for layout properties), so invalidation covers the entries present at
+    // the start of the frame as well as those still running at its end.
+    const bool animatingBefore = _isAnimating();
+    const bool paintOnlyBefore = !animatingBefore || _animationsArePaintOnly();
+
     tickAnimations_(dtMs, computedStyle);
     bool anyActive = false;
     for (auto& entry : mActiveTransitions_)
@@ -228,8 +262,111 @@
                      [](const glint_transition_entry& e) { return e.elapsedMs >= e.durationMs; }),
       mActiveTransitions_.end());
 
-    // ── Chain redraws while any animation is still in flight ─────────────────
-    if (anyActive) setDirty(false);
+    // ── Chain redraws while any animation is in flight or just ended ─────────
+    (void)anyActive;
+    if (animatingBefore || _isAnimating())
+    {
+      if (_isPlainElement() && paintOnlyBefore && _animationsArePaintOnly()) setPaintOnlyDirty();
+      else                                                                   setDirty(false);
+      // computedStyle carries animation values (even the final t=1 lerp is
+      // formatted differently from the merge): it isn't a pure merge result.
+      mComputedInputHash_ = 0;
+    }
+  }
+
+  /** Request the next animation frame: a repaint when every running
+   *  transition / @keyframes property is paint-only on a plain element,
+   *  otherwise a reflow (see glint_style_diff.hpp). */
+  void _invalidateForAnimationFrame()
+  {
+    if (_isPlainElement() && _animationsArePaintOnly()) setPaintOnlyDirty();
+    else                                                setDirty(false);
+  }
+
+  bool _isAnimating() const
+  {
+    return !mActiveTransitions_.empty() || !mActiveAnimations_.empty();
+  }
+
+  bool _animationsArePaintOnly() const
+  {
+    // Inline boxes use background alpha in layoutInline; transform none <->
+    // non-none switches subpixel snapping.
+    const bool inlineBox = computedStyle.display.compare(0, 6, "inline") == 0;
+    auto paintOnly = [&](const std::string& key, const std::string& from, const std::string& to) {
+      if (!glint_css_prop_is_paint_only(key)) return false;
+      if (inlineBox && glint_css_prop_is_background(key)) return false;
+      if (key == "transform" && (glint_css_value_is_none(from) || glint_css_value_is_none(to)))
+        return false;
+      return true;
+    };
+    for (const auto& e : mActiveTransitions_)
+      if (!paintOnly(e.key, e.fromVal, e.toVal)) return false;
+    if (!mActiveAnimations_.empty())
+    {
+      if (!mKeyframeRegistryPtr_) return false;
+      for (const auto& a : mActiveAnimations_)
+      {
+        const auto it = mKeyframeRegistryPtr_->find(a.spec.name);
+        if (it == mKeyframeRegistryPtr_->end()) continue;   // unknown name animates nothing
+        for (const auto& stop : it->second.stops)
+          for (const auto& [key, val] : stop.properties)
+            if (!paintOnly(key, val, val)) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Re-apply the running transition / @keyframes values to `target` at their
+   * current elapsed time, without advancing time or firing invalidation.
+   * computedStyle = merged base + these overrides; layout's style refresh uses
+   * this so it doesn't wipe in-flight animation values.
+   */
+  void _applyAnimationOverrides(glint_style& target) const
+  {
+    if (mKeyframeRegistryPtr_)
+    {
+      for (const auto& entry : mActiveAnimations_)
+      {
+        if (entry.finished && !entry.spec.fillForwards) continue;
+        if (entry.delayLeft > 0.f) continue;
+        glint_keyframe_apply(*mKeyframeRegistryPtr_, entry.spec.name,
+                             _animationT(entry), entry.spec.easing, target);
+      }
+    }
+    for (const auto& entry : mActiveTransitions_)
+    {
+      const float rawT   = entry.durationMs > 0.f ? (entry.elapsedMs / entry.durationMs) : 1.f;
+      const float easedT = glint_ease_eval(entry.easing, std::min(rawT, 1.f));
+      glint_style_lerp_by_name(target, entry.key, entry.fromVal, entry.toVal, easedT);
+    }
+  }
+
+  /** Normalised keyframe position of an animation entry at its current time. */
+  static float _animationT(const glint_animation_entry& entry)
+  {
+    const float durMs = entry.spec.durationMs > 0.f ? entry.spec.durationMs : 1.f;
+
+    // Iteration index & per-iteration local t.
+    const int   iterIdx   = (durMs > 0.f) ? static_cast<int>(entry.elapsedMs / durMs) : 0;
+    float       iterFrac  = std::fmod(entry.elapsedMs, durMs) / durMs;
+    // Snap to end of last iteration rather than wrapping to 0.
+    if (iterFrac == 0.f && entry.elapsedMs > 0.f) iterFrac = 1.f;
+
+    // Direction: alternate flips odd iterations; reverse flips all.
+    bool flip = entry.spec.reverse;
+    if (entry.spec.alternate && (iterIdx % 2 == 1)) flip = !flip;
+    float t = flip ? (1.f - iterFrac) : iterFrac;
+
+    // fill-mode: forwards → hold at end when finished.
+    if (entry.finished && entry.spec.fillForwards)
+    {
+      const bool lastIterOdd = (static_cast<int>(entry.spec.iterCount) % 2 == 1);
+      t = (entry.spec.alternate && !lastIterOdd) ? (entry.spec.reverse ? 1.f : 0.f)
+                                                 : (entry.spec.reverse ? 0.f : 1.f);
+    }
+    return t;
   }
   // ── @keyframes animation tick helper ────────────────────────────────────────
   /** Called from tickTransitions() to apply CSS animations on top of the
@@ -309,29 +446,9 @@
         entry.finished  = true;
       }
 
-      // ── Compute normalised t ───────────────────────────────────────────────────
-      // Iteration index & per-iteration local t.
-      const int   iterIdx   = (durMs > 0.f) ? static_cast<int>(entry.elapsedMs / durMs) : 0;
-      float       iterFrac  = std::fmod(entry.elapsedMs, durMs) / durMs;
-      // Snap to end of last iteration rather than wrapping to 0.
-      if (iterFrac == 0.f && entry.elapsedMs > 0.f) iterFrac = 1.f;
-
-      // Direction: alternate flips odd iterations; reverse flips all.
-      bool flip = entry.spec.reverse;
-      if (entry.spec.alternate && (iterIdx % 2 == 1)) flip = !flip;
-      float t = flip ? (1.f - iterFrac) : iterFrac;
-
-      // fill-mode: forwards → hold at end when finished.
-      if (entry.finished && entry.spec.fillForwards)
-      {
-        const bool lastIterOdd = (static_cast<int>(entry.spec.iterCount) % 2 == 1);
-        t = (entry.spec.alternate && !lastIterOdd) ? (entry.spec.reverse ? 1.f : 0.f)
-                                                   : (entry.spec.reverse ? 0.f : 1.f);
-      }
-
-      // ── Apply keyframe stops ──────────────────────────────────────────────────
+      // ── Apply keyframe stops at the normalised t ──────────────────────────────
       glint_keyframe_apply(*mKeyframeRegistryPtr_, entry.spec.name,
-                           t, entry.spec.easing, target);
+                           _animationT(entry), entry.spec.easing, target);
 
       if (!entry.finished) anyActiveAnim = true;
     }
@@ -343,7 +460,9 @@
             return e.finished && !e.spec.fillForwards; }),
       mActiveAnimations_.end());
 
-    if (anyActiveAnim) setDirty(false);
+    // Invalidation is requested by tickTransitions(), which also covers the
+    // frame on which the last animation ends.
+    (void)anyActiveAnim;
   }
   // ── CSS cascade layer ───────────────────────────────────────────────────────
 
@@ -351,6 +470,12 @@
    *  Never written by C++ UI code; that always goes to `style` (the inline layer). */
   glint_style cssStyle_;
   bool       mHasCssStyle_ = false;
+
+  /** Winning cascade declarations from the last _applyCssToElement()
+   *  (property -> value, "!important" appended), used to classify what a
+   *  re-cascade changed. Invalid until the first cascade. */
+  std::map<std::string, std::string> mCssDeclRecord_;
+  bool                               mCssDeclRecordValid_ = false;
 
   /** CSS property names (e.g. "background-color") whose winning cascade declaration
    *  carried !important.  Inline styles must not override these in _mergedStyle(). */
@@ -366,8 +491,164 @@
    * for each property, the INLINE value wins if it differs from the CSS-spec default.
    * This is called every frame from tickTransitions() in place of `computedStyle = style`.
    */
+  // ── Incremental style ──────────────────────────────────────────────────────
+  // _mergedStyle() is a pure function of: the inline fields it reads (below),
+  // the CSS layer (cssStyle_, mHasCssStyle_, mCssImportantProps_ — versioned by
+  // mCssLayerGen_), mInspectorRemoved, the parent's inherited computed fields,
+  // and the document's relative-unit bases. _styleInputHash() fingerprints
+  // exactly those inputs, so an unchanged fingerprint means a merge would
+  // reproduce the current result and can be skipped.
+  //
+  // KEEP IN SYNC with _mergedStyle(): every input it reads must be hashed here.
+  // sVerifyIncrementalStyle re-merges skipped elements and counts mismatches
+  // (glint_perf().styleVerifyFailures) to catch a missed input.
+
+  /** Bumped whenever the CSS layer or its !important set changes. */
+  uint32_t mCssLayerGen_ = 0;
+  /** Fingerprint of the inputs that produced the current computedStyle
+   *  (0 = unknown: recompute). Animation overrides are not part of it, so it
+   *  is only trusted while nothing animates. */
+  uint64_t mComputedInputHash_ = 0;
+  /** Fingerprint at the last tickTransitions() merge — transition change
+   *  detection compares against that merge, so the tick may only skip when
+   *  inputs are unchanged since then too. */
+  uint64_t mTickInputHash_ = 0;
+
+  // Word-at-a-time 64-bit hash (murmur3 finalizer per word): runs over ~110
+  // fields per element per frame, so it must stay cheap; 64 bits keep the
+  // chance that a real change goes unnoticed negligible.
+  struct _StyleHasher
+  {
+    uint64_t h = 0x243F6A8885A308D3ull;
+    void mix(uint64_t v)
+    {
+      v ^= v >> 33; v *= 0xFF51AFD7ED558CCDull;
+      v ^= v >> 33; v *= 0xC4CEB9FE1A85EC53ull;
+      v ^= v >> 33;
+      h ^= v;
+      h = (h << 27) | (h >> 37);
+      h = h * 5 + 0x52DCE729ull;
+    }
+    void f(float v)                  { uint32_t u; std::memcpy(&u, &v, sizeof u); mix(u); }
+    void i(int v)                    { mix(static_cast<uint32_t>(v)); }
+    void b(bool v)                   { mix(v ? 1u : 2u); }
+    void s(const std::string& v)
+    {
+      const size_t n = v.size();
+      mix(0x5354520000000000ull ^ n);   // length (tagged)
+      const char* p = v.data();
+      size_t k = 0;
+      for (; k + 8 <= n; k += 8) { uint64_t w; std::memcpy(&w, p + k, 8); mix(w); }
+      if (k < n) { uint64_t w = 0; std::memcpy(&w, p + k, n - k); mix(w); }
+    }
+    void c(const glint_color& v)
+    {
+      mix((static_cast<uint64_t>(static_cast<uint32_t>(v.A)) << 32) ^ static_cast<uint32_t>(v.R));
+      mix((static_cast<uint64_t>(static_cast<uint32_t>(v.G)) << 32) ^ static_cast<uint32_t>(v.B));
+    }
+    void c(const sk_color& v)        { c(v.value); }
+    void oc(const glint_optional_color& v) { b(v.isSet); c(v.value); }
+    void of(const glint_optional_float& v) { b(v.isSet); f(v.value); }
+    void l(const glint_length& v)    { s(v.raw); b(v.builderInjected); }
+    void side(const sk_side_proxy& v)
+    {
+      if (v._rawp) s(*v._rawp); else s(std::string());
+      f(static_cast<float>(v));
+    }
+  };
+
+  static void _hashMergeInputs(_StyleHasher& H, const glint_style& st)
+  {
+    H.c(st.color); H.c(st.backgroundColor); H.of(st.opacity);
+    H.i(static_cast<int>(st.backgroundGradient.size()));
+    for (const auto& gs : st.backgroundGradient) { H.f(gs.position); H.c(gs.color); }
+    H.s(st.backgroundGradientType); H.f(st.backgroundGradientAngle);
+    H.s(st.backgroundGradientDirection);
+    H.f(st.backgroundGradientCX); H.f(st.backgroundGradientCY); H.f(st.backgroundGradientRadius);
+    H.s(st.backgroundImage); H.s(st.backgroundSize); H.s(st.backgroundPosition); H.s(st.backgroundRepeat);
+    H.f(st.borderWidth._val);
+    H.l(st.borderTopWidth); H.l(st.borderRightWidth); H.l(st.borderBottomWidth); H.l(st.borderLeftWidth);
+    H.c(st.borderColor.value);
+    H.oc(st.borderTopColor); H.oc(st.borderRightColor); H.oc(st.borderBottomColor); H.oc(st.borderLeftColor);
+    H.s(st.borderStyle); H.s(st.borderTopStyle); H.s(st.borderRightStyle);
+    H.s(st.borderBottomStyle); H.s(st.borderLeftStyle);
+    H.l(st.borderRadius);
+    H.l(st.borderTopLeftRadius); H.l(st.borderTopRightRadius);
+    H.l(st.borderBottomRightRadius); H.l(st.borderBottomLeftRadius);
+    H.oc(st.strokeColor); H.s(st.strokeDasharray); H.f(st.strokeDashoffset);
+    H.s(st.strokeLinecap); H.s(st.strokeLinejoin);
+    H.f(st.strokeMiterlimit); H.of(st.strokeOpacity); H.f(st.strokeWidth);
+    H.b(st.boxShadow.isSet);
+    if (st.boxShadow.isSet) H.s(st.boxShadow.toString());
+    H.b(st.shadowEnabled); H.c(st.shadowColor);
+    H.f(st.shadowOffsetX); H.f(st.shadowOffsetY); H.f(st.shadowBlur);
+    H.f(st.shadowSpread); H.b(st.shadowInset);
+    H.l(st.fontSize); H.f(st.lineHeight); H.f(st.lineHeightPx);
+    H.s(st.fontFamily); H.s(st.fontStyle); H.of(st.fontWeight);
+    H.i(static_cast<int>(st.textAlign.value)); H.s(st.verticalAlign);
+    H.s(st.textDecoration); H.c(st.selectionColor);
+    H.side(st.paddingTop); H.side(st.paddingRight); H.side(st.paddingBottom); H.side(st.paddingLeft);
+    H.side(st.marginTop);  H.side(st.marginRight);  H.side(st.marginBottom);  H.side(st.marginLeft);
+    H.s(st.position);
+    H.l(st.top); H.l(st.left); H.l(st.right); H.l(st.bottom);
+    H.l(st.width); H.l(st.height);
+    H.l(st.minWidth); H.l(st.maxWidth); H.l(st.minHeight); H.l(st.maxHeight);
+    H.i(st.zIndex);
+    H.s(st.display); H.s(st.flexDirection); H.s(st.justifyContent);
+    H.s(st.alignItems); H.l(st.gap); H.f(st.flexGrow); H.f(st.flexShrink); H.l(st.flexBasis);
+    H.s(st.pointerEvents); H.s(st.cursor); H.s(st.userSelect); H.s(st.whiteSpace);
+    H.s(st.overflowX); H.s(st.overflowY);
+    H.f(st.scrollbarWidth);
+    H.c(st.scrollbarThumbColor); H.c(st.scrollbarTrackColor); H.c(st.scrollbarButtonColor);
+    H.s(st.objectFit); H.s(st.objectPosition);
+    H.s(st.transform); H.s(st.filter); H.s(st.backdropFilter);
+    H.s(st.mixBlendMode); H.s(st.backgroundBlendMode); H.s(st.isolation);
+    H.s(st.mask); H.s(st.maskMode); H.s(st.maskPosition); H.s(st.maskSize);
+    H.s(st.maskRepeat); H.s(st.maskOrigin); H.s(st.maskClip); H.s(st.maskComposite);
+    H.s(st.transition); H.s(st.animation);
+  }
+
+  uint64_t _styleInputHash() const
+  {
+    _StyleHasher H;
+    _hashMergeInputs(H, style);
+    H.s(innerText);   // not a merge input, but layout reads it (marks dirty on change)
+    H.i(static_cast<int>(mCssLayerGen_));
+    H.b(mHasCssStyle_);
+    H.b(mInspectorRemoved);
+    H.b(mParent != nullptr);
+    if (mParent)
+    {
+      // Inherited fields _mergedStyle() copies from the parent (plus the
+      // parent font-size, the em base for relative units).
+      const auto& p = mParent->computedStyle;
+      H.c(p.color); H.l(p.fontSize); H.f(p.lineHeight); H.f(p.lineHeightPx);
+      H.of(p.fontWeight); H.s(p.fontFamily); H.s(p.fontStyle);
+      H.i(static_cast<int>(p.textAlign.value)); H.s(p.whiteSpace); H.s(p.userSelect);
+    }
+    float rootFontPx = 0.f, viewportW = 0.f, viewportH = 0.f;
+    _relativeUnitBases(rootFontPx, viewportW, viewportH);
+    H.f(rootFontPx); H.f(viewportW); H.f(viewportH);
+    return H.h | 1ull;   // never 0 (0 = unknown)
+  }
+
+  /** True when computedStyle is known to equal a fresh merge (+ no animation). */
+  bool _computedStyleIsCurrent(uint64_t inputHash) const
+  {
+    return sIncrementalStyle && inputHash == mComputedInputHash_ && !_isAnimating();
+  }
+
+  /** Debug check for a skipped merge: the skipped result must equal a merge. */
+  void _verifySkippedMerge() const
+  {
+    if (!sVerifyIncrementalStyle) return;
+    if (glint_style_serialize(_mergedStyle()) != glint_style_serialize(computedStyle))
+      ++glint_perf().styleVerifyFailures;
+  }
+
   glint_style _mergedStyle() const
   {
+    GLINT_PERF_INC(mergedStyle);
     static const glint_style sD{};  // default-constructed — all CSS-spec baseline values
     glint_style r = mHasCssStyle_ ? cssStyle_ : glint_style{};
     // Start from the stylesheet layer when present, otherwise from the CSS

@@ -59,13 +59,33 @@ struct GlintCssDomAdapter : GlintCssDomElement
   // Space-separated class names split into a vector.
   std::vector<std::string> classNames() const override
   {
-    if (!el || el->className.empty()) return {};
-    std::vector<std::string> result;
-    std::istringstream ss(el->className);
-    std::string tok;
-    while (ss >> tok) result.push_back(tok);
-    return result;
+    return _classTokens();
   }
+
+  bool hasClass(const std::string& name) const override
+  {
+    const auto& cls = _classTokens();
+    return std::find(cls.begin(), cls.end(), name) != cls.end();
+  }
+
+  // Tokenized once per adapter (an adapter lives for one cascade call).
+  const std::vector<std::string>& _classTokens() const
+  {
+    if (!mClassTokensValid)
+    {
+      mClassTokensValid = true;
+      mClassTokens.clear();
+      if (el && !el->className.empty())
+      {
+        std::istringstream ss(el->className);
+        std::string tok;
+        while (ss >> tok) mClassTokens.push_back(tok);
+      }
+    }
+    return mClassTokens;
+  }
+  mutable std::vector<std::string> mClassTokens;
+  mutable bool                     mClassTokensValid = false;
 
   // Named attribute access.  Only "id" and "class" are wired for now.
   std::string attribute(const std::string& name, bool& found) const override
