@@ -1199,7 +1199,7 @@ inline void glint_component_style::glint_component_adder::spacer() {
 // the parent's layout engine handles child positioning and injecting a cursor
 // value into style.top would create a spurious inline override that beats CSS.
 template<typename StyleT, typename S>
-static bool sk_inject_cursor(StyleT& peek, S&& setup, float cursorY, bool skipCursor = false)
+inline bool sk_inject_cursor(StyleT& peek, S&& setup, float cursorY, bool skipCursor = false)
 {
   setup(peek);  // S is always a lambda � no operator bool, always callable
   const bool isAbs = (peek.style.position == "absolute");
@@ -1210,7 +1210,7 @@ static bool sk_inject_cursor(StyleT& peek, S&& setup, float cursorY, bool skipCu
   return isAbs;
 }
 
-static float sk_builder_flow_bottom_for_child(glint_element* owner, glint_element* child, float fallback)
+inline float sk_builder_flow_bottom_for_child(glint_element* owner, glint_element* child, float fallback)
 {
   if (!owner || !child) return fallback;
   if (child->computedStyle.display == "none" || child->computedStyle.position == "absolute")

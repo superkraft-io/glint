@@ -28,6 +28,7 @@
  *   });
  */
 
+#include "../../glint_document.hpp"   // uses mRoot (glint_document)
 #include "text/glint_text_editor_base.hpp"
 #include "date/glint_date_input_bridge.hpp"
 #include "datetime_local/glint_datetime_local_input_bridge.hpp"
@@ -2123,9 +2124,10 @@ private:
       auto* r           = new glint_radio();
       r->onChange = [this](bool v)
       {
-        checked = v;
+        checked = v;   // also when the group unchecks this radio
         if (onCheck)  onCheck(v);
-        if (onChange) onChange(this->value);
+        // Like HTML's change event: only the radio that became checked.
+        if (v && onChange) onChange(this->value);
       };
       addChild(r);
       applyAttachedUserAgentStyle(r);
@@ -2398,11 +2400,14 @@ private:
     }
     if (mRadio)
     {
-      mRadio->checked = checked;
+      // setChecked (not a plain field write) so the visuals follow; a stale
+      // `checked` also made the radio ignore clicks (_activate returns early).
+      if (mRadio->checked != checked) mRadio->setChecked(checked, /*fireCallback=*/false);
       mRadio->text    = text;
       mRadio->size    = checkSize;
       mRadio->value   = value;
       mRadio->group   = group;
+      mRadio->syncGroupMembership();
     }
   }
 };

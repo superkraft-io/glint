@@ -47,6 +47,7 @@
 #include "include/effects/SkImageFilters.h"
 #include "modules/svg/include/SkSVGDOM.h"
 #include "modules/svg/include/SkSVGRenderContext.h"
+#include "modules/svg/include/SkSVGSVG.h"
 
 #include <algorithm>
 #include <cmath>
@@ -777,12 +778,21 @@ inline sk_sp<SkImage> glint_rasterize_svg(const sk_sp<SkSVGDOM>& dom,
   SkCanvas* mc = surf->getCanvas();
   mc->clear(SK_ColorTRANSPARENT);
 
+  // The DOM is shared through the SVG cache (and across window threads), and
+  // the relative-size path below mutates it: serialize mutate + render.
+  static std::mutex sRasterizeMutex;
+  std::lock_guard<std::mutex> lock(sRasterizeMutex);
+
   // Apply a scale transform so the SVG's native coordinate space maps to W×H.
-  // For SVGs with absolute dimensions, containerSize() returns those dimensions
-  // and setContainerSize() has no effect — we must pre-scale the canvas instead.
-  const SkSize cs = dom->containerSize();
-  const float natW = cs.width();
-  const float natH = cs.height();
+  // Use the root's own intrinsic size (absolute width / height), not
+  // containerSize(): the fallback below changes the container size, after
+  // which containerSize() looked absolute and every later call scaled by the
+  // first caller's W/H.
+  SkSize natural = SkSize::Make(0.f, 0.f);
+  if (dom->getRoot())
+    natural = dom->getRoot()->intrinsicSize(SkSVGLengthContext(SkSize::Make(0.f, 0.f)));
+  const float natW = natural.width();
+  const float natH = natural.height();
   if (natW > 0.f && natH > 0.f)
   {
     mc->scale(static_cast<float>(W) / natW,
@@ -790,7 +800,7 @@ inline sk_sp<SkImage> glint_rasterize_svg(const sk_sp<SkSVGDOM>& dom,
   }
   else
   {
-    // Fallback for relative-size roots: tell the DOM the viewport size.
+    // Relative-size root: tell the DOM the viewport size (every call).
     dom->setContainerSize(SkSize::Make(static_cast<float>(W), static_cast<float>(H)));
   }
 
@@ -813,7 +823,9 @@ inline std::unordered_map<std::string, sk_sp<SkImage>>& glint_img_cache()
   static std::unordered_map<std::string, sk_sp<SkImage>> cache;
   return cache;
 }
-static std::mutex gGlintImgCacheMutex;
+// inline (one mutex for the program), not static: glint_img_cache() is one
+// shared map, and a static mutex gave every translation unit its own lock.
+inline std::mutex gGlintImgCacheMutex;
 
 /** Load (or retrieve from cache) an SkImage for the given path.
  *  If onRequest is non-null, it is fired before the disk lookup; if the

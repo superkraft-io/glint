@@ -29,6 +29,7 @@
  */
 
 #include "../glint_element.hpp"
+#include "../glint_document.hpp"   // uses mRoot (glint_document)
 #include "../default_style.hpp"
 #include "../render/glint_tree_node.hpp"
 

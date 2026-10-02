@@ -22,6 +22,7 @@
  */
 
 #include "input/text/glint_text_editor_base.hpp"
+#include "../glint_document.hpp"   // uses mRoot (glint_document)
 #include "glint_scrollbar/glint_scrollbar.hpp"
 #include "../default_style.hpp"
 
@@ -637,10 +638,10 @@ private:
     const float fs = _fontSize();
     const float lh = fs * lineHeight;
     const glint_rect content = getContent();
-    const float pT   = static_cast<float>(computedStyle.paddingTop);
-    // mScrollTop is in paint-rect space (includes padding), so subtract pT
-    // to get offset relative to the first line of text.
-    const float relY = y - content.T + mScrollTop - pT;
+    // content.T already includes padding-top, and lines are drawn at
+    // content.T + line * lh, so no further padding offset (subtracting it put
+    // clicks in the top padding-height of a line onto the previous line).
+    const float relY = y - content.T + mScrollTop;
     const int lineIdx = std::max(0, static_cast<int>(relY / lh));
     const auto lines = _splitLines();
     const int clampedLine = std::min(lineIdx, static_cast<int>(lines.size()) - 1);

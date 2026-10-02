@@ -70,6 +70,9 @@ inline sk_sp<SkSVGDOM> glint_load_svg_dom_cached(const std::string& key, const s
   }
 
   sk_sp<SkSVGDOM> dom = glint_make_svg_dom_from_data(data);
+  // Don't cache a failed load: the file may appear later, and a null entry
+  // was dereferenced by glint_load_svg_from_file_cached().
+  if (!dom) return dom;
 
   std::lock_guard<std::mutex> lock(glint_svg_cache_mutex());
   // Record the true intrinsic size NOW, before any DrawSVG call mutates
@@ -142,7 +145,7 @@ inline glint_graphics::glint_svg glint_load_svg_from_file_cached(const std::stri
     std::lock_guard<std::mutex> lock(glint_svg_cache_mutex());
     auto& cache = glint_svg_dom_cache();
     auto it = cache.find(path);
-    if (it != cache.end())
+    if (it != cache.end() && it->second.dom)
     {
       glint_graphics::glint_svg svg(it->second.dom);
       svg.setSize(it->second.originalSize.width() > 0.f

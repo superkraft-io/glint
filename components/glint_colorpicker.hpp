@@ -595,10 +595,18 @@ public:
         glint_element::Draw(g);
     }
 
+    // Every host renders through DrawToCanvas (not Draw), so sync here too:
+    // a `value` / `mode` assigned directly (e.g. in an add.colorpicker()
+    // callback) otherwise never reached the sliders and inputs.
+    void DrawToCanvas(SkCanvas* canvas) override
+    {
+        _syncFromPublicState();
+        glint_element::DrawToCanvas(canvas);
+    }
+
 private:
     // -- HSV + alpha state -----------------------------------------------------
     float mH = 0.f, mS = 1.f, mV = 1.f, mA = 1.f;
-    int   mFocusCount = 0;   // incremented on focus, decremented on blur
     bool  mSyncInitialized = false;
     glint_color mLastSyncedValue = glint_color(255, 255, 255, 255);
     ColorMode mLastSyncedMode = ColorMode::HEX;
@@ -902,9 +910,6 @@ private:
         inp->style.borderRadius    = 3.f;
         inp->style.color           = glint_color(255, 215, 215, 215);
         inp->style.fontSize        = 11.f;
-        // Track how many inputs are focused so syncInputs knows when to hold off.
-        inp->element.addEventListener("focus", [this](glint_event&) { ++mFocusCount; });
-        inp->element.addEventListener("blur",  [this](glint_event&) { --mFocusCount; });
         parent->addChild(inp);
         return inp;
     }
@@ -934,21 +939,26 @@ private:
 
     void _syncFromPublicState()
     {
+        bool changed = false;
         if (!mSyncInitialized || !_sameColor(mLastSyncedValue, value))
         {
             sk_cp_rgb_to_hsv(value.R, value.G, value.B, mH, mS, mV);
             mA = value.A / 255.f;
             _syncSliders();
             syncInputs(/*force=*/false);
+            changed = true;
         }
 
         if (!mSyncInitialized || mLastSyncedMode != mode)
         {
             _applyMode();
             syncInputs(/*force=*/false);
+            changed = true;
         }
 
         _captureSyncedState();
+        // Shown / hidden input rows and new text need a layout pass.
+        if (changed) setDirty(false);
     }
 
     // -- Sync slider visuals from current H/S/V/A ------------------------------
@@ -965,23 +975,29 @@ private:
     // -- Sync text inputs � skipped when user is actively typing (force=false) -
     void syncInputs(bool force)
     {
-        if (!force && mFocusCount > 0) return;
+        // Leave the field being typed in alone (unless forced): rewriting it
+        // reformatted partial input, e.g. "0." became "0", so alpha 0.5 could
+        // not be typed.  Focus lands on the input's inner text delegate, so
+        // check focus-within on the input itself.
+        auto put = [force](glint_input* inp, const std::string& text) {
+            if (inp && (force || !inp->mIsFocusWithin)) inp->setValue(text);
+        };
 
         // HEX
-        if (mHexInput) mHexInput->setValue(sk_cp_to_hex(value));
+        put(mHexInput, sk_cp_to_hex(value));
 
         // RGBA
         char buf[16];
-        if (mRGBAInputs[0]) { std::snprintf(buf, 16, "%d", value.R); mRGBAInputs[0]->setValue(buf); }
-        if (mRGBAInputs[1]) { std::snprintf(buf, 16, "%d", value.G); mRGBAInputs[1]->setValue(buf); }
-        if (mRGBAInputs[2]) { std::snprintf(buf, 16, "%d", value.B); mRGBAInputs[2]->setValue(buf); }
-        { float aV = value.A / 255.f; std::snprintf(buf, 16, (aV == 0.f || aV == 1.f) ? "%.0f" : "%.2f", aV); if (mRGBAInputs[3]) mRGBAInputs[3]->setValue(buf); }
+        std::snprintf(buf, 16, "%d", value.R); put(mRGBAInputs[0], buf);
+        std::snprintf(buf, 16, "%d", value.G); put(mRGBAInputs[1], buf);
+        std::snprintf(buf, 16, "%d", value.B); put(mRGBAInputs[2], buf);
+        { float aV = value.A / 255.f; std::snprintf(buf, 16, (aV == 0.f || aV == 1.f) ? "%.0f" : "%.2f", aV); put(mRGBAInputs[3], buf); }
 
         // HSV
-        if (mHSVInputs[0]) { std::snprintf(buf, 16, "%.0f", mH);          mHSVInputs[0]->setValue(buf); }
-        if (mHSVInputs[1]) { std::snprintf(buf, 16, "%.0f", mS * 100.f);  mHSVInputs[1]->setValue(buf); }
-        if (mHSVInputs[2]) { std::snprintf(buf, 16, "%.0f", mV * 100.f);  mHSVInputs[2]->setValue(buf); }
-        if (mHSVInputs[3]) { std::snprintf(buf, 16, (mA == 0.f || mA == 1.f) ? "%.0f" : "%.2f", mA); mHSVInputs[3]->setValue(buf); }
+        std::snprintf(buf, 16, "%.0f", mH);         put(mHSVInputs[0], buf);
+        std::snprintf(buf, 16, "%.0f", mS * 100.f); put(mHSVInputs[1], buf);
+        std::snprintf(buf, 16, "%.0f", mV * 100.f); put(mHSVInputs[2], buf);
+        std::snprintf(buf, 16, (mA == 0.f || mA == 1.f) ? "%.0f" : "%.2f", mA); put(mHSVInputs[3], buf);
     }
 
     // -- Sync everything from current H/S/V/A ----------------------------------

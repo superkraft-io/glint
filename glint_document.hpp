@@ -112,6 +112,11 @@ struct GlintMatchedCssCacheKeyHash
 
 class glint_document final
 {
+  // Set at the start of ~glint_document.  Declared before mCanvas so it
+  // outlives it: the canvas is destroyed after every other member, and its
+  // elements' destructors still call _onComponentDestroyed().
+  bool mDestroying = false;
+
 public:
   // ── Canvas ─────────────────────────────────────────────────────────────────
   // All top-level scene-graph nodes are children of the canvas.  The canvas
@@ -163,6 +168,7 @@ public:
 
   ~glint_document()
   {
+    mDestroying = true;   // see _onComponentDestroyed()
     // Expire first, before any member is torn down (see documentLifeToken()).
     mDocLife.reset();
     // After this returns no other thread can be inside a wake into our host.
@@ -1221,6 +1227,10 @@ public:
    *  back to `node` is guaranteed to touch only live memory. */
   void _onComponentDestroyed(glint_element* node)
   {
+    // During document teardown the canvas outlives the other members (maps,
+    // task queue...): there is nothing left to update, and touching them would
+    // be a use-after-free.
+    if (mDestroying) return;
     // Returns true if `ancestor` is `elem` itself or any node in elem's mParent chain.
     // All pointers in the chain are alive when called (see safety note above).
     auto hasAncestor = [](glint_element* elem, glint_element* ancestor) noexcept {
@@ -1263,6 +1273,10 @@ public:
     }
     if (mLastClickNode     && hasAncestor(mLastClickNode,     node)) mLastClickNode     = nullptr;
     if (mActiveGestureNode && hasAncestor(mActiveGestureNode, node)) mActiveGestureNode = nullptr;
+    // RegisterTag() keeps raw pointers: drop this node's entries, or
+    // GetNodeWithTag() hands out a freed element.
+    for (auto it = mTagMap.begin(); it != mTagMap.end(); )
+      it = (it->second == node) ? mTagMap.erase(it) : std::next(it);
     if (mGlobalAnchor.comp == node) { mGlobalAnchor = {}; mGlobalSelActive = false; }
     if (mGlobalFocus.comp  == node) { mGlobalFocus  = {}; mGlobalSelActive = false; }
 

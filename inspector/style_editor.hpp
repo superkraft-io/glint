@@ -747,7 +747,7 @@ static const glint_style_info& glint_default_style_info()
 }
 
 // Returns true if `key` has a non-default value in `info`.
-static bool glint_prop_is_set(const std::string& key, const glint_style_info& info)
+inline bool glint_prop_is_set(const std::string& key, const glint_style_info& info)
 {
   const auto& def = glint_default_style_info();
   auto it  = info.find(key);
@@ -757,7 +757,7 @@ static bool glint_prop_is_set(const std::string& key, const glint_style_info& in
   return it->second != dit->second;
 }
 
-static bool glint_side_is_authored(const sk_side_proxy& side)
+inline bool glint_side_is_authored(const sk_side_proxy& side)
 {
   return side._rawp && !side._rawp->empty();
 }
@@ -812,7 +812,7 @@ static bool glint_style_clear_inline_by_name(glint_style& s, const std::string& 
 }
 
 // Returns a sensible non-default starter value for a property being added.
-static std::string glint_add_default(const std::string& key)
+inline std::string glint_add_default(const std::string& key)
 {
   // Color fields
   if (key=="color" || key=="background-color" || key=="border-color" ||

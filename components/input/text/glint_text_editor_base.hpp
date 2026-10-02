@@ -634,14 +634,18 @@ protected:
   bool deleteSelection(bool enforceMinLength = true)
   {
     if (mSelStart == -1) return false;
-    const int lo = std::min(mSelStart, mSelEnd);
-    const int hi = std::max(mSelStart, mSelEnd);
+    const int n  = static_cast<int>(mText.size());
+    const int lo = std::max(0, std::min(std::min(mSelStart, mSelEnd), n));
+    const int hi = std::max(0, std::min(std::max(mSelStart, mSelEnd), n));
     const int selectionLength = codepointCount(mText, lo, hi);
     if (enforceMinLength && !canDeleteCodepoints(selectionLength)) return false;
     mText.erase(static_cast<size_t>(lo), static_cast<size_t>(hi - lo));
     mCursorPos = lo;
     mSelStart = mSelEnd = -1;
     onTextChanged();
+    // Scroll the caret back into view (after select-all + Backspace on long,
+    // scrolled text it stayed off-screen until the next cursor move).
+    onCursorMoved();
     if (onChange) onChange(mText);
     setDirty(false);
     return true;

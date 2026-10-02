@@ -45,7 +45,11 @@ struct glint_radio_group
 
   std::vector<class glint_radio*> members;
 
-  void register_member(glint_radio* r)   { members.push_back(r); }
+  void register_member(glint_radio* r)
+  {
+    if (std::find(members.begin(), members.end(), r) == members.end())
+      members.push_back(r);
+  }
   void unregister_member(glint_radio* r)
   {
     members.erase(std::remove(members.begin(), members.end(), r), members.end());
@@ -113,7 +117,24 @@ public:
 
   ~glint_radio()
   {
-    if (group) group->unregister_member(this);
+    if (auto registered = mRegisteredGroup.lock()) registered->unregister_member(this);
+  }
+
+  /** Join `group` (or move to it after `group` was reassigned) so the group
+   *  can check / uncheck this radio.  Nothing registered members before, so
+   *  clicking a grouped radio checked nothing.  Runs before layout and on
+   *  click; call it after assigning `group` to use the group right away. */
+  void syncGroupMembership()
+  {
+    auto registered = mRegisteredGroup.lock();
+    if (registered == group) return;
+    if (registered) registered->unregister_member(this);
+    if (group)
+    {
+      group->register_member(this);
+      if (checked && group->selected.empty()) group->selected = value;
+    }
+    mRegisteredGroup = group;
   }
 
   void setSize(float s)
@@ -144,6 +165,7 @@ public:
 
   void Layout(glint_canvas* g) override
   {
+    syncGroupMembership();
     _sync();
     glint_element::Layout(g);
   }
@@ -166,6 +188,7 @@ private:
   glint_element* mLabel = nullptr;
 
   bool _needsSync = true;
+  std::weak_ptr<glint_radio_group> mRegisteredGroup;   // group this radio is a member of
 
   // Runs once before first layout to apply values set via direct field assignment
   // (e.g. radio.size = 20.f) during the fromClass config lambda.
@@ -188,6 +211,7 @@ private:
 
   void _activate()
   {
+    syncGroupMembership();
     if (checked) return;   // already selected
 
     if (group)
@@ -208,8 +232,10 @@ inline void glint_radio_group::select(const std::string& value)
   for (glint_radio* r : members)
   {
     const bool shouldBe = (r->value == value);
+    // Notify each radio whose state changes, so wrappers (glint_input
+    // type=radio) can mirror it.
     if (r->checked != shouldBe)
-      r->setChecked(shouldBe, false);
+      r->setChecked(shouldBe, /*fireCallback=*/true);
   }
   if (onChange) onChange(value);
 }

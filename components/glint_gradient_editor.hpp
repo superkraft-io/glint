@@ -29,6 +29,8 @@
 #include "../default_style.hpp"
 #include "../glint_document.hpp"       // needed for mRoot->hwnd (screen-space conversion)
 #include "../platform/glint_apple_platform.hpp"
+#include "input/glint_input.hpp"     // glint_input (angle / radius fields)
+#include "glint_colorpicker.hpp"      // sk_cp_draw_checkerboard
 #include "glint_colorpicker_window.hpp"   // standalone popup color picker window
 #include "glint_dial.hpp"          // glint_dial — circular angle dial
 
@@ -453,6 +455,15 @@ public:
         glint_element::Draw(g);
     }
 
+    // Hosts render through DrawToCanvas (not Draw): sync public state here too,
+    // or stops / gradientType / radius set after construction never reached
+    // the controls.
+    void DrawToCanvas(SkCanvas* canvas) override
+    {
+        _syncFromPublicState();
+        glint_element::DrawToCanvas(canvas);
+    }
+
     // ── drawContent ──────────────────────────────────────────────────────────
     void drawContent(glint_canvas& g) override
     {
@@ -554,10 +565,12 @@ private:
 
             _syncTypeControls();
 
-            if (mFloatingPicker && mSelectedStop >= 0 && mSelectedStop < static_cast<int>(stops.size()))
-                _showOrUpdateFloatingPicker();
+            // No floating-picker refresh here: the picker's own edits change
+            // `stops`, and reopening it on every change would close it under
+            // the user's pointer.  Stop selection opens / updates it.
 
             _captureSyncedState();
+            setDirty(false);   // controls may have been shown / hidden
         }
     }
 

@@ -23,7 +23,8 @@
  * The tooltip element is added as the last child so it paints on top.
  */
 
-#include "../glint_element.hpp"
+#include "../glint_document.hpp"   // uses mRoot (glint_document)
+#include <memory>
 #include <string>
 
 class glint_tooltip : public glint_element
@@ -41,13 +42,12 @@ public:
     // It is added lazily to mRoot->mCanvas (the body) on the first Layout so
     // it sits at the top of the paint tree and z-index: 1000 actually works
     // across the whole document.
-    mPopup = new glint_element();
-    mPopup->className = "glint_tooltip_popup";
-    mPopup->innerText = text;
+    mPopup = _makePopup();
 
     element.addEventListener("mouseenter", [this](glint_event&) {
       if (text.empty()) return;
       _ensurePopupInBody();
+      if (!mPopupInBody) return;
       mPopup->innerText = text;
       mPopup->className = "glint_tooltip_popup glint_tooltip_popup--visible";
       _positionPopup();
@@ -63,6 +63,23 @@ public:
     });
   }
 
+  // The popup lives in the body, not under this element, once attached: it
+  // must go with us, or every rebuilt page leaves popups behind (and one that
+  // was showing stays on screen).
+  ~glint_tooltip() override
+  {
+    if (!mPopupInBody) { delete mPopup; return; }   // never attached: still ours
+    // Already destroyed with the body, or the document is being torn down (it
+    // destroys the body and the popup with it).
+    if (mPopupLife.expired() || mDocLife.expired()) return;
+    // Remove it next frame rather than here: this destructor may run while the
+    // body's own child list is being cleared, which must not be modified (or
+    // re-styled) underneath it.
+    mRoot->taskQueue()->post([popup = mPopup, life = mPopupLife] {
+      if (!life.expired() && popup->mParent) popup->mParent->removeChild(popup);
+    });
+  }
+
   const char* typeName() const override { return "tooltip-wrapper"; }
 
   void Layout(glint_canvas* g) override
@@ -74,12 +91,21 @@ public:
   }
 
 private:
-  glint_element* mPopup      = nullptr;
-  bool           mPopupInBody = false;
+  glint_element*      mPopup       = nullptr;
+  bool                mPopupInBody = false;
+  std::weak_ptr<void> mPopupLife;   // the popup, once the body owns it
+  std::weak_ptr<void> mDocLife;     // the document it was attached to
+
+  static glint_element* _makePopup()
+  {
+    auto* popup = new glint_element();
+    popup->className = "glint_tooltip_popup";
+    return popup;
+  }
 
   void _hidePopup()
   {
-    if (!mPopupInBody || !mPopup) return;
+    if (!mPopupInBody || !mPopup || mPopupLife.expired()) return;
     mPopup->className = "glint_tooltip_popup";
     setDirty(false);
   }
@@ -88,9 +114,17 @@ private:
   // After this, body owns the popup and it paints above all normal content.
   void _ensurePopupInBody()
   {
+    // The body was cleared (destroying the popup) while we live on: start over.
+    if (mPopupInBody && mPopupLife.expired())
+    {
+      mPopup       = _makePopup();
+      mPopupInBody = false;
+    }
     if (mPopupInBody || !mRoot) return;
     mRoot->mCanvas.addChild(mPopup);
     mPopupInBody = true;
+    mPopupLife   = mPopup->lifeToken();
+    mDocLife     = mRoot->documentLifeToken();
   }
 
   // Position the popup in body-absolute coordinates.
@@ -98,7 +132,7 @@ private:
   // match the element's visible screen-space position inside scrolled parents.
   void _positionPopup()
   {
-    if (!mPopup || !mPopupInBody) return;
+    if (!mPopup || !mPopupInBody || mPopupLife.expired()) return;
 
     const float popW  = mPopup->mRect.W() > 0.f ? mPopup->mRect.W() : 100.f;
     const float selfW = mRect.W();

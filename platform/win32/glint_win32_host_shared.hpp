@@ -432,7 +432,7 @@ static HCURSOR glint_make_cursor32(DrawFn draw, int hotX, int hotY)
 
 // Circle outline — midpoint (Bresenham) algorithm
 template<typename S>
-static void glint_cur_ring(S s, int cx, int cy, int r)
+inline void glint_cur_ring(S s, int cx, int cy, int r)
 {
   int x = r, y = 0, d = 1 - r;
   while (y <= x) {
@@ -446,7 +446,7 @@ static void glint_cur_ring(S s, int cx, int cy, int r)
 
 // Standard NW-pointing filled-triangle arrow, tip at (tx, ty), ~15 px tall
 template<typename S>
-static void glint_cur_arrow(S s, int tx, int ty)
+inline void glint_cur_arrow(S s, int tx, int ty)
 {
   for (int r = 0; r <= 14; ++r)
     for (int c = 0; c <= r; ++c)
