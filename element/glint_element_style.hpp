@@ -29,7 +29,7 @@
    *  against _mergedStyle() to detect target value changes across frames.
    *  Using the merged base (not raw inline) means CSS-only property changes
    *  are detected, while in-flight lerp values never trigger false restarts. */
-  glint_style                         mPrevStyle_;
+  glint_lazy_style                    mPrevStyle_;
   /** False until the first tick: an element's initial style never
    *  transitions (CSS Transitions §3 — no "before-change style" exists). */
   bool                                mPrevStyleValid_ = false;
@@ -90,11 +90,11 @@
     _markSubtreeLayoutDirty();         // a merge may change anything layout reads
 
     // Resolve the active transition spec from the merged cascade:
-    // inline style.transition wins when set; cssStyle_.transition is the fallback.
+    // inline style.transition wins when set; cssStyle_().transition is the fallback.
     // This matches Chrome: a stylesheet `transition: opacity 300ms` drives animations
     // even when no JS/C++ code sets style.transition inline.
     const std::string& mergedTransition = !style.transition.empty()
-                                          ? style.transition : cssStyle_.transition;
+                                          ? style.transition : cssStyle_().transition;
 
     // Re-parse spec list when the merged transition string changes.
     if (mergedTransition != mLastTransStr_)
@@ -115,7 +115,7 @@
     // Resolve the merged animation string early so we can check whether there
     // are any animations before deciding whether to take the fast path.
     const std::string& mergedAnim = !style.animation.empty()
-                                    ? style.animation : cssStyle_.animation;
+                                    ? style.animation : cssStyle_().animation;
     const bool hasAnimSpecs = !mergedAnim.empty() && mergedAnim != "none";
     const bool hasActiveAnims = !mActiveAnimations_.empty();
 
@@ -125,7 +125,7 @@
     if (newMerged.display == "none")
     {
       computedStyle = newMerged;
-      mPrevStyle_ = newMerged;
+      mPrevStyle_.reset();   // computedStyle now holds the merge (see _prevMerged())
       mPrevStyleValid_ = true;
       mActiveTransitions_.clear();
       mActiveAnimations_.clear();
@@ -138,7 +138,7 @@
         && !hasAnimSpecs && !hasActiveAnims)
     {
       computedStyle = newMerged;
-      mPrevStyle_   = newMerged;
+      mPrevStyle_.reset();   // computedStyle now holds the merge (see _prevMerged())
       mPrevStyleValid_ = true;
       return;
     }
@@ -157,7 +157,7 @@
     auto processTransKey = [&](const std::string& propKey, const glint_transition_spec& spec)
     {
       if (!mPrevStyleValid_) return;
-      const std::string oldVal = glint_style_get_by_name(mPrevStyle_,  propKey);
+      const std::string oldVal = glint_style_get_by_name(_prevMerged(), propKey);
       const std::string newVal = glint_style_get_by_name(newMerged,    propKey);
       if (oldVal == newVal) return;
 
@@ -379,7 +379,7 @@
 
     // Resolve animation property from merged cascade (inline > CSS).
     const std::string& mergedAnim = !style.animation.empty()
-                                    ? style.animation : cssStyle_.animation;
+                                    ? style.animation : cssStyle_().animation;
 
     // Re-parse spec list when the merged animation string changes.
     if (mergedAnim != mLastAnimStr_)
@@ -468,8 +468,14 @@
 
   /** Author stylesheet cascade result — set by glint_document::_applyCssToElement().
    *  Never written by C++ UI code; that always goes to `style` (the inline layer). */
-  glint_style cssStyle_;
+  std::shared_ptr<const glint_style> mCssLayer_;   // shared by elements with identical results
   bool       mHasCssStyle_ = false;
+
+  const glint_style& cssStyle_() const
+  {
+    static const glint_style sDefault{};
+    return mCssLayer_ ? *mCssLayer_ : sDefault;
+  }
 
   /** Winning cascade declarations from the last _applyCssToElement()
    *  (property -> value, "!important" appended), used to classify what a
@@ -481,10 +487,10 @@
    *  carried !important.  Inline styles must not override these in _mergedStyle(). */
   std::unordered_set<std::string> mCssImportantProps_;
 
-  /** Snapshot of cssStyle_ taken when no pseudo-class states (:hover/:active/etc.) are
+  /** Snapshot of cssStyle_() taken when no pseudo-class states (:hover/:active/etc.) are
   *  active.  Used to compute the CSS delta applied on top of inline styles during hover.
   *  Kept in sync during subtree finalization and by _drawImpl() when the element is not hovered. */
-  glint_style mCssStyleBase;
+  glint_lazy_style mCssStyleBase;   // allocated by users (glint_button, legacy Draw path)
 
   /**
    * Merge cssStyle_ (author stylesheets) and style (inline) following Chrome rules:
@@ -493,7 +499,7 @@
    */
   // ── Incremental style ──────────────────────────────────────────────────────
   // _mergedStyle() is a pure function of: the inline fields it reads (below),
-  // the CSS layer (cssStyle_, mHasCssStyle_, mCssImportantProps_ — versioned by
+  // the CSS layer (cssStyle_(), mHasCssStyle_, mCssImportantProps_ — versioned by
   // mCssLayerGen_), mInspectorRemoved, the parent's inherited computed fields,
   // and the document's relative-unit bases. _styleInputHash() fingerprints
   // exactly those inputs, so an unchanged fingerprint means a merge would
@@ -502,6 +508,14 @@
   // KEEP IN SYNC with _mergedStyle(): every input it reads must be hashed here.
   // sVerifyIncrementalStyle re-merges skipped elements and counts mismatches
   // (glint_perf().styleVerifyFailures) to catch a missed input.
+
+  /** The merged base (CSS + inline, no animation values) of the last tick.
+   *  Only stored while transitions / animations run; otherwise computedStyle
+   *  holds exactly that merge. */
+  const glint_style& _prevMerged() const
+  {
+    return mPrevStyle_.allocated() ? static_cast<const glint_style&>(mPrevStyle_) : computedStyle;
+  }
 
   /** Bumped whenever the CSS layer or its !important set changes. */
   uint32_t mCssLayerGen_ = 0;
@@ -650,7 +664,7 @@
   {
     GLINT_PERF_INC(mergedStyle);
     static const glint_style sD{};  // default-constructed — all CSS-spec baseline values
-    glint_style r = mHasCssStyle_ ? cssStyle_ : glint_style{};
+    glint_style r = mHasCssStyle_ ? cssStyle_() : glint_style{};
     // Start from the stylesheet layer when present, otherwise from the CSS
     // initial values so inherited properties can still be resolved below.
 
@@ -662,7 +676,7 @@
 #define _IW_F(f)   if (style.f != sD.f)                                    r.f = style.f
 #define _IW_S(f)   if (style.f != sD.f)                                    r.f = style.f
 #define _IW_C(f)   if (!ceq(style.f.value, sD.f.value))                    r.f = style.f
-#define _IW_L(f)   if (style.f.raw != sD.f.raw && !(style.f.builderInjected && !cssStyle_.f.raw.empty()))  r.f = style.f.raw
+#define _IW_L(f)   if (style.f.raw != sD.f.raw && !(style.f.builderInjected && !cssStyle_().f.raw.empty()))  r.f = style.f.raw
 #define _IW_OC(f)  if (style.f.isSet)                                       r.f = style.f
     // glint_optional_float: isSet flag tracks whether user code explicitly set this
     // property inline. Value-comparison is NOT used — matches Chrome's cascade where
@@ -755,9 +769,9 @@
     // context (absolute/relative/fixed/sticky). In that case the auto-cursor is
     // irrelevant and must not fight CSS-driven bottom/right placement — Chrome parity.
     {
-      const bool _cssPositioned = !cssStyle_.position.empty() && cssStyle_.position != "static";
-      if (style.top.raw  != sD.top.raw  && !(style.top.builderInjected  && (!cssStyle_.top.raw.empty()  || _cssPositioned)))  r.top  = style.top;
-      if (style.left.raw != sD.left.raw && !(style.left.builderInjected && (!cssStyle_.left.raw.empty() || _cssPositioned)))  r.left = style.left;
+      const bool _cssPositioned = !cssStyle_().position.empty() && cssStyle_().position != "static";
+      if (style.top.raw  != sD.top.raw  && !(style.top.builderInjected  && (!cssStyle_().top.raw.empty()  || _cssPositioned)))  r.top  = style.top;
+      if (style.left.raw != sD.left.raw && !(style.left.builderInjected && (!cssStyle_().left.raw.empty() || _cssPositioned)))  r.left = style.left;
     }
     _IW_L(right);  _IW_L(bottom);
     _IW_L(width);  _IW_L(height);
@@ -788,7 +802,7 @@
     {
       for (const auto& prop : mCssImportantProps_)
       {
-        const std::string cssVal = glint_style_get_by_name(cssStyle_, prop);
+        const std::string cssVal = glint_style_get_by_name(cssStyle_(), prop);
         glint_style_lerp_by_name(r, prop, cssVal, cssVal, 1.0f);
       }
     }
@@ -814,21 +828,21 @@
       const auto& p = mParent->computedStyle;
 
       const bool hasInlineColor = !ceq(style.color.value, sD.color.value);
-      const bool hasCssColor    = mHasCssStyle_ && !ceq(cssStyle_.color.value, sD.color.value);
+      const bool hasCssColor    = mHasCssStyle_ && !ceq(cssStyle_().color.value, sD.color.value);
       if (!hasInlineColor && !hasCssColor)
         r.color = p.color;
 
 
       const bool hasInlineFontSize = (style.fontSize.raw != sD.fontSize.raw);
-      const bool hasCssFontSize    = mHasCssStyle_ && (cssStyle_.fontSize.raw != sD.fontSize.raw);
+      const bool hasCssFontSize    = mHasCssStyle_ && (cssStyle_().fontSize.raw != sD.fontSize.raw);
       if (!hasInlineFontSize && !hasCssFontSize)
         r.fontSize = p.fontSize;
 
       const bool hasInlineLineHeight = style.lineHeight != sD.lineHeight
                                     || style.lineHeightPx != sD.lineHeightPx;
       const bool hasCssLineHeight    = mHasCssStyle_
-                                    && (cssStyle_.lineHeight != sD.lineHeight
-                                        || cssStyle_.lineHeightPx != sD.lineHeightPx);
+                                    && (cssStyle_().lineHeight != sD.lineHeight
+                                        || cssStyle_().lineHeightPx != sD.lineHeightPx);
       if (!hasInlineLineHeight && !hasCssLineHeight)
       {
         r.lineHeight   = p.lineHeight;
@@ -836,32 +850,32 @@
       }
 
       const bool hasInlineFontWeight = style.fontWeight.isSet;
-      const bool hasCssFontWeight    = mHasCssStyle_ && cssStyle_.fontWeight.isSet;
+      const bool hasCssFontWeight    = mHasCssStyle_ && cssStyle_().fontWeight.isSet;
       if (!hasInlineFontWeight && !hasCssFontWeight)
         r.fontWeight = p.fontWeight;
 
       const bool hasInlineFontFamily = !style.fontFamily.empty();
-      const bool hasCssFontFamily    = mHasCssStyle_ && !cssStyle_.fontFamily.empty();
+      const bool hasCssFontFamily    = mHasCssStyle_ && !cssStyle_().fontFamily.empty();
       if (!hasInlineFontFamily && !hasCssFontFamily)
         r.fontFamily = p.fontFamily;
 
       const bool hasInlineFontStyle = !style.fontStyle.empty();
-      const bool hasCssFontStyle    = mHasCssStyle_ && !cssStyle_.fontStyle.empty();
+      const bool hasCssFontStyle    = mHasCssStyle_ && !cssStyle_().fontStyle.empty();
       if (!hasInlineFontStyle && !hasCssFontStyle)
         r.fontStyle = p.fontStyle;
 
       const bool hasInlineTextAlign = (style.textAlign != sD.textAlign);
-      const bool hasCssTextAlign    = mHasCssStyle_ && (cssStyle_.textAlign != sD.textAlign);
+      const bool hasCssTextAlign    = mHasCssStyle_ && (cssStyle_().textAlign != sD.textAlign);
       if (!hasInlineTextAlign && !hasCssTextAlign)
         r.textAlign = p.textAlign;
 
       const bool hasInlineWhiteSpace = (style.whiteSpace != sD.whiteSpace);
-      const bool hasCssWhiteSpace    = mHasCssStyle_ && (cssStyle_.whiteSpace != sD.whiteSpace);
+      const bool hasCssWhiteSpace    = mHasCssStyle_ && (cssStyle_().whiteSpace != sD.whiteSpace);
       if (!hasInlineWhiteSpace && !hasCssWhiteSpace)
         r.whiteSpace = p.whiteSpace;
 
       const bool hasInlineUserSelect = (style.userSelect != sD.userSelect);
-      const bool hasCssUserSelect    = mHasCssStyle_ && (cssStyle_.userSelect != sD.userSelect);
+      const bool hasCssUserSelect    = mHasCssStyle_ && (cssStyle_().userSelect != sD.userSelect);
       if (!hasInlineUserSelect && !hasCssUserSelect)
         r.userSelect = p.userSelect;
     }
@@ -872,7 +886,7 @@
       // default that previously came from glint_style's hard-coded white, now
       // that the default was changed to transparent to make the cascade correct.
       const bool hasInlineColor = !ceq(style.color.value, sD.color.value);
-      const bool hasCssColor    = mHasCssStyle_ && !ceq(cssStyle_.color.value, sD.color.value);
+      const bool hasCssColor    = mHasCssStyle_ && !ceq(cssStyle_().color.value, sD.color.value);
       if (!hasInlineColor && !hasCssColor)
         r.color = glint_color(255, 255, 255, 255);
     }

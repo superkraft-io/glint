@@ -71,11 +71,11 @@ public:
   void OnMouseOut() override
   {
     // Update the CSS baseline only when NOT in :active state.  If the element
-    // is currently active (user is dragging out while pressed), cssStyle_ still
+    // is currently active (user is dragging out while pressed), cssStyle_() still
     // contains the :active rules and would produce a wrong "no-pseudo" snapshot.
     // The baseline was already correctly set during the last idle Draw() frame.
     if (!mIsActive)
-      mCssStyleBase = cssStyle_;
+      mCssStyleBase = cssStyle_();
     mIsHovered = mIsPressed = false;
     _startStateTransition();
     setDirty(false);
@@ -104,10 +104,10 @@ public:
     computedStyle = _mergedStyle();           // freshen CSS cascade (incl. :hover rules)
     if (computedStyle.display == "none") return;
     // Keep the non-pseudo CSS baseline in sync every frame we are not hovering/pressing,
-    // so the next hover delta reads the correct pre-hover cssStyle_ values.
+    // so the next hover delta reads the correct pre-hover cssStyle_() values.
     if (!mIsHovered && !mIsPressed)
     {
-      mCssStyleBase = cssStyle_;
+      mCssStyleBase = cssStyle_();
       if (mStateTransitions.empty())
         mStateComputedStyle = computedStyle;
     }
@@ -274,7 +274,7 @@ protected:
       static const glint_style sDefaultStyle{};
       for (const auto& key : glint_animatable_keys())
       {
-        const std::string cssNow  = glint_style_get_by_name(cssStyle_,     key);
+        const std::string cssNow  = glint_style_get_by_name(cssStyle_(),     key);
         const std::string cssBase = glint_style_get_by_name(mCssStyleBase, key);
         if (cssNow != cssBase)
         {
@@ -381,7 +381,7 @@ protected:
     computedStyle = _mergedStyle();           // freshen CSS cascade (incl. :hover rules)
     if (computedStyle.display == "none") return;
     if (!mIsHovered && !mIsPressed)
-      mCssStyleBase = cssStyle_;
+      mCssStyleBase = cssStyle_();
     if (_tickStateTransitions()) setDirty(false);
 
     const glint_style& active = mStateComputedStyle;

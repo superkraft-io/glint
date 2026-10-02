@@ -41,12 +41,48 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdlib>
+#include <new>
 #include <cstdio>
 #include <cstring>
 #include <functional>
 #include <string>
 #include <vector>
+
+namespace
+{
+
+// ── Heap accounting ────────────────────────────────────────────────────────────
+// Every plain operator new/delete in the process goes through these, so the
+// bench can report how much heap a page holds (Skia's own malloc-based
+// allocations are not included). Each block carries its size in a header.
+std::atomic<int64_t> gHeapLive{ 0 };
+
+} // namespace
+
+void* operator new(std::size_t n)
+{
+  constexpr std::size_t kHeader = alignof(std::max_align_t);
+  auto* p = static_cast<unsigned char*>(std::malloc(n + kHeader));
+  if (!p) throw std::bad_alloc();
+  *reinterpret_cast<std::size_t*>(p) = n;
+  gHeapLive.fetch_add(static_cast<int64_t>(n), std::memory_order_relaxed);
+  return p + kHeader;
+}
+void operator delete(void* ptr) noexcept
+{
+  if (!ptr) return;
+  constexpr std::size_t kHeader = alignof(std::max_align_t);
+  auto* p = static_cast<unsigned char*>(ptr) - kHeader;
+  gHeapLive.fetch_sub(static_cast<int64_t>(*reinterpret_cast<std::size_t*>(p)), std::memory_order_relaxed);
+  std::free(p);
+}
+void operator delete(void* ptr, std::size_t) noexcept { operator delete(ptr); }
+void* operator new[](std::size_t n) { return operator new(n); }
+void operator delete[](void* ptr) noexcept { operator delete(ptr); }
+void operator delete[](void* ptr, std::size_t) noexcept { operator delete(ptr); }
 
 namespace
 {
@@ -457,6 +493,7 @@ struct Result
   size_t nodes = 0;
   double buildMs = 0.0;        // tree build + CSS cascade
   double firstFrameMs = 0.0;   // first full frame (style + layout + paint)
+  int64_t heapBytes = 0;       // live heap held by the page after its first frame
   PhaseSamples s;
   glint_perf_counters perFrame; // counters averaged per measured frame (integers rounded down)
   size_t layoutFrames = 0;
@@ -542,6 +579,7 @@ Result runScenario(const Scenario& sc, const Options& opt)
   };
 
   const uint64_t cascadeFailsBefore = glint_perf().cascadeVerifyFailures;
+  const int64_t heapBefore = gHeapLive.load();
   const auto t0 = std::chrono::steady_clock::now();
   doc.loadStylesheet("bench://scenario.css");
   sc.build(&doc.mCanvas);
@@ -551,6 +589,7 @@ Result runScenario(const Scenario& sc, const Options& opt)
   res.buildMs      = std::chrono::duration<double, std::milli>(t1 - t0).count();
   res.firstFrameMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
   res.nodes = countNodes(&doc.mCanvas);
+  res.heapBytes = gHeapLive.load() - heapBefore;
 
   Ctx ctx{ doc };
   if (sc.setup) sc.setup(ctx);
@@ -710,9 +749,11 @@ void printTable(const std::vector<Result>& results, const Options& opt)
 {
   std::printf("glint_bench: %d frames per scenario%s, %s (times in ms, median / p95)\n\n",
               opt.frames, opt.noPaint ? ", no paint" : "", opt.gpu ? "GPU" : "CPU raster");
-  std::printf("%-18s %6s %8s %8s | %-13s %-13s %-13s %-13s %-13s %-13s | %s\n",
-              "scenario", "nodes", "build", "first", "cascade", "tick", "layout", "paint",
-              "gpu", "frame", "layouts");
+  std::printf("sizeof(glint_element) = %zu, sizeof(glint_style) = %zu bytes\n\n",
+              sizeof(glint_element), sizeof(glint_style));
+  std::printf("%-18s %6s %8s %8s %9s %7s | %-13s %-13s %-13s %-13s %-13s %-13s | %s\n",
+              "scenario", "nodes", "build", "first", "heap KB", "B/node", "cascade", "tick",
+              "layout", "paint", "gpu", "frame", "layouts");
   for (const auto& r : results)
   {
     auto cell = [](const std::vector<double>& v) {
@@ -720,8 +761,10 @@ void printTable(const std::vector<Result>& results, const Options& opt)
       std::snprintf(b, sizeof(b), "%6.3f/%-6.3f", median(v), p95(v));
       return std::string(b);
     };
-    std::printf("%-18s %6zu %8.2f %8.2f | %s %s %s %s %s %s | %zu/%zu\n",
+    std::printf("%-18s %6zu %8.2f %8.2f %9.0f %7.0f | %s %s %s %s %s %s | %zu/%zu\n",
                 r.name.c_str(), r.nodes, r.buildMs, r.firstFrameMs,
+                static_cast<double>(r.heapBytes) / 1024.0,
+                static_cast<double>(r.heapBytes) / static_cast<double>(std::max<size_t>(1, r.nodes - 1)),
                 cell(r.s.cascade).c_str(), cell(r.s.tick).c_str(), cell(r.s.layout).c_str(),
                 cell(r.s.paint).c_str(), cell(r.s.gpu).c_str(), cell(r.s.total).c_str(),
                 r.layoutFrames, r.s.total.size());
@@ -758,8 +801,9 @@ void printJson(const std::vector<Result>& results, const Options& opt)
     auto ph = [](const char* k, const std::vector<double>& v) {
       std::printf("\"%s\":{\"median\":%.4f,\"p95\":%.4f}", k, median(v), p95(v));
     };
-    std::printf("%s{\"name\":\"%s\",\"nodes\":%zu,\"buildMs\":%.4f,\"firstFrameMs\":%.4f,",
-                i ? "," : "", r.name.c_str(), r.nodes, r.buildMs, r.firstFrameMs);
+    std::printf("%s{\"name\":\"%s\",\"nodes\":%zu,\"buildMs\":%.4f,\"firstFrameMs\":%.4f,\"heapBytes\":%lld,",
+                i ? "," : "", r.name.c_str(), r.nodes, r.buildMs, r.firstFrameMs,
+                static_cast<long long>(r.heapBytes));
     ph("cascade", r.s.cascade); std::printf(",");
     ph("tick", r.s.tick);       std::printf(",");
     ph("layout", r.s.layout);   std::printf(",");

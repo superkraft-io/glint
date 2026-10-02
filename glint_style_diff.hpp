@@ -19,9 +19,52 @@
  *   - filter: inflates the paint rect (EnsureFilterPad) during layout.
  */
 
+#include "glint_style.hpp"
+
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_set>
+
+/**
+ * A glint_style that is only allocated once something assigns it (a
+ * glint_style is ~4 KB; most elements never need their optional copies).
+ * Reading an unassigned one yields a default-constructed style; callers that
+ * need a different fallback check allocated().
+ */
+class glint_lazy_style
+{
+public:
+  glint_lazy_style() = default;
+  glint_lazy_style(const glint_lazy_style& o)
+    : mStyle(o.mStyle ? std::make_unique<glint_style>(*o.mStyle) : nullptr) {}
+  glint_lazy_style& operator=(const glint_lazy_style& o)
+  {
+    if (this != &o)
+    {
+      if (o.mStyle) *this = *o.mStyle;
+      else          mStyle.reset();
+    }
+    return *this;
+  }
+  glint_lazy_style& operator=(const glint_style& s)
+  {
+    if (mStyle) *mStyle = s;
+    else        mStyle = std::make_unique<glint_style>(s);
+    return *this;
+  }
+
+  /** Update the copy only if one exists (keeps unused copies unallocated). */
+  void assignIfAllocated(const glint_style& s) { if (mStyle) *mStyle = s; }
+  bool allocated() const { return mStyle != nullptr; }
+  void reset() { mStyle.reset(); }
+
+  operator const glint_style&() const { return mStyle ? *mStyle : _default(); }  // NOLINT
+
+private:
+  static const glint_style& _default() { static const glint_style s{}; return s; }
+  std::unique_ptr<glint_style> mStyle;
+};
 
 enum glint_restyle_flags : uint8_t
 {

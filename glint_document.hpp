@@ -373,7 +373,7 @@ public:
   /**
    * Mutate a single declaration in a loaded stylesheet and re-cascade the element.
    * Called by the inspector when the user edits a value inside a CSS rule block.
-   * Writes go to the stylesheet AST (and through cssStyle_ layer), never to el->style.
+   * Writes go to the stylesheet AST (and through cssStyle_() layer), never to el->style.
    */
   void updateCssDeclaration(const std::string& sourceUrl,
                              uint32_t           sourceLine,
@@ -1182,6 +1182,13 @@ public:
   std::vector<uint32_t>                    mCascadeCandScratch;
   std::vector<GlintCssCascade::FastMatch>  mCascadeMatchScratch;
   std::vector<const GlintCssDeclaration*>  mCascadeWinners;
+  // Winning-declaration list (pointer bytes) -> shared CSS layer.
+  struct _CssLayerEntry
+  {
+    std::shared_ptr<const glint_style> layer;
+    bool                               hasCss = false;
+  };
+  std::unordered_map<std::string, _CssLayerEntry> mCssLayerCache;
   /** Use the indexed cascade (same results; off = reference path). */
   static inline bool sCascadeIndexEnabled = true;
   /** Also run the reference cascade and count mismatches in
@@ -1924,7 +1931,7 @@ public:
 
     if (mMouseDownNode)
     {
-      // Clear :active before any events fire so cssStyle_ is current when
+      // Clear :active before any events fire so cssStyle_() is current when
       // event handlers (e.g. glint_button::OnMouseUp → _startStateTransition) run.
       // Clear on the element AND all ancestors (mirrors the set in OnMouseDown).
       for (glint_element* n = mMouseDownNode; n; n = n->mParent)
@@ -2127,7 +2134,7 @@ public:
 
       // ── Pass 1: update pseudo-class flags + re-cascade CSS ────────────────
       // Must happen before any events fire so that OnMouseOver() / OnMouseOut()
-      // overrides (e.g. glint_button::_startStateTransition) read current cssStyle_.
+      // overrides (e.g. glint_button::_startStateTransition) read current cssStyle_().
 
       // restyleFlags / restyled feed the final invalidation: a color-only
       // :hover rule repaints without a reflow (see _invalidateAfterRestyle).
@@ -2470,7 +2477,7 @@ public:
   std::string getCursorAtPoint(float x, float y) const
   {
     const glint_element* hit = hitTest(x, y);
-    // Read the two always-live layers (inline `style` and CSS `cssStyle_`) instead
+    // Read the two always-live layers (inline `style` and CSS `cssStyle_()`) instead
     // of `computedStyle`, which is only refreshed inside Draw() — asynchronously
     // after requestRedraw() — and is therefore stale at the point this function
     // is called from _handleMouseMove (right after OnMouseOver / _applyCssToElement).
@@ -2480,8 +2487,8 @@ public:
       if (!e->style.cursor.empty() && e->style.cursor != "auto")
         return e->style.cursor;
       // CSS cascade layer — written synchronously by _applyCssToElement.
-      if (!e->cssStyle_.cursor.empty() && e->cssStyle_.cursor != "auto")
-        return e->cssStyle_.cursor;
+      if (!e->cssStyle_().cursor.empty() && e->cssStyle_().cursor != "auto")
+        return e->cssStyle_().cursor;
     }
     // If any element on the hovered branch disables selection, suppress the
     // automatic text-cursor fallback for plain text descendants in that branch.
@@ -2489,7 +2496,7 @@ public:
     for (const glint_element* e = hit; e; e = e->mParent)
     {
       const std::string& us = e->style.userSelect.empty()
-                              ? e->cssStyle_.userSelect : e->style.userSelect;
+                              ? e->cssStyle_().userSelect : e->style.userSelect;
       if (us == "none")
       {
         selectionBlocked = true;
@@ -2509,7 +2516,7 @@ public:
       if (selectionBlocked) continue;
       // Skip elements that have opted out of text selection.
       const std::string& us = e->style.userSelect.empty()
-                              ? e->cssStyle_.userSelect : e->style.userSelect;
+                              ? e->cssStyle_().userSelect : e->style.userSelect;
       if (us == "none") continue;
       // For any other element with innerText: I-beam only when the point is
       // inside a rendered line's ink bounding box.
@@ -2528,7 +2535,7 @@ public:
   }
 
 private:
-  // Apply the CSS cascade to the dedicated cssStyle_ layer on the element.
+  // Apply the CSS cascade to the dedicated cssStyle_() layer on the element.
   // el->style (inline) is never touched — the merge happens per-frame in
   // glint_element::_mergedStyle(), which factors both layers into computedStyle.
   // When mInspDisabledDecls is set (inspector active), winning declarations
@@ -2579,13 +2586,28 @@ private:
                                              mCascadeCandScratch, mCascadeMatchScratch, mCascadeWinners);
       if (sVerifyCascadeIndex) _verifyIndexedCascade(adapter, sheets, uaSheets);
       el->mCssImportantProps_.clear();
-      glint_style cssStyle;
       for (const auto* d : mCascadeWinners)
-      {
-        GlintCssApply::applyOne(d->property, d->value, cssStyle);
         if (d->important) el->mCssImportantProps_.insert(d->property);
+      // The CSS layer is a pure function of the winning declarations: elements
+      // with the same winners (e.g. 2000 identical rows) share one layer.
+      const std::string key(reinterpret_cast<const char*>(mCascadeWinners.data()),
+                            mCascadeWinners.size() * sizeof(const GlintCssDeclaration*));
+      auto it = mCssLayerCache.find(key);
+      if (it == mCssLayerCache.end())
+      {
+        if (mCssLayerCache.size() >= 4096) mCssLayerCache.clear();
+        glint_style cssStyle;
+        for (const auto* d : mCascadeWinners)
+          GlintCssApply::applyOne(d->property, d->value, cssStyle);
+        static const auto sDefaultSerialized = glint_style_serialize(glint_style{});
+        const bool hasCss = !mCascadeWinners.empty()
+                         && glint_style_serialize(cssStyle) != sDefaultSerialized;
+        it = mCssLayerCache.emplace(key, _CssLayerEntry{
+               mCascadeWinners.empty() ? nullptr
+                                       : std::make_shared<const glint_style>(std::move(cssStyle)),
+               hasCss }).first;
       }
-      el->setCssStyleLayer(cssStyle, !mCascadeWinners.empty());
+      el->_setCssLayerShared(it->second.layer, it->second.hasCss);
       return _recordCssDecls(el, mCascadeWinners);
     }
     else
@@ -3278,6 +3300,7 @@ private:
   void _rebuildQualifiedRuleCache()
   {
     mCascadeIndexValid = false;
+    mCssLayerCache.clear();
     mQualifiedRuleCache.clear();
 
     size_t sourceOrder = 0;
@@ -3325,6 +3348,7 @@ private:
   void _invalidateMatchedCssRuleCache(bool bumpStylesheetRevision)
   {
     mCascadeIndexValid = false;   // rules may have been edited in place (inspector)
+    mCssLayerCache.clear();
     if (bumpStylesheetRevision)
       ++mStylesheetRevision;
     mMatchedCssRulesCache.clear();

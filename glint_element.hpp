@@ -142,7 +142,7 @@ struct glint_form_value
 
 class glint_element
 {
-  friend class glint_document;  // allowed to read/write cssStyle_ and mHasCssStyle_
+  friend class glint_document;  // allowed to read/write cssStyle_() and mHasCssStyle_
 
 public:
   struct glint_render_timing_profile
@@ -393,11 +393,22 @@ public:
    *  cascade matched nothing), which skips the serialize-and-compare. */
   void setCssStyleLayer(const glint_style& css, bool hasDecls)
   {
-    cssStyle_ = css;
-    mCssStyleBase = css;
-    ++mCssLayerGen_;
     static const auto sDefaultSerialized = glint_style_serialize(glint_style{});
-    mHasCssStyle_ = hasDecls && (glint_style_serialize(css) != sDefaultSerialized);
+    const bool hasCss = hasDecls && (glint_style_serialize(css) != sDefaultSerialized);
+    // Keep the layer whenever something matched: fields the serializer
+    // doesn't compare still live in it (hasCss only gates the merge base).
+    _setCssLayerShared(hasDecls ? std::make_shared<const glint_style>(css) : nullptr, hasCss);
+  }
+
+  /** Install a (possibly shared) CSS layer. `hasCss` = it differs from the
+   *  default style (gates its use as the merge base); a null layer reads as
+   *  the default style. */
+  void _setCssLayerShared(std::shared_ptr<const glint_style> css, bool hasCss)
+  {
+    mCssLayer_ = std::move(css);
+    mCssStyleBase.assignIfAllocated(cssStyle_());
+    ++mCssLayerGen_;
+    mHasCssStyle_ = hasCss;
   }
 
   // CSS-style shorthand layout aliases — applied to `style` during tree finalization.
@@ -809,7 +820,7 @@ public:
           {
             mApplyCss(ch.get());
             ch->computedStyle = ch->_mergedStyle();
-            ch->mPrevStyle_   = ch->computedStyle;
+            ch->mPrevStyle_.assignIfAllocated(ch->computedStyle);
           }
           propagate(ch.get());
         }
@@ -1700,7 +1711,7 @@ public:
     // Initialise computedStyle and prev-style snapshot so tickTransitions() sees
     // no spurious changes on the first Draw() call.
     computedStyle = style;
-    mPrevStyle_   = style;
+    mPrevStyle_.assignIfAllocated(style);
 
     // Wire up element.scrollTop / element.scrollLeft reactive setters.
     _initScrollElement();
@@ -1722,12 +1733,12 @@ public:
     // Apply CSS cascade from loaded stylesheets, if available.
     if (mApplyCss) mApplyCss(this);
     // Snapshot the non-pseudo CSS baseline (used for delta in _drawImpl).
-    mCssStyleBase = cssStyle_;
+    mCssStyleBase.assignIfAllocated(cssStyle_());
     // Refresh computedStyle now that CSS has been applied so the Layout() pass
     // (which runs before Draw) sees the correct CSS values for width, height,
     // display, etc. Also sync mPrevStyle_ to avoid spurious transition detection.
     computedStyle = _mergedStyle();
-    mPrevStyle_   = computedStyle;
+    mPrevStyle_.assignIfAllocated(computedStyle);
 
     // If children were added before this node was attached to a document/root,
     // they missed the normal addChild() stamping path that propagates root/CSS
@@ -1749,9 +1760,9 @@ public:
         if (mApplyCss)
         {
           mApplyCss(node);
-          node->mCssStyleBase = node->cssStyle_;
+          node->mCssStyleBase.assignIfAllocated(node->cssStyle_());
           node->computedStyle = node->_mergedStyle();
-          node->mPrevStyle_   = node->computedStyle;
+          node->mPrevStyle_.assignIfAllocated(node->computedStyle);
         }
         for (auto& child : node->mChildren)
           self(self, child.get());
@@ -1775,19 +1786,19 @@ public:
     if (tickSelf) tickTransitions();
 
     // CSS pseudo-class delta: when hovered/active/focused, CSS :hover/:active rules
-    // stored in cssStyle_ may have changed relative to mCssStyleBase (the no-pseudo
+    // stored in cssStyle_() may have changed relative to mCssStyleBase (the no-pseudo
     // snapshot). Apply changed properties on top of computedStyle, following the
     // CSS cascade spec: inline styles (el->style) win over pseudo-class rules unless
     // the pseudo rule carries !important (tracked in mCssImportantProps_).
     // When not in any pseudo-state, refresh the baseline snapshot.
     if (mIsHovered || mIsActive || mIsFocused || mIsFocusWithin)
     {
-      if (mHasCssStyle_)
+      if (mHasCssStyle_ && mCssStyleBase.allocated())
       {
         static const glint_style sDefaultStyle{};
         for (const auto& key : glint_animatable_keys())
         {
-          const std::string cssNow  = glint_style_get_by_name(cssStyle_,     key);
+          const std::string cssNow  = glint_style_get_by_name(cssStyle_(),     key);
           const std::string cssBase = glint_style_get_by_name(mCssStyleBase, key);
           if (cssNow != cssBase)
           {
@@ -1805,7 +1816,7 @@ public:
     }
     else
     {
-      mCssStyleBase = cssStyle_;  // keep baseline in sync while no pseudo-state active
+      mCssStyleBase = cssStyle_();  // keep baseline in sync while no pseudo-state active
     }
 
     if (computedStyle.display == "none") return;
@@ -2708,7 +2719,7 @@ public:
   }
 
   /** Force-refresh computedStyle for this element from the current `style` and
-   *  cssStyle_ — bypassing the once-per-frame skip flag set by the root
+   *  cssStyle_() — bypassing the once-per-frame skip flag set by the root
    *  tickTransitionsAll() pre-pass. Use this when a component mutates a child's
    *  `style` lazily during its own Layout()/drawContent() override and needs
    *  the change to be visible *this* frame (otherwise tickTransitions() consumes

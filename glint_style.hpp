@@ -348,6 +348,8 @@ inline const parsed_length& classifyLength(const std::string& raw)
   return sCache.emplace(raw, p).first->second;
 }
 
+inline bool resolvePercentCached(const std::string& raw, float parentSize, float& outValue);
+
 /** Same result as tryResolveLengthExpression(), without re-parsing strings
  *  whose value doesn't depend on parentSize. */
 inline bool resolveLengthCached(const std::string& raw, float parentSize, float& outValue)
@@ -359,16 +361,37 @@ inline bool resolveLengthCached(const std::string& raw, float parentSize, float&
     outValue = p.constant;
     return true;
   }
-  return tryResolveLengthExpression(raw, parentSize, outValue);
+  return resolvePercentCached(raw, parentSize, outValue);
 }
 
-/** FNV-1a of a raw length string — validates per-length memos cheaply even
- *  when `raw` is assigned directly. */
-inline uint32_t rawHash(const std::string& raw)
+/**
+ * Resolve a '%' length against `parentSize`, memoized in a small per-thread
+ * direct-mapped table keyed by (64-bit hash of raw, parentSize). Layout
+ * resolves the same few "%"-strings against the same parents many times per
+ * pass; a shared table keeps that fast without a memo inside every
+ * glint_length (there are ~25 per glint_style).
+ */
+inline bool resolvePercentCached(const std::string& raw, float parentSize, float& outValue)
 {
-  uint32_t h = 2166136261u;
-  for (const unsigned char c : raw) { h ^= c; h *= 16777619u; }
-  return h ^ static_cast<uint32_t>(raw.size());
+  uint64_t h = 1469598103934665603ull;
+  for (const unsigned char c : raw) { h ^= c; h *= 1099511628211ull; }
+  h ^= static_cast<uint64_t>(raw.size()) << 56;
+  uint32_t parentBits;
+  std::memcpy(&parentBits, &parentSize, sizeof parentBits);
+
+  struct Slot { uint64_t hash = 0; uint32_t parent = 0; float value = 0.f; bool valid = false; bool ok = false; };
+  static thread_local Slot sTable[512];
+  Slot& slot = sTable[(h ^ (static_cast<uint64_t>(parentBits) * 0x9E3779B97F4A7C15ull)) >> 55];
+  if (slot.valid && slot.hash == h && slot.parent == parentBits)
+  {
+    outValue = slot.value;
+    return slot.ok;
+  }
+  float v = 0.f;
+  const bool ok = tryResolveLengthExpression(raw, parentSize, v);
+  slot = { h, parentBits, v, true, ok };
+  outValue = v;
+  return ok;
 }
 
 } // namespace glint_style_detail
@@ -454,30 +477,14 @@ struct glint_length
     if (!parsed.valid) return 0.f;
     if (!parsed.dependsOnParent) return parsed.constant;
 
-    // '%' values: layout resolves the same length against the same parent
-    // many times per pass — memoize the last (raw, parent) -> result.
-    const uint32_t h = glint_style_detail::rawHash(raw);
-    if (mPctMemoValid && mPctMemoHash == h && mPctMemoParent == parentSize)
-      return mPctMemoValue;
     float resolved = 0.f;
-    if (!glint_style_detail::tryResolveLengthExpression(raw, parentSize, resolved))
+    if (!glint_style_detail::resolvePercentCached(raw, parentSize, resolved))
       return 0.f;
-    mPctMemoValid  = true;
-    mPctMemoHash   = h;
-    mPctMemoParent = parentSize;
-    mPctMemoValue  = resolved;
     return resolved;
   }
 
   // Allow reading back as float (resolve with no parent — percentages → 0).
   float toFloat() const { return resolve(0.f); }
-
-private:
-  // Last '%' resolution (see resolve()); validated by a hash of raw.
-  mutable bool     mPctMemoValid  = false;
-  mutable uint32_t mPctMemoHash   = 0;
-  mutable float    mPctMemoParent = 0.f;
-  mutable float    mPctMemoValue  = 0.f;
 };
 
 struct glint_text_align
