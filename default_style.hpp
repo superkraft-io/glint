@@ -1030,8 +1030,9 @@ inline std::vector<GlintCssDeclaration> glint_default_user_agent_declarations_fo
   const auto winning = GlintCssCascade::computeDeclarations(adapter, {}, {}, { uaSheet });
   std::vector<GlintCssDeclaration> decls;
   decls.reserve(winning.size());
-  for (const auto& kv : winning)
-    decls.push_back(kv.second.decl);
+  // Cascade order, so shorthand vs. longhand resolves like CSS.
+  for (const auto* md : GlintCssCascade::inCascadeOrder(winning))
+    decls.push_back(md->decl);
   return decls;
 }
 

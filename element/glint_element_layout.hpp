@@ -1073,10 +1073,8 @@
       const float ascent  = std::max(0.f, -metrics.fAscent);
       const float descent = std::max(0.f,  metrics.fDescent);
       const float leading = std::max(0.f, metrics.fLeading);
-      float lineHeight = s.lineHeight > 0.f ? sz * s.lineHeight
-                                            : (fallbackStyle && fallback.lineHeight > 0.f
-                                                 ? sz * fallback.lineHeight
-                     : ascent + descent + leading);
+      float lineHeight = s.usedLineHeight(sz);
+      if (lineHeight <= 0.f && fallbackStyle) lineHeight = fallback.usedLineHeight(sz);
       if (lineHeight <= 0.f) lineHeight = ascent + descent + leading;
       const float halfLeading = std::max(0.f, lineHeight - (ascent + descent)) * 0.5f;
 
@@ -1404,8 +1402,9 @@
       const float sz = child->computedStyle.fontSize.toFloat() > 0.f
                        ? child->computedStyle.fontSize.toFloat()
                        : (_inheritedSz > 0.f ? _inheritedSz : 16.f);
-      const float lh = sz * (child->computedStyle.lineHeight > 0.f
-                             ? child->computedStyle.lineHeight : computedStyle.lineHeight);
+      const float lh = child->computedStyle.usedLineHeight(sz) > 0.f
+                       ? child->computedStyle.usedLineHeight(sz)
+                       : computedStyle.usedLineHeight(sz);
       // display:inline-block creates an atomic inline-level block container.
       // It must NEVER be split into word-wrapped text fragments even when it
       // has innerText, and it ALWAYS contributes its full box (including

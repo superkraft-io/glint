@@ -2604,7 +2604,7 @@ struct glint_style
     , shadowSpread(o.shadowSpread), shadowInset(o.shadowInset)
     , boxShadow(&shadowEnabled, &shadowColor, &shadowOffsetX, &shadowOffsetY,
           &shadowBlur, &shadowSpread, &shadowInset)
-    , fontSize(o.fontSize), lineHeight(o.lineHeight), fontFamily(o.fontFamily), fontStyle(o.fontStyle), fontWeight(o.fontWeight)
+    , fontSize(o.fontSize), lineHeight(o.lineHeight), lineHeightPx(o.lineHeightPx), fontFamily(o.fontFamily), fontStyle(o.fontStyle), fontWeight(o.fontWeight)
     , textAlign(o.textAlign), verticalAlign(o.verticalAlign), textDecoration(o.textDecoration)
     , selectionColor(o.selectionColor)
     , padding(o.padding)
@@ -2712,6 +2712,7 @@ struct glint_style
     shadowInset     = o.shadowInset;
     fontSize        = o.fontSize;
     lineHeight      = o.lineHeight;
+    lineHeightPx    = o.lineHeightPx;
     fontFamily      = o.fontFamily;
     fontStyle       = o.fontStyle;
     fontWeight      = o.fontWeight;
@@ -2802,6 +2803,42 @@ struct glint_style
   // Typography (mirrors CSS font-size / font-family / line-height / font-style)
   glint_length fontSize  = 14.f;  // float or "16px" string
   float lineHeight       = 1.2f;  // CSS line-height multiplier (1.2 = browser default)
+  // Absolute line-height in px (CSS "20px", "15pt"); 0 = use the multiplier.
+  // Read both through usedLineHeight(); set from CSS text via setLineHeightCss().
+  float lineHeightPx     = 0.f;
+
+  /** Used line height in px at `fontSizePx`, or 0 when unset (callers then
+   *  fall back to the font's own metrics). */
+  float usedLineHeight(float fontSizePx) const
+  {
+    if (lineHeightPx > 0.f) return lineHeightPx;
+    return lineHeight > 0.f ? fontSizePx * lineHeight : 0.f;
+  }
+
+  /** Set line-height from a CSS value: a number or "normal" (multiplier), a
+   *  percentage or em (multiplier of this element's font-size; CSS would pass
+   *  the computed px to children, glint passes the multiplier), or a px / pt
+   *  length (absolute).  Returns false and leaves the style unchanged for
+   *  anything else. */
+  bool setLineHeightCss(const std::string& value)
+  {
+    std::string v;
+    for (char c : value)
+      if (!std::isspace(static_cast<unsigned char>(c)))
+        v += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (v.empty()) return false;
+    if (v == "normal") { lineHeight = 1.2f; lineHeightPx = 0.f; return true; }
+
+    char* end = nullptr;
+    const float n = std::strtof(v.c_str(), &end);
+    if (end == v.c_str() || n < 0.f) return false;
+    const std::string unit(end);
+    if (unit.empty() || unit == "em") { lineHeight = n;          lineHeightPx = 0.f; return true; }
+    if (unit == "%")                  { lineHeight = n / 100.f;  lineHeightPx = 0.f; return true; }
+    if (unit == "px")                 { lineHeightPx = n;                            return true; }
+    if (unit == "pt")                 { lineHeightPx = n * 4.f / 3.f;                return true; }
+    return false;
+  }
   std::string fontFamily  = "";   // CSS font-family (e.g. "Kanit", "Roboto")
   std::string fontStyle   = "";   // CSS font-style: "" | "normal" | "italic" | "oblique"
   glint_optional_float fontWeight{400.f};  // CSS font-weight: 100–900; isSet tracks explicit inline assignment

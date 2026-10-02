@@ -194,8 +194,9 @@ public:
     if (prop == "font-size")    { style.fontSize = val.c_str(); return; }
     if (prop == "line-height")
     {
-      // Unitless → multiplier; px/em → convert
-      style.lineHeight = toFloat(val);
+      // Number / % / em → multiplier, px / pt → absolute (was: "20px" read
+      // as a 20x multiplier).
+      style.setLineHeightCss(val);
       return;
     }
     if (prop == "font-family")

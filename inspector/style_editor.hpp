@@ -432,7 +432,7 @@ static inline void glint_style_set_by_name(glint_style& s,
   else if (key == "font-family")         s.fontFamily = val;
   else if (key == "font-weight")         s.fontWeight = f;
   else if (key == "font-style")          s.fontStyle = val;
-  else if (key == "line-height")         s.lineHeight = f;
+  else if (key == "line-height")         s.setLineHeightCss(val);  // number, %, em, px, pt
   else if (key == "text-align")
   {
     if      (val == "left")  s.textAlign = EAlign::Near;

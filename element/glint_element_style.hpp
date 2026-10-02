@@ -446,7 +446,14 @@
       _IW_F(shadowOffsetX);  _IW_F(shadowOffsetY);  _IW_F(shadowBlur);
     }
     // Typography
-    _IW_L(fontSize);  _IW_F(lineHeight);
+    _IW_L(fontSize);
+    // line-height is one CSS property stored as a multiplier or an absolute
+    // px value: an inline value replaces both.
+    if (style.lineHeight != sD.lineHeight || style.lineHeightPx != sD.lineHeightPx)
+    {
+      r.lineHeight   = style.lineHeight;
+      r.lineHeightPx = style.lineHeightPx;
+    }
     _IW_S(fontFamily);  _IW_S(fontStyle);
     _IW_OF(fontWeight);
     if (style.textAlign  != sD.textAlign)  r.textAlign  = style.textAlign;
@@ -536,10 +543,16 @@
       if (!hasInlineFontSize && !hasCssFontSize)
         r.fontSize = p.fontSize;
 
-      const bool hasInlineLineHeight = (style.lineHeight != sD.lineHeight);
-      const bool hasCssLineHeight    = mHasCssStyle_ && (cssStyle_.lineHeight != sD.lineHeight);
+      const bool hasInlineLineHeight = style.lineHeight != sD.lineHeight
+                                    || style.lineHeightPx != sD.lineHeightPx;
+      const bool hasCssLineHeight    = mHasCssStyle_
+                                    && (cssStyle_.lineHeight != sD.lineHeight
+                                        || cssStyle_.lineHeightPx != sD.lineHeightPx);
       if (!hasInlineLineHeight && !hasCssLineHeight)
-        r.lineHeight = p.lineHeight;
+      {
+        r.lineHeight   = p.lineHeight;
+        r.lineHeightPx = p.lineHeightPx;
+      }
 
       const bool hasInlineFontWeight = style.fontWeight.isSet;
       const bool hasCssFontWeight    = mHasCssStyle_ && cssStyle_.fontWeight.isSet;

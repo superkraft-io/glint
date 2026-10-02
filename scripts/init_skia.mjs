@@ -640,6 +640,16 @@ function writeRenderBackendHeader(backend) {
   console.log(`Wrote render backend header: ${headerPath}`);
 }
 
+// GPU backends each prebuilt package was built with.  The CPU (raster)
+// backend is always included.  Windows was checked against the package's
+// skia.lib (Ganesh D3D12; no GL / Dawn / Vulkan); macOS and Linux follow the
+// README's documented prebuilt backends.
+const PREBUILT_BACKENDS = {
+  win32:  ['d3d12', 'cpu'],
+  darwin: ['metal', 'cpu'],
+  linux:  ['opengl', 'cpu']
+};
+
 const PREBUILT_URLS = {
   win32:  'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-win.zip',
   darwin: 'https://github.com/superkraft-io/glint-skia-prebuilt/releases/download/Release/glint-skia-prebuilt-mac.zip',
@@ -752,8 +762,18 @@ function main() {
       fail(`Prebuilt Skia packages are only available for the host platform target (${defaultTargetForPlatform()}). Use --source for ${options.target}.`);
     }
 
-    writeRenderBackendHeader(options.backend);
+    // The header selects which GPU code glint compiles, so it must match a
+    // backend the package actually contains, or the build fails to link.
+    const supportedBackends = PREBUILT_BACKENDS[process.platform] || [];
+    if (!supportedBackends.includes(options.backend)) {
+      fail(`The prebuilt Skia package for ${process.platform} supports --backend ${supportedBackends.join(' or ')}, not '${options.backend}'. `
+         + `Use --source --backend ${options.backend} to build Skia with it.`);
+    }
+
     downloadPrebuilt(options.backend).then(() => {
+      // Only after a successful download: a failed one must not leave a
+      // header that points CMake at libraries that aren't there.
+      writeRenderBackendHeader(options.backend);
       console.log('Prebuilt Skia ready.');
     }).catch((err) => {
       fail(`Prebuilt download failed: ${err.message}`);

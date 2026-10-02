@@ -129,7 +129,7 @@ inline glint_style_info glint_style_serialize(const glint_style& s)
 
     // ── Typography ───────────────────────────────────────────────────────────
     m["font-size"]    = s.fontSize.raw;
-    m["line-height"]  = ftos(s.lineHeight);
+    m["line-height"]  = s.lineHeightPx > 0.f ? ftos(s.lineHeightPx) + "px" : ftos(s.lineHeight);
     m["font-family"]  = s.fontFamily;
     m["font-style"]   = s.fontStyle;
     m["font-weight"]  = std::to_string((int)(float)s.fontWeight);

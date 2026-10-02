@@ -56,6 +56,9 @@ struct GlintMatchedDeclaration
   // Selector text of the originating rule (stable across line-number shifts
   // caused by CSS edits; used as part of the disabled-decl identity key).
   std::string          selectorText;
+  // Position after the cascade sort (higher = ranks later).  Winners must be
+  // applied in ascending rank; see GlintCssCascade::inCascadeOrder().
+  size_t               cascadeRank = 0;
 };
 
 // ── GlintCssCascade ────────────────────────────────────────────────────────────
@@ -130,6 +133,9 @@ public:
         return a.sourceOrder < b.sourceOrder;
       });
 
+    for (size_t i = 0; i < matched.size(); ++i)
+      matched[i].cascadeRank = i;
+
     // ── 5. Build property → winning declaration map ───────────────────────
     //    Because we sorted ascending-wins, iterate forward and overwrite;
     //    the last written value for each property wins.
@@ -147,7 +153,27 @@ public:
     return result;
   }
 
-  // ── Convenience: return only the winning GlintCssDeclaration per property ─
+  // ── Winners in the order they must be applied ───────────────────────────
+  // glint applies a shorthand (margin, padding, border, background, flex...)
+  // and its longhands (margin-top...) as separate properties, so whichever
+  // ranks later in the cascade has to be applied last to win, exactly as if
+  // the shorthand had been expanded into longhands.  The winners map has no
+  // order, so sort by cascadeRank (lowest first).
+  static std::vector<const GlintMatchedDeclaration*>
+  inCascadeOrder(const std::unordered_map<std::string, GlintMatchedDeclaration>& winning)
+  {
+    std::vector<const GlintMatchedDeclaration*> ordered;
+    ordered.reserve(winning.size());
+    for (const auto& kv : winning)
+      ordered.push_back(&kv.second);
+    std::sort(ordered.begin(), ordered.end(),
+      [](const GlintMatchedDeclaration* a, const GlintMatchedDeclaration* b)
+      { return a->cascadeRank < b->cascadeRank; });
+    return ordered;
+  }
+
+  // ── Convenience: the winning GlintCssDeclaration per property, in the
+  //    order they must be applied (see inCascadeOrder) ──────────────────────
   static std::vector<GlintCssDeclaration>
   resolve(
     const GlintCssDomElement&                     element,
@@ -157,8 +183,8 @@ public:
     const auto winning = computeDeclarations(element, sheets, inlineDecls);
     std::vector<GlintCssDeclaration> out;
     out.reserve(winning.size());
-    for (const auto& kv : winning)
-      out.push_back(kv.second.decl);
+    for (const auto* md : inCascadeOrder(winning))
+      out.push_back(md->decl);
     return out;
   }
 
@@ -204,19 +230,26 @@ public:
     // Reduce: iterate ascending (last non-disabled overwrite wins).
     // The disabled-decl id uses selectorText (not sourceLine) so it remains
     // stable when CSS edits shift line numbers in the same file.
-    std::unordered_map<std::string, GlintCssDeclaration> result;
-    for (auto& md : matched)
+    std::unordered_map<std::string, size_t> winnerIndex;   // property → index in matched
+    for (size_t i = 0; i < matched.size(); ++i)
     {
+      const auto& md = matched[i];
       const std::string dId = md.sourceUrl + "|" +
                               md.selectorText + "|" +
                               md.decl.property;
       if (disabled.count(dId)) continue;   // skip — delegate to next best
-      result[md.decl.property] = md.decl;
+      winnerIndex[md.decl.property] = i;
     }
+    // Output in cascade order (ascending index), see inCascadeOrder().
+    std::vector<size_t> order;
+    order.reserve(winnerIndex.size());
+    for (const auto& kv : winnerIndex)
+      order.push_back(kv.second);
+    std::sort(order.begin(), order.end());
     std::vector<GlintCssDeclaration> out;
-    out.reserve(result.size());
-    for (auto& kv : result)
-      out.push_back(std::move(kv.second));
+    out.reserve(order.size());
+    for (const size_t i : order)
+      out.push_back(std::move(matched[i].decl));
     return out;
   }
 

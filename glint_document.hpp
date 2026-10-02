@@ -2344,10 +2344,11 @@ private:
       std::vector<GlintCssDeclaration> decls;
       decls.reserve(winning.size());
       el->mCssImportantProps_.clear();
-      for (const auto& kv : winning)
+      // Cascade order, so shorthand vs. longhand resolves like CSS.
+      for (const auto* md : GlintCssCascade::inCascadeOrder(winning))
       {
-        decls.push_back(kv.second.decl);
-        if (kv.second.decl.important) el->mCssImportantProps_.insert(kv.first);
+        decls.push_back(md->decl);
+        if (md->decl.important) el->mCssImportantProps_.insert(md->decl.property);
       }
       glint_style cssStyle;
       GlintCssApply::apply(decls, cssStyle);

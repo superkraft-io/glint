@@ -1260,6 +1260,7 @@ public:
           && mTxtCacheFontSize  == computedStyle.fontSize.toFloat()
           && mTxtCacheFontWeight== computedStyle.fontWeight
           && mTxtCacheLineHeight== computedStyle.lineHeight
+          && mTxtCacheLineHeightPx == computedStyle.lineHeightPx
           && mTxtCacheTextAlign == computedStyle.textAlign
           && mTxtCacheFontFamily== computedStyle.fontFamily
           && mTxtCacheFontStyle == computedStyle.fontStyle)
@@ -1282,9 +1283,8 @@ public:
     const float ascent  = std::max(0.f, -metrics.fAscent);
     const float descent = std::max(0.f,  metrics.fDescent);
     const float normalLineH = (-metrics.fAscent + metrics.fDescent + std::max(0.f, metrics.fLeading));
-    const float lh = computedStyle.lineHeight > 0.f
-                     ? sz * computedStyle.lineHeight
-             : normalLineH;
+    const float usedLh = computedStyle.usedLineHeight(sz);
+    const float lh = usedLh > 0.f ? usedLh : normalLineH;
     const float halfLeading = std::max(0.f, lh - (ascent + descent)) * 0.5f;
     const float baselineFromTop = halfLeading + ascent;
 
@@ -1347,6 +1347,7 @@ public:
     mTxtCacheFontSize    = computedStyle.fontSize.toFloat();
     mTxtCacheFontWeight  = computedStyle.fontWeight;
     mTxtCacheLineHeight  = computedStyle.lineHeight;
+    mTxtCacheLineHeightPx = computedStyle.lineHeightPx;
     mTxtCacheTextAlign   = computedStyle.textAlign;
     mTxtCacheFontFamily  = computedStyle.fontFamily;
     mTxtCacheFontStyle   = computedStyle.fontStyle;
@@ -1421,6 +1422,7 @@ public:
         && mPrefHFontSize   == sz
         && mPrefHFontWeight == computedStyle.fontWeight
         && mPrefHLineHeight == computedStyle.lineHeight
+        && mPrefHLineHeightPx == computedStyle.lineHeightPx
         && mPrefHFontFamily == computedStyle.fontFamily
         && mPrefHFontStyle  == computedStyle.fontStyle)
     {
@@ -1434,9 +1436,8 @@ public:
     SkFontMetrics metrics;
     font.getMetrics(&metrics);
     const float normalLineH = (-metrics.fAscent + metrics.fDescent + std::max(0.f, metrics.fLeading));
-    const float lh = computedStyle.lineHeight > 0.f
-                     ? sz * computedStyle.lineHeight
-             : normalLineH;
+    const float usedLh = computedStyle.usedLineHeight(sz);
+    const float lh = usedLh > 0.f ? usedLh : normalLineH;
 
     const auto linesVec = _buildWrappedLines(font, availW);
     const int lines = std::max(1, static_cast<int>(linesVec.size()));
@@ -1448,6 +1449,7 @@ public:
     mPrefHFontSize   = sz;
     mPrefHFontWeight = computedStyle.fontWeight;
     mPrefHLineHeight = computedStyle.lineHeight;
+    mPrefHLineHeightPx = computedStyle.lineHeightPx;
     mPrefHFontFamily = computedStyle.fontFamily;
     mPrefHFontStyle  = computedStyle.fontStyle;
     mPrefHValid      = true;
@@ -2753,6 +2755,7 @@ protected:
   mutable float            mTxtCacheFontSize    = 0.f;
   mutable float            mTxtCacheFontWeight  = 0.f;
   mutable float            mTxtCacheLineHeight  = 0.f;
+  mutable float            mTxtCacheLineHeightPx = 0.f;
   mutable glint_text_align mTxtCacheTextAlign   = EAlign::Near;
 
   // Memoized intrinsic-size results (preferredW / preferredH). Both are called
@@ -2775,6 +2778,7 @@ protected:
   mutable float       mPrefHFontSize   = 0.f;
   mutable float       mPrefHFontWeight = 0.f;
   mutable float       mPrefHLineHeight = 0.f;
+  mutable float       mPrefHLineHeightPx = 0.f;
 
   // ── Mask cache ───────────────────────────────────────────────────────────
   // Cached output of glint_parse_mask_layers(computedStyle) and the per-layer

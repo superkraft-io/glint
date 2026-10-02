@@ -2194,7 +2194,13 @@ function exportAbsoluteJSON() {
       {
         const std::string fsz = lenToCss(authored.fontSize);
         if (!fsz.empty()) { styleStr += "font-size:"; styleStr += fsz; styleStr += ";"; }
-        if (authored.lineHeight > 0.f)
+        if (authored.lineHeightPx > 0.f)
+        {
+          char tmp[48];
+          std::snprintf(tmp, sizeof(tmp), "line-height:%.4gpx;", authored.lineHeightPx);
+          styleStr += tmp;
+        }
+        else if (authored.lineHeight > 0.f)
         {
           char tmp[48];
           std::snprintf(tmp, sizeof(tmp), "line-height:%.4g;", authored.lineHeight);

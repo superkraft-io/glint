@@ -535,7 +535,7 @@ inline glint_div* glint_adder::div(std::function<void(glint_component_style&)> s
           int lines = 1; for (char c : s.innerText) if (c == '\n') ++lines;
           SkFont _fnt = glint_element::skFont(sz, s.style.fontFamily.c_str(), s.style.fontWeight, s.style.fontStyle.c_str());
           SkFontMetrics _fm; _fnt.getMetrics(&_fm);
-          const float lh = s.style.lineHeight > 0.f ? sz * s.style.lineHeight : (-_fm.fAscent + _fm.fDescent);
+          const float lh = s.style.usedLineHeight(sz) > 0.f ? s.style.usedLineHeight(sz) : (-_fm.fAscent + _fm.fDescent);
           const std::size_t _fnl = s.innerText.find('\n');
           const std::size_t _fll = (_fnl == std::string::npos) ? s.innerText.size() : _fnl;
           SkRect _inkB; _fnt.measureText(s.innerText.c_str(), _fll, SkTextEncoding::kUTF8, &_inkB);
@@ -1098,7 +1098,7 @@ inline void glint_component_style::glint_component_adder::div(std::function<void
         {
           int lines = 1; for (char c : t.innerText) if (c == '\n') ++lines;
           SkFont _fnt = glint_element::skFont(sz, t.style.fontFamily.c_str(), t.style.fontWeight, t.style.fontStyle.c_str()); SkFontMetrics _fm; _fnt.getMetrics(&_fm);
-          const float lh = t.style.lineHeight > 0.f ? sz * t.style.lineHeight : (-_fm.fAscent + _fm.fDescent);
+          const float lh = t.style.usedLineHeight(sz) > 0.f ? t.style.usedLineHeight(sz) : (-_fm.fAscent + _fm.fDescent);
           const std::size_t _fnl = t.innerText.find('\n');
           const std::size_t _fll = (_fnl == std::string::npos) ? t.innerText.size() : _fnl;
           SkRect _inkB; _fnt.measureText(t.innerText.c_str(), _fll, SkTextEncoding::kUTF8, &_inkB);
