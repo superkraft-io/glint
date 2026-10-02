@@ -1224,9 +1224,38 @@ public:
       return false;
     };
 
-    if (mHoveredNode       && hasAncestor(mHoveredNode,       node)) mHoveredNode       = nullptr;
-    if (mMouseDownNode     && hasAncestor(mMouseDownNode,     node)) mMouseDownNode     = nullptr;
-    if (mFocusedNode       && hasAncestor(mFocusedNode,       node)) mFocusedNode       = nullptr;
+    // Hovered node removed: hover moves to the nearest surviving ancestor (as
+    // in browsers), so the next mouse move clears :hover on the chain that
+    // still carries it.  Nulling it would leave those ancestors :hover.
+    if (mHoveredNode       && hasAncestor(mHoveredNode,       node)) mHoveredNode       = node->mParent;
+    // Pressed node removed: its surviving ancestors stay :active while the
+    // button is held; mouse up / capture loss clears them from this root.
+    if (mMouseDownNode     && hasAncestor(mMouseDownNode,     node))
+    {
+      mMouseDownNode   = nullptr;
+      mActiveChainRoot = node->mParent;
+    }
+    if (mActiveChainRoot   && hasAncestor(mActiveChainRoot,   node)) mActiveChainRoot   = node->mParent;
+    // Focused node removed: clear :focus-within on its surviving ancestors now
+    // and re-cascade them next frame (not from inside this destructor: the
+    // parent's child list is mid-update, and CSS matching walks it).
+    if (mFocusedNode       && hasAncestor(mFocusedNode,       node))
+    {
+      mFocusedNode = nullptr;
+      std::vector<std::pair<glint_element*, std::weak_ptr<void>>> restyle;
+      for (glint_element* a = node->mParent; a; a = a->mParent)
+        if (a->mIsFocusWithin)
+        {
+          a->mIsFocusWithin = false;
+          restyle.emplace_back(a, a->lifeToken());
+        }
+      if (!restyle.empty())
+        mTaskQueue->post([this, restyle] {
+          for (const auto& [a, life] : restyle)
+            if (!life.expired()) _applyCssToElement(a);
+          setDirty(false);
+        });
+    }
     if (mLastClickNode     && hasAncestor(mLastClickNode,     node)) mLastClickNode     = nullptr;
     if (mActiveGestureNode && hasAncestor(mActiveGestureNode, node)) mActiveGestureNode = nullptr;
     if (mGlobalAnchor.comp == node) { mGlobalAnchor = {}; mGlobalSelActive = false; }
@@ -1659,6 +1688,7 @@ public:
     mPointerX = x;
     mPointerY = y;
     mPointerMod = mod;
+    _releaseOrphanedActiveChain();   // a missed release must not leak :active
 
     auto* hit = hitTest(x, y);
     // Inspect mode: clicking in the main UI selects that component persistently,
@@ -1735,6 +1765,7 @@ public:
     mPointerX = x;
     mPointerY = y;
     mPointerMod = mod;
+    _releaseOrphanedActiveChain();
 
     if (mMouseDownNode)
     {
@@ -1804,6 +1835,7 @@ public:
    *  :active clears) but without click / dblclick. */
   void OnMouseCaptureLost()
   {
+    _releaseOrphanedActiveChain();
     if (!mMouseDownNode) return;
 
     for (glint_element* n = mMouseDownNode; n; n = n->mParent)
@@ -2609,6 +2641,17 @@ private:
       _applyCssToElement(n);
   }
 
+  /** Clear :active left on the ancestors of a pressed node that was destroyed
+   *  (see mActiveChainRoot). */
+  void _releaseOrphanedActiveChain()
+  {
+    if (!mActiveChainRoot) return;
+    for (glint_element* n = mActiveChainRoot; n; n = n->mParent)
+      n->mIsActive = false;
+    _reapplyCssChain(mActiveChainRoot);
+    mActiveChainRoot = nullptr;
+  }
+
   // Inspector disabled-declaration filter — null when inspector is inactive.
   const std::unordered_set<std::string>* mInspDisabledDecls = nullptr;
 
@@ -3162,6 +3205,9 @@ private:
   // ── Mouse + focus state ───────────────────────────────────────────────────────────
   glint_element* mHoveredNode      = nullptr;
   glint_element* mMouseDownNode    = nullptr;
+  // Nearest surviving ancestor of a pressed node that was destroyed while the
+  // button was held: its chain still carries :active until release.
+  glint_element* mActiveChainRoot  = nullptr;
   glint_element* mFocusedNode      = nullptr;  // currently focused (keyboard) node
   glint_element* mActiveGestureNode = nullptr;
   bool             mFocusViaKeyboard = false;  // true only for Tab/Shift+Tab focus (:focus-visible)

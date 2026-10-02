@@ -194,6 +194,15 @@ public:
     {
       // sTfCache is shared by every window thread; same lock as the font registry.
       std::lock_guard<std::recursive_mutex> lk(glint_font_registry::registryMutex());
+      // A font registered since the last lookup may beat a cached match (e.g.
+      // the exact weight of a family whose base face was used meanwhile).
+      static uint64_t sTfCacheGeneration = 0;
+      const uint64_t generation = glint_font_registry::generation().load();
+      if (sTfCacheGeneration != generation)
+      {
+        sTfCache.clear();
+        sTfCacheGeneration = generation;
+      }
       _TfKey key{ std::string(family), weight, std::string(style ? style : "") };
       auto it = sTfCache.find(key);
       if (it != sTfCache.end()) {

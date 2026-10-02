@@ -1263,6 +1263,7 @@ public:
           && mTxtCacheLineHeightPx == computedStyle.lineHeightPx
           && mTxtCacheTextAlign == computedStyle.textAlign
           && mTxtCacheFontFamily== computedStyle.fontFamily
+          && mTxtCacheFontGen   == glint_font_registry::generation().load()
           && mTxtCacheFontStyle == computedStyle.fontStyle)
       {
         return mInlineTextRenderLines;
@@ -1347,6 +1348,7 @@ public:
     mTxtCacheFontSize    = computedStyle.fontSize.toFloat();
     mTxtCacheFontWeight  = computedStyle.fontWeight;
     mTxtCacheLineHeight  = computedStyle.lineHeight;
+    mTxtCacheFontGen     = glint_font_registry::generation().load();
     mTxtCacheLineHeightPx = computedStyle.lineHeightPx;
     mTxtCacheTextAlign   = computedStyle.textAlign;
     mTxtCacheFontFamily  = computedStyle.fontFamily;
@@ -1378,7 +1380,8 @@ public:
         && mPrefWFontSize   == sz
         && mPrefWFontWeight == computedStyle.fontWeight
         && mPrefWFontFamily == computedStyle.fontFamily
-        && mPrefWFontStyle  == computedStyle.fontStyle)
+        && mPrefWFontStyle  == computedStyle.fontStyle
+        && mPrefWFontGen    == glint_font_registry::generation().load())
     {
       return mPrefWValue;
     }
@@ -1403,6 +1406,7 @@ public:
     mPrefWFontSize   = sz;
     mPrefWFontWeight = computedStyle.fontWeight;
     mPrefWFontFamily = computedStyle.fontFamily;
+    mPrefWFontGen    = glint_font_registry::generation().load();
     mPrefWFontStyle  = computedStyle.fontStyle;
     mPrefWValid      = true;
     return result;
@@ -1424,7 +1428,8 @@ public:
         && mPrefHLineHeight == computedStyle.lineHeight
         && mPrefHLineHeightPx == computedStyle.lineHeightPx
         && mPrefHFontFamily == computedStyle.fontFamily
-        && mPrefHFontStyle  == computedStyle.fontStyle)
+        && mPrefHFontStyle  == computedStyle.fontStyle
+        && mPrefHFontGen    == glint_font_registry::generation().load())
     {
       return mPrefHValue;
     }
@@ -1449,6 +1454,7 @@ public:
     mPrefHFontSize   = sz;
     mPrefHFontWeight = computedStyle.fontWeight;
     mPrefHLineHeight = computedStyle.lineHeight;
+    mPrefHFontGen    = glint_font_registry::generation().load();
     mPrefHLineHeightPx = computedStyle.lineHeightPx;
     mPrefHFontFamily = computedStyle.fontFamily;
     mPrefHFontStyle  = computedStyle.fontStyle;
@@ -2755,6 +2761,7 @@ protected:
   mutable float            mTxtCacheFontSize    = 0.f;
   mutable float            mTxtCacheFontWeight  = 0.f;
   mutable float            mTxtCacheLineHeight  = 0.f;
+  mutable uint64_t         mTxtCacheFontGen     = 0;   // glint_font_registry::generation()
   mutable float            mTxtCacheLineHeightPx = 0.f;
   mutable glint_text_align mTxtCacheTextAlign   = EAlign::Near;
 
@@ -2766,6 +2773,7 @@ protected:
   mutable std::string mPrefWText;
   mutable std::string mPrefWFontFamily;
   mutable std::string mPrefWFontStyle;
+  mutable uint64_t    mPrefWFontGen = 0;    // glint_font_registry::generation()
   mutable float       mPrefWFontSize   = 0.f;
   mutable float       mPrefWFontWeight = 0.f;
 
@@ -2778,6 +2786,7 @@ protected:
   mutable float       mPrefHFontSize   = 0.f;
   mutable float       mPrefHFontWeight = 0.f;
   mutable float       mPrefHLineHeight = 0.f;
+  mutable uint64_t    mPrefHFontGen    = 0;   // glint_font_registry::generation()
   mutable float       mPrefHLineHeightPx = 0.f;
 
   // ── Mask cache ───────────────────────────────────────────────────────────

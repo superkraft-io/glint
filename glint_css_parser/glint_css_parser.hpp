@@ -471,9 +471,25 @@ private:
     p.consume(); // consume ':'
     p.skipWhitespace();
 
-    // Collect remaining value tokens
+    // Collect remaining value tokens.  A comment inside a value only
+    // separates tokens (`width: 100px /* fixed */` is "100px", `1px/**/solid`
+    // is "1px solid"); kept as text it broke numbers, colors and !important.
     while (!p.eof())
-      decl.valueTokens.push_back(p.consume());
+    {
+      GlintCssToken t = p.consume();
+      if (t.type == GlintCssTokenType::COMMENT)
+      {
+        const bool betweenTokens = !decl.valueTokens.empty()
+                                && !decl.valueTokens.back().isWhitespace()
+                                && !p.eof()
+                                && !p.current().isWhitespace()
+                                && p.current().type != GlintCssTokenType::COMMENT;
+        if (betweenTokens)
+          decl.valueTokens.push_back(GlintCssToken::make(GlintCssTokenType::WHITESPACE, " "));
+        continue;
+      }
+      decl.valueTokens.push_back(std::move(t));
+    }
 
     // Strip trailing whitespace from valueTokens
     while (!decl.valueTokens.empty() && decl.valueTokens.back().isWhitespace())

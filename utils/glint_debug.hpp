@@ -95,6 +95,15 @@ namespace glint_font_registry
     return *m;
   }
 
+  /** Bumped whenever a typeface is registered.  Text measured before an
+   *  @font-face finished loading used a fallback face; caches keyed on the
+   *  family name compare this to know they must re-measure. */
+  inline std::atomic<uint64_t>& generation()
+  {
+    static std::atomic<uint64_t> g{0};
+    return g;
+  }
+
   inline std::unordered_set<std::string>& loadedFonts()
   {
     // Heap-allocated and intentionally never destroyed: protects against the
@@ -110,6 +119,7 @@ namespace glint_font_registry
   {
     std::lock_guard<std::recursive_mutex> lk(registryMutex());
     loadedFonts().insert(fontID);
+    ++generation();
   }
 
   inline bool isLoaded(const char* fontID)
@@ -139,7 +149,9 @@ namespace glint_font_registry
   inline void registerTypeface(const std::string& fontID, sk_sp<SkTypeface> tf)
   {
     std::lock_guard<std::recursive_mutex> lk(registryMutex());
-    if (tf) loadedTypefaces()[fontID] = std::move(tf);
+    if (!tf) return;
+    loadedTypefaces()[fontID] = std::move(tf);
+    ++generation();
   }
 
   inline sk_sp<SkTypeface> getTypeface(const char* fontID)
@@ -170,7 +182,7 @@ namespace glint_font_registry
     // 1. Exact cache / registry hit (covers @font-face "Kanit@100" entries).
     {
       auto it = m.find(key);
-      if (it != m.end()) return it->second;
+      if (it != m.end() && it->second) return it->second;
     }
 
     // 2. Find the closest registered weight variant for this family.
@@ -194,7 +206,9 @@ namespace glint_font_registry
 
     // 3. Variable font: try the wght axis on the base typeface.
     sk_sp<SkTypeface> base = getTypeface(fontID);
-    if (!base) { m[key] = nullptr; return nullptr; }
+    // Not registered (yet): don't cache the miss, the @font-face may still
+    // be loading and must be found once it registers.
+    if (!base) return nullptr;
     {
       const uint32_t kWght = SkSetFourByteTag('w', 'g', 'h', 't');
       int axisCount = base->getVariationDesignParameters(nullptr, 0);
@@ -256,6 +270,7 @@ namespace glint_font_registry
     axisTypefaces()[key]  = tf;
     axisFontIds()[key]    = fontId;
     loadedFonts().insert(key);
+    ++generation();
   }
 
   // Returns the ordered style fallbacks per the CSS font-matching spec:

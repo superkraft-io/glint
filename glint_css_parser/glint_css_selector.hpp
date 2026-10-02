@@ -66,6 +66,10 @@ struct GlintCssDomElement
   virtual size_t                   typeSiblingCount() const = 0;
   virtual bool                     isRoot()           const = 0;
   virtual bool                     isEmpty()          const = 0; // no children or text
+
+  // Previous sibling, for the `+` and `~` combinators; nullptr if none.  The
+  // default (no sibling access) makes those combinators never match.
+  virtual const GlintCssDomElement* previousSibling() const { return nullptr; }
 };
 
 // ── Specificity ───────────────────────────────────────────────────────────────
@@ -380,8 +384,10 @@ inline bool GlintSimpleSelector::matches(const GlintCssDomElement& el) const
         int A = 0, B = 0;
         parseNthArg(argument, A, B);
         if (A == 0) return static_cast<int>(pos) == B;
+        // pos must equal A*n + B for some n >= 0.  With A < 0 that means
+        // pos <= B (e.g. -n+3 matches the first three), not pos >= B.
         const int rem = static_cast<int>(pos) - B;
-        return rem >= 0 && (rem % A) == 0;
+        return (A > 0 ? rem >= 0 : rem <= 0) && (rem % A) == 0;
       }
 
       // :not(), :is(), :has()
@@ -489,18 +495,25 @@ inline bool GlintComplexSelector::matches(const GlintCssDomElement& el) const
       }
       case GlintCombinator::ADJACENT_SIBLING:
       {
-        const GlintCssDomElement* p = candidate->parent();
-        if (!p) return false;
-        const size_t idx = candidate->childIndex();
-        if (idx == 0) return false;
-        // The element at idx-1 must match — callers must implement this via the interface.
-        // We can only express this as a parent-level lookup; expose via a helper.
-        // For simplicity, return false (can be improved per project's DOM implementation).
-        (void)comp; (void)p;
-        return false; // placeholder — real implementation in glint_document_dom.hpp
+        // `a + b`: the sibling immediately before must match.
+        const GlintCssDomElement* s = candidate->previousSibling();
+        if (!s || !comp.matches(*s)) return false;
+        candidate = s;
+        break;
       }
       case GlintCombinator::GENERAL_SIBLING:
-        return false; // placeholder
+      {
+        // `a ~ b`: any earlier sibling must match (nearest one is used).
+        const GlintCssDomElement* s = candidate->previousSibling();
+        bool found = false;
+        while (s)
+        {
+          if (comp.matches(*s)) { found = true; candidate = s; break; }
+          s = s->previousSibling();
+        }
+        if (!found) return false;
+        break;
+      }
     }
   }
   return true;

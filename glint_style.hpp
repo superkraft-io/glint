@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <cstdlib>
@@ -498,27 +499,41 @@ struct sk_color
   sk_color(const glint_color& c) : value(c) {}   // NOLINT
 
   // Implicit construction from a CSS hex string or named color
-  sk_color(const char* css)                  // NOLINT
+  sk_color(const char* cssIn)                // NOLINT
   {
-    if (!css) { value = glint_color(0, 0, 0, 0); return; }
+    if (!cssIn) { value = glint_color(0, 0, 0, 0); return; }
+
+    // Values split out of shorthands can carry surrounding whitespace.
+    std::string trimmedCss(cssIn);
+    {
+      size_t b = 0, e = trimmedCss.size();
+      while (b < e && std::isspace(static_cast<unsigned char>(trimmedCss[b]))) ++b;
+      while (e > b && std::isspace(static_cast<unsigned char>(trimmedCss[e - 1]))) --e;
+      trimmedCss = trimmedCss.substr(b, e - b);
+    }
+    const char* css = trimmedCss.c_str();
 
     if (css[0] == '#')
     {
-      // ── Hex parsing ───────────────────────────────────────────────────────
+      // ── Hex parsing: #rgb, #rgba, #rrggbb, #rrggbbaa ────────────────────
       const char*  s   = css + 1;
       const size_t len = std::strlen(s);
       unsigned int v   = 0;
+      bool valid = (len == 3 || len == 4 || len == 6 || len == 8);
 
-      for (size_t i = 0; i < len && i < 8; i++)
+      for (size_t i = 0; valid && i < len; i++)
       {
         v <<= 4;
         const char c = s[i];
         if      (c >= '0' && c <= '9') v |= static_cast<unsigned>(c - '0');
         else if (c >= 'a' && c <= 'f') v |= static_cast<unsigned>(c - 'a' + 10);
         else if (c >= 'A' && c <= 'F') v |= static_cast<unsigned>(c - 'A' + 10);
+        else valid = false;   // e.g. #gg0000 is invalid, not #000000
       }
 
-      if (len == 6)       // #rrggbb → opaque
+      if (!valid)
+        value = glint_color(0, 0, 0, 0);
+      else if (len == 6)  // #rrggbb → opaque
         value = glint_color(255,
                        static_cast<int>((v >> 16) & 0xff),
                        static_cast<int>((v >>  8) & 0xff),
@@ -535,8 +550,14 @@ struct sk_color
         const int b =  v       & 0xf;
         value = glint_color(255, r | (r << 4), g | (g << 4), b | (b << 4));
       }
-      else
-        value = glint_color(0, 0, 0, 0);
+      else                // len == 4: #rgba shorthand
+      {
+        const int r = (v >> 12) & 0xf;
+        const int g = (v >>  8) & 0xf;
+        const int b = (v >>  4) & 0xf;
+        const int a =  v        & 0xf;
+        value = glint_color(a | (a << 4), r | (r << 4), g | (g << 4), b | (b << 4));
+      }
       return;
     }
 
@@ -751,6 +772,59 @@ struct sk_color
                          clamp255(vals[1]), clamp255(vals[2]));
           return;
         }
+      }
+    }
+
+    // ── hsl() / hsla() functional notation ─────────────────────────────────
+    // hsl(h, s%, l%) / hsla(h, s%, l%, a) / hsl(h s% l% / a); hue in deg
+    // (default), rad, grad or turn.
+    if (low.rfind("hsl(", 0) == 0 || low.rfind("hsla(", 0) == 0)
+    {
+      const size_t openP  = low.find('(');
+      const size_t closeP = low.rfind(')');
+      if (closeP != std::string::npos && closeP > openP)
+      {
+        std::string args = low.substr(openP + 1, closeP - openP - 1);
+        for (char& c : args) if (c == ',' || c == '/') c = ' ';
+        std::istringstream ss(args);
+        float vals[4] = {0.f, 0.f, 0.f, 1.f};   // h(deg) s l (0..1) a (0..1)
+        std::string tok;
+        for (int i = 0; i < 4 && (ss >> tok); ++i)
+        {
+          if (tok == "none") continue;
+          char* end = nullptr;
+          const float n = std::strtof(tok.c_str(), &end);
+          if (end == tok.c_str()) continue;
+          const std::string unit(end);
+          if (i == 0)
+            vals[0] = unit == "rad"  ? n * 180.f / 3.14159265f
+                    : unit == "grad" ? n * 0.9f
+                    : unit == "turn" ? n * 360.f
+                    : n;                                // deg or bare number
+          else if (i == 3)
+            vals[3] = unit == "%" ? n / 100.f : n;
+          else
+            vals[i] = n / 100.f;                         // s, l: percentages
+        }
+        const float h = std::fmod(std::fmod(vals[0], 360.f) + 360.f, 360.f);
+        const float sat = std::min(1.f, std::max(0.f, vals[1]));
+        const float lig = std::min(1.f, std::max(0.f, vals[2]));
+        const float c = (1.f - std::fabs(2.f * lig - 1.f)) * sat;
+        const float x = c * (1.f - std::fabs(std::fmod(h / 60.f, 2.f) - 1.f));
+        const float m = lig - c * 0.5f;
+        float r = 0.f, g = 0.f, b = 0.f;
+        if      (h <  60.f) { r = c; g = x; }
+        else if (h < 120.f) { r = x; g = c; }
+        else if (h < 180.f) { g = c; b = x; }
+        else if (h < 240.f) { g = x; b = c; }
+        else if (h < 300.f) { r = x; b = c; }
+        else                { r = c; b = x; }
+        const auto to255 = [](float v) -> int {
+          return static_cast<int>(std::min(255.f, std::max(0.f, v * 255.f + 0.5f)));
+        };
+        value = glint_color(to255(std::min(1.f, std::max(0.f, vals[3]))),
+                            to255(r + m), to255(g + m), to255(b + m));
+        return;
       }
     }
 
@@ -2244,11 +2318,25 @@ struct glint_style
     sk_border_color_shorthand& operator=(const char* css)
     {
       if (!css || !*css) return *this;
-      std::string src(css);
-      std::istringstream ss(src);
+      // Split on whitespace outside parentheses: rgba(0, 0, 0, .5) is one
+      // color, not four.
       std::vector<std::string> toks;
-      std::string tok;
-      while (ss >> tok) toks.push_back(tok);
+      {
+        std::string cur;
+        int depth = 0;
+        for (const char* c = css; *c; ++c)
+        {
+          if (*c == '(') ++depth;
+          else if (*c == ')' && depth > 0) --depth;
+          if (depth == 0 && std::isspace(static_cast<unsigned char>(*c)))
+          {
+            if (!cur.empty()) { toks.push_back(cur); cur.clear(); }
+            continue;
+          }
+          cur += *c;
+        }
+        if (!cur.empty()) toks.push_back(cur);
+      }
       if (toks.empty()) return *this;
 
       if (toks.size() == 1) {
@@ -2280,20 +2368,11 @@ struct glint_style
     }
 
   private:
+    // sk_color knows every CSS named color (this used to map green/blue to
+    // non-CSS shades) plus hex, rgb() and hsl().
     static sk_color _resolveColor(const std::string& tok)
     {
-      if (tok.empty()) return glint_color(0, 0, 0, 0);
-      if (tok[0] == '#') return sk_color(tok.c_str());
-      std::string low = tok;
-      for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      if (low == "transparent") return glint_color(0, 0, 0, 0);
-      if (low == "white")       return sk_color("#ffffff");
-      if (low == "black")       return sk_color("#000000");
-      if (low == "grey" || low == "gray") return sk_color("#808080");
-      if (low == "red")         return sk_color("#ff0000");
-      if (low == "green")       return sk_color("#00cc44");
-      if (low == "blue")        return sk_color("#3399ff");
-      return sk_color(tok.c_str()); // try to parse as-is
+      return sk_color(tok.c_str());
     }
     void _clearSides()
     {
@@ -2372,20 +2451,10 @@ struct glint_style
       return out;
     }
 
+    // sk_color knows every CSS named color (this used to map green/blue to
+    // non-CSS shades) plus hex, rgb() and hsl().
     static sk_color resolveNamedColor(const std::string& tok)
     {
-      if (tok.empty()) return glint_color(0, 0, 0, 0);
-      if (tok[0] == '#') return sk_color(tok.c_str());
-      // Common named colours
-      if (tok == "white")       return sk_color("#ffffff");
-      if (tok == "black")       return sk_color("#000000");
-      if (tok == "grey" ||
-          tok == "gray")        return sk_color("#808080");
-      if (tok == "red")         return sk_color("#ff0000");
-      if (tok == "green")       return sk_color("#00cc44");
-      if (tok == "blue")        return sk_color("#3399ff");
-      if (tok == "transparent") return glint_color(0, 0, 0, 0);
-      if (tok == "white")       return sk_color("#ffffff");
       return sk_color(tok.c_str());
     }
 

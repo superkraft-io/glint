@@ -36,6 +36,8 @@ struct GlintCssDomAdapter : GlintCssDomElement
   // Lazily-created adapter for mParent.  Kept alive for the duration of any
   // matches() call that walks up the ancestry chain via parent().
   mutable std::shared_ptr<GlintCssDomAdapter> mParentAdapter;
+  // Lazily-created adapter for the previous sibling (`+` / `~` combinators).
+  mutable std::shared_ptr<GlintCssDomAdapter> mPrevSiblingAdapter;
 
   explicit GlintCssDomAdapter(glint_element* e) : el(e) {}
 
@@ -141,6 +143,26 @@ struct GlintCssDomAdapter : GlintCssDomElement
     for (const auto& c : el->mParent->mChildren)
       if (std::string(c->tagName()) == myType) ++count;
     return count;
+  }
+
+  // Previous sibling adapter, built lazily like parent(); this adapter keeps
+  // the chain alive while `~` walks back through earlier siblings.
+  const GlintCssDomElement* previousSibling() const override
+  {
+    if (!el || !el->mParent) return nullptr;
+    if (!mPrevSiblingAdapter)
+    {
+      glint_element* prev = nullptr;
+      for (const auto& c : el->mParent->mChildren)
+      {
+        if (c.get() == el) break;
+        prev = c.get();
+      }
+      if (!prev) return nullptr;
+      mPrevSiblingAdapter = std::make_shared<GlintCssDomAdapter>(prev);
+      mPrevSiblingAdapter->forcePseudoClasses = forcePseudoClasses;
+    }
+    return mPrevSiblingAdapter.get();
   }
 
   // True when the element has no parent (i.e. it is the document root).
