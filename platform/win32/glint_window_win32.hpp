@@ -979,6 +979,12 @@ private:
       });
     }
 
+    // Tasks posted from other threads (popup callbacks, the inspector) run
+    // from the animation timer instead of a repaint per task: no frames are
+    // forced just to run them, and they still run while the window is
+    // minimized (it gets no WM_PAINT then).
+    mOwnRoot->taskQueue()->setWake(nullptr);
+
     // Stamp the HWND on the root so components (labels, inputs) can open
     // Win32 context menus via TrackPopupMenu even when mpG is nullptr.
     mOwnRoot->hwnd = mHWND;
@@ -1442,6 +1448,9 @@ private:
     case WM_TIMER:
       if (wp == SKUI_ANIM_TIMER)
       {
+        // Run tasks posted from other threads (see initRoot()).
+        if (self->mOwnRoot) self->mOwnRoot->taskQueue()->drain();
+
         if (!glint_win32_host::shouldScheduleTimerRedraw(
               self->mOwnRoot.get(),
               self->mRedrawRequested.load(std::memory_order_relaxed)))

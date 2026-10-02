@@ -44,6 +44,7 @@ class glint_window_linux;  // forward declaration for linuxWindow field
 #include <memory>
 #include <numeric>
 #include <unordered_map>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
@@ -173,18 +174,6 @@ public:
     mDocLife.reset();
     // After this returns no other thread can be inside a wake into our host.
     mTaskQueue->setWake(nullptr);
-
-    auto clearDebugNode = [this](std::atomic<glint_element*>& slot) {
-      if (auto* node = slot.load(); node && node->mRoot == this)
-        slot.store(nullptr);
-    };
-
-    clearDebugNode(glint_debug::hoveredNode);
-    clearDebugNode(glint_debug::inspectedNode);
-    clearDebugNode(glint_debug::pinnedNode);
-
-    if (glint_debug::inspectorDoc == this)
-      glint_debug::inspectorDoc = nullptr;
   }
 
   // ── Inspector notifications — published via glint_bus ───────────────────────
@@ -728,11 +717,12 @@ public:
    * Inspector-only: register the set of disabled declaration ids so
    * _applyCssToElement skips them during cascade computation.
    * Pass nullptr to remove the filter (e.g. when the inspector closes).
-   * The set is owned by the caller (InspStylePanel) and must outlive this call.
+   * The set is copied: the inspector edits its own on another thread.
    */
   void setInspectorDisabledDecls(const std::unordered_set<std::string>* decls)
   {
-    mInspDisabledDecls = decls;
+    if (decls) mInspDisabledDecls = *decls;
+    else       mInspDisabledDecls.reset();
   }
 
   /**
@@ -832,11 +822,69 @@ public:
    *  Used by the inspector window to build its title bar: "Inspecting <name>".  Optional. */
   std::string name;
 
-  /** When true, OnMouseOver and OnMouseDown will NOT write to glint_debug::hoveredNode /
-   *  inspectedNode even when glint_debug::inspectMode is active.
-   *  Set this on the inspector's own glint_document so the inspector UI itself is
-   *  never treated as an inspection target. */
+  /** When true, OnMouseOver and OnMouseDown ignore the inspector's element
+   *  picker (setInspectorPickMode).  Set this on the inspector's own
+   *  glint_document so the inspector UI itself is never treated as an
+   *  inspection target. */
   bool skipInspectMode = false;
+
+  // ── Inspector state ────────────────────────────────────────────────────────
+  // The inspector window runs on its own thread and never touches this
+  // document directly: it posts commands to taskQueue() (glint_inspector_link)
+  // that call these on this document's thread.  The element picker changes
+  // the same state from this document's own mouse input.
+
+  enum class InspectorHighlight { Hovered, Selected, Pinned };
+
+  /** Highlight the element with `id`, or clear the highlight (id 0).  Hovered
+   *  draws faint box-model zones, Pinned a teal outline; Selected follows the
+   *  inspector's selection. */
+  void setInspectorHighlight(InspectorHighlight which, uint64_t id)
+  {
+    _inspectorSlot(which) = id ? getNodeById(id) : nullptr;
+    setDirty(false);
+  }
+
+  /** Element picker: hovering highlights the element under the pointer and a
+   *  click selects it (glint_selected_node_changed_event) and ends the mode. */
+  void setInspectorPickMode(bool on)
+  {
+    mInspPickMode = on;
+    if (!on) mInspHovered = nullptr;
+    setDirty(false);
+  }
+
+  bool inspectorPickMode() const { return mInspPickMode; }
+
+  /** Inspector debug overlay: a coloured outline around every element. */
+  bool debugColorizedBorders = false;
+
+  /** The inspector closed: drop its highlights, picker, overlays and
+   *  disabled CSS declarations. */
+  void resetInspectorState()
+  {
+    mInspHovered = mInspSelected = mInspPinned = nullptr;
+    mInspPickMode = false;
+    debugColorizedBorders = false;
+    if (mInspDisabledDecls)
+    {
+      mInspDisabledDecls.reset();
+      _applyCssToTree(&mCanvas);
+    }
+    setDirty(false);
+  }
+
+  /** Bring computed styles and layout up to date now, outside a frame: the
+   *  inspector reads them right after applying its own edits. */
+  void updateLayoutNow()
+  {
+    mCanvas.tickTransitionsAll();
+    if (mLayoutDirty)
+    {
+      mCanvas.Layout(nullptr);
+      mLayoutDirty = false;
+    }
+  }
 
   /** When true, Ctrl+Shift+I / Ctrl+Shift+C fire the inspector shortcuts.
    *  Defaults to true in Debug builds (NDEBUG not defined), false otherwise. */
@@ -1091,7 +1139,7 @@ public:
   // ── Redraw ─────────────────────────────────────────────────────────────────
 
   /** Trigger a repaint.  Called by components via mRequestRedraw; also called
-   *  directly by the inspector overlay (glint_debug::inspectedNode). */
+   *  by the inspector state setters. */
   void setDirty(bool = false, int = glint_no_val_idx)
   {
     // Conservative default: any setDirty caller might have changed something
@@ -1175,12 +1223,9 @@ public:
     if (mGlobalAnchor.comp && hasAncestor(mGlobalAnchor.comp, node)) { mGlobalAnchor = {}; mGlobalSelActive = false; }
     if (mGlobalFocus.comp  && hasAncestor(mGlobalFocus.comp,  node)) { mGlobalFocus  = {}; mGlobalSelActive = false; }
 
-    if (auto* hovered = glint_debug::hoveredNode.load(); hovered && hovered->mRoot == this && hasAncestor(hovered, node))
-      glint_debug::hoveredNode.store(nullptr);
-    if (auto* inspected = glint_debug::inspectedNode.load(); inspected && inspected->mRoot == this && hasAncestor(inspected, node))
-      glint_debug::inspectedNode.store(nullptr);
-    if (auto* pinned = glint_debug::pinnedNode.load(); pinned && pinned->mRoot == this && hasAncestor(pinned, node))
-      glint_debug::pinnedNode.store(nullptr);
+    if (mInspHovered  && hasAncestor(mInspHovered,  node)) mInspHovered  = nullptr;
+    if (mInspSelected && hasAncestor(mInspSelected, node)) mInspSelected = nullptr;
+    if (mInspPinned   && hasAncestor(mInspPinned,   node)) mInspPinned   = nullptr;
 
     mCanvas.setDirty(false);
     glint_bus::publish(glint_tree_changed_event{this});
@@ -1280,17 +1325,10 @@ public:
     if (mGlobalAnchor.comp == node) { mGlobalAnchor = {}; mGlobalSelActive = false; }
     if (mGlobalFocus.comp  == node) { mGlobalFocus  = {}; mGlobalSelActive = false; }
 
-    // The inspector's highlight pointers are global; clear them too, or the
-    // next frame's overlay (and the inspector) dereference the freed node.
-    // compare_exchange so a concurrent store from the inspector isn't lost.
-    auto clearDebugSlot = [&](std::atomic<glint_element*>& slot) {
-      glint_element* cur = slot.load();
-      if (cur && cur->mRoot == this && hasAncestor(cur, node))
-        slot.compare_exchange_strong(cur, nullptr);
-    };
-    clearDebugSlot(glint_debug::hoveredNode);
-    clearDebugSlot(glint_debug::inspectedNode);
-    clearDebugSlot(glint_debug::pinnedNode);
+    // Inspector highlights, or the next frame's overlay draws a freed node.
+    if (mInspHovered  && hasAncestor(mInspHovered,  node)) mInspHovered  = nullptr;
+    if (mInspSelected && hasAncestor(mInspSelected, node)) mInspSelected = nullptr;
+    if (mInspPinned   && hasAncestor(mInspPinned,   node)) mInspPinned   = nullptr;
   }
 
   // ── Tree snapshot export ─────────────────────────────────────────────
@@ -1414,13 +1452,10 @@ public:
     mCanvas.DrawToCanvas(&canvas);
 
     // Phase 3 — inspector highlights (mirrors Draw(glint_canvas&) but using Skia).
-    auto* hovered   = glint_debug::hoveredNode.load();
-    auto* inspected = glint_debug::inspectedNode.load();
+    glint_element* hovered   = mInspHovered;
+    glint_element* inspected = mInspSelected;
 
-    // Only draw overlays for nodes that belong to this root.
-    auto belongsHere = [&](glint_element* c) {
-      return c && c->mRoot == this;
-    };
+    auto belongsHere = [](glint_element* c) { return c != nullptr; };
 
     SkPaint paint;
     paint.setAntiAlias(true);
@@ -1519,7 +1554,7 @@ public:
     // Eye-pinned highlight: teal outline only (no fill zones — fillRing with
     // alpha=0 zeros pixels in the premultiplied buffer, appearing black).
     {
-      auto* pinned = glint_debug::pinnedNode.load();
+      glint_element* pinned = mInspPinned;
       if (belongsHere(pinned))
       {
         const glint_overlay_quad pq = _overlayMapRect(pinned->GetPaintRECT(), _overlayMatrixFor(pinned));
@@ -1576,13 +1611,11 @@ public:
 
     // Phase 3 — inspector highlights (drawn on top of everything).
     // hoveredNode = transient faint blue (tree row hover / inspect-mode cursor).
-    // inspectedNode = persistent bright blue (tree row click / inspect-mode click).
-    auto* hovered   = glint_debug::hoveredNode.load();
-    auto* inspected = glint_debug::inspectedNode.load();
+    // inspected = persistent bright blue (tree row click / inspect-mode click).
+    glint_element* hovered   = mInspHovered;
+    glint_element* inspected = mInspSelected;
 
-    auto belongsHere = [&](glint_element* node) {
-      return node && node->mRoot == this;
-    };
+    auto belongsHere = [](glint_element* node) { return node != nullptr; };
 
     auto fillQuad = [&](const glint_overlay_quad& q, glint_color col)
     {
@@ -1686,7 +1719,7 @@ public:
 
     // Eye-pinned highlight: teal outline only (no fill zones — fillRing with
     // alpha=0 zeros pixels in the premultiplied buffer, appearing black).
-    if (auto* pinned = glint_debug::pinnedNode.load(); pinned && pinned->mRoot == this)
+    if (glint_element* pinned = mInspPinned)
     {
       const glint_overlay_quad pq = _overlayMapRect(pinned->GetPaintRECT(), _overlayMatrixFor(pinned));
       strokeQuad(pq, glint_color(220, 0, 210, 170), 2.f);
@@ -1714,11 +1747,11 @@ public:
     auto* hit = hitTest(x, y);
     // Inspect mode: clicking in the main UI selects that component persistently,
     // then immediately exits inspect mode (like Chrome DevTools).
-    if (!skipInspectMode && glint_debug::inspectMode.load() && hit)
+    if (!skipInspectMode && mInspPickMode && hit)
     {
-      glint_debug::inspectedNode.store(hit);
-      glint_debug::inspectMode.store(false);   // exit inspect mode on click
-      glint_debug::hoveredNode.store(nullptr);  // clear transient hover highlight
+      mInspSelected = hit;
+      mInspPickMode = false;     // exit inspect mode on click
+      mInspHovered  = nullptr;   // clear transient hover highlight
       glint_bus::publish(glint_selected_node_changed_event{this, hit->mId});
       setDirty(false);
     }
@@ -1961,11 +1994,11 @@ public:
 
     // Inspect mode: update the transient hover highlight and notify the inspector
     // so it can scroll the tree.  Uses hoveredNode (faint), not inspectedNode.
-    if (!skipInspectMode && glint_debug::inspectMode.load())
+    if (!skipInspectMode && mInspPickMode)
     {
-      if (hit != glint_debug::hoveredNode.load())
+      if (hit != mInspHovered)
       {
-        glint_debug::hoveredNode.store(hit);
+        mInspHovered = hit;
         glint_bus::publish(glint_hovered_node_changed_event{this, hit ? hit->mId : 0u});
         setDirty(false);
       }
@@ -2129,8 +2162,8 @@ public:
         node->dispatchDOMEvent(el);
       }
       mHoveredNode = nullptr;
-      if (glint_debug::inspectMode.load())
-        glint_debug::hoveredNode.store(nullptr);
+      if (mInspPickMode)
+        mInspHovered = nullptr;
       glint_bus::publish(glint_hovered_node_changed_event{this, 0u});
       setDirty(false);
     }
@@ -2372,7 +2405,7 @@ private:
     for (const auto& s : mStylesheets) sheets.push_back(&s);
     const std::vector<const GlintCssStylesheet*> uaSheets{ &mUaSheet };
 
-    // When the inspector is active (mInspDisabledDecls != nullptr), always use
+    // When the inspector is active (mInspDisabledDecls is set), always use
     // resolveSkipping — even if the set is currently empty.  An empty set means
     // "nothing is user-disabled", but we must still NOT apply the decl.disabled
     // AST filter (computeDeclarations step 5) so that file-commented declarations
@@ -2708,8 +2741,8 @@ private:
   // Context the current cascade evaluated @media rules against.
   GlintCssMediaContext mMediaContext;
 
-  // Inspector disabled-declaration filter — null when inspector is inactive.
-  const std::unordered_set<std::string>* mInspDisabledDecls = nullptr;
+  // Inspector disabled-declaration filter — empty when inspector is inactive.
+  std::optional<std::unordered_set<std::string>> mInspDisabledDecls;
 
   // ── CSS stylesheets loaded via loadStylesheet() ──────────────────────────────
   GlintCssStylesheet              mUaSheet;      // mutable in-memory copy of the UA sheet
@@ -3275,6 +3308,23 @@ private:
   glint_element* mLastClickNode = nullptr;
   std::chrono::steady_clock::time_point mLastClickTime{};
 
+  // ── Inspector state (see setInspectorHighlight) ─────────────────────────────
+  glint_element* mInspHovered  = nullptr;   // faint box-model overlay
+  glint_element* mInspSelected = nullptr;   // the inspector's selection
+  glint_element* mInspPinned   = nullptr;   // eye-pinned outline
+  bool           mInspPickMode = false;     // element picker active
+
+  glint_element*& _inspectorSlot(InspectorHighlight which)
+  {
+    switch (which)
+    {
+      case InspectorHighlight::Hovered:  return mInspHovered;
+      case InspectorHighlight::Selected: return mInspSelected;
+      case InspectorHighlight::Pinned:   break;
+    }
+    return mInspPinned;
+  }
+
   // ── Tag registry ─────────────────────────────────────────────────────────────
   std::unordered_map<int, glint_element*> mTagMap;
 
@@ -3735,6 +3785,11 @@ glint_element::_getNetworkLog() const
 inline bool glint_element::_isFocusViaKeyboard() const
 {
   return mRoot && mRoot->isFocusViaKeyboard();
+}
+
+inline bool glint_element::_debugColorizeBorders() const
+{
+  return mRoot && mRoot->debugColorizedBorders;
 }
 
 inline void glint_element::_markRootLayoutDirty()

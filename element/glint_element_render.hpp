@@ -1861,7 +1861,7 @@ public:
       canvas->drawRect(SkRect::MakeLTRB(_fr.L, _fr.T, _fr.R, _fr.B), _fp);
     }
 
-    if (glint_debug::colorizedBorders && static_cast<void*>(mRoot) != glint_debug::inspectorDoc)
+    if (_debugColorizeBorders())
     {
       glint_color bc = glint_debug::borderColorFor(this);
       SkPaint _dbgP;

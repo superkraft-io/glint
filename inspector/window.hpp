@@ -26,9 +26,10 @@
  *
  * Thread model:
  *   - Inspector HWND + message loop run on a background thread (base class).
- *   - mainRoot is only read (snapshot via getUITree) on that thread.
- *   - The glint_document for the inspector UI is only touched from that thread.
- *   - inspectedNode (atomic) is safe for cross-thread writes.
+ *   - The inspected document belongs to another thread and is never touched
+ *     from this one: every read is a snapshot and every edit a command, both
+ *     run on the document's thread through glint_inspector_link (mLink).
+ *   - The glint_document for the inspector UI is only touched from this thread.
  */
 
 #include "../platform/glint_window.hpp"   // glint_window base (platform-dispatching umbrella)
@@ -46,6 +47,7 @@
 #include <cctype>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <vector>
 #include <filesystem>
 #include <ctime>
@@ -156,7 +158,7 @@ protected:
 class OverlappingRectsButton : public glint_button
 {
 public:
-  bool toggled = false;   // matches glint_debug::colorizedBorders
+  bool toggled = false;   // Colorize Borders is on
 
 protected:
   struct ActiveColors { glint_color bg; glint_color icon; float brdW; glint_color brd; float radius; };
@@ -653,14 +655,16 @@ public:
 
   void DrawContentToCanvas(SkCanvas* canvas) override
   {
-    if (text.empty()) return;
+    // buildUI() sets innerText; `text` is kept for existing callers.
+    const std::string& label = text.empty() ? innerText : text;
+    if (label.empty()) return;
     SkFont  font = skFont(10.f);
     SkPaint tp;
     tp.setColor(SkColorSetARGB(255, 110, 110, 110));
     tp.setAntiAlias(true);
     const glint_rect r  = getContent();
-    const float tw = font.measureText(text.c_str(), text.size(), SkTextEncoding::kUTF8);
-    canvas->drawString(text.c_str(), r.L, r.T + r.H() * 0.5f + 4.f, font, tp);
+    const float tw = font.measureText(label.c_str(), label.size(), SkTextEncoding::kUTF8);
+    canvas->drawString(label.c_str(), r.L, r.T + r.H() * 0.5f + 4.f, font, tp);
     // Hairline after text
     const float lx = r.L + tw + 8.f;
     SkPaint lp;
@@ -678,8 +682,7 @@ public:
 class InspFpsChart : public glint_element
 {
 public:
-  glint_document* mMainRoot    = nullptr;
-  std::weak_ptr<void> mMainLife;     // the inspected document's life token
+  std::vector<float> mSamples;       // per-frame FPS of the inspected document, oldest first
   int         mRefreshRate = 60;     // screen Hz fetched in the constructor
 
   const char* typeName() const override { return "fps-chart"; }
@@ -724,8 +727,7 @@ public:
     const float  H = r.H();
     if (W <= 0.f || H <= 0.f) return;
 
-    std::vector<float> samples;
-    if (mMainRoot && !mMainLife.expired()) samples = mMainRoot->getFrameSamples();
+    const std::vector<float>& samples = mSamples;
 
     // -- Y-axis auto-scale --------------------------------------------------
     // Ceiling = max(samples, refHz) * 1.15, snapped up to the nearest 10.
@@ -845,10 +847,14 @@ public:
   static void open(glint_document* mainRoot)
   {
     if (mainRoot->skipInspectMode) return;   // root has opted out of inspection
-    auto it = sInstances.find(mainRoot);
-    if (it != sInstances.end() && it->second->isRunning()) return;
-    auto* inst = new glint_inspector_window(mainRoot);
-    sInstances[mainRoot] = inst;
+    glint_inspector_window* inst = nullptr;
+    {
+      std::lock_guard<std::mutex> lk(instancesMutex());
+      auto it = sInstances.find(mainRoot);
+      if (it != sInstances.end() && it->second->isRunning()) return;
+      inst = new glint_inspector_window(mainRoot);
+      sInstances[mainRoot] = inst;
+    }
     inst->startThread();
   }
 
@@ -858,6 +864,7 @@ public:
   static void openAndEnableInspect(glint_document* mainRoot)
   {
     if (mainRoot->skipInspectMode) return;
+    std::unique_lock<std::mutex> lk(instancesMutex());
     auto it = sInstances.find(mainRoot);
     if (it != sInstances.end() && it->second->isRunning())
     {
@@ -879,28 +886,41 @@ public:
     auto* inst = new glint_inspector_window(mainRoot);
     inst->mPendingEnableInspect = true;
     sInstances[mainRoot] = inst;
+    lk.unlock();
     inst->startThread();
   }
 
   /** Close the inspector for mainRoot. */
   static void close(glint_document* mainRoot)
   {
+    std::lock_guard<std::mutex> lk(instancesMutex());
     auto it = sInstances.find(mainRoot);
     if (it == sInstances.end()) return;
-    it->second->stopThread();
+    it->second->stopThread();   // posts WM_CLOSE; never waits
   }
 
   /** True while the inspector for mainRoot is alive. */
   static bool isOpen(glint_document* mainRoot)
   {
+    std::lock_guard<std::mutex> lk(instancesMutex());
     auto it = sInstances.find(mainRoot);
     return it != sInstances.end() && it->second->isRunning();
   }
 
 private:
+  // sInstances is used from every inspected document's thread and from each
+  // inspector's own thread (afterRun).
+  static std::mutex& instancesMutex()
+  {
+    static std::mutex m;
+    return m;
+  }
+
+  // Runs on the inspected document's thread (open() is called from it).
   explicit glint_inspector_window(glint_document* mainRoot)
     : mMainRoot(mainRoot), mMainLife(mainRoot->documentLifeToken())
   {
+    mLink.bindApp(mainRoot);
     if (!mainRoot->name.empty()) {
 #if defined(_WIN32)
       // Convert UTF-8 name to wide string for the Win32 title bar.
@@ -926,10 +946,22 @@ private:
   static constexpr const char* kStyleWResponsive = "61%"; // preserves ~500 px at the default 820 px window width
 
   // -- State ------------------------------------------------------------------
+  // The inspected document: a key into sInstances and the target of mLink,
+  // never dereferenced on this thread.
   glint_document*      mMainRoot     = nullptr;   // not owned
   std::weak_ptr<void>  mMainLife;                 // expires when mMainRoot is destroyed
-  glint_element* mSelectedComp = nullptr;   // last persistently selected component
-  uint64_t      mSelectedNodeId = 0;       // stable id for refresh / deletion fallback
+  glint_inspector_link mLink;                     // snapshots + commands (inspector_link.hpp)
+  std::shared_ptr<char> mSelfLife = std::make_shared<char>(0);  // late results check it
+  uint64_t      mSelectedNodeId = 0;       // selected element (0: none)
+  uint64_t      mRootNodeId     = 0;       // the document canvas, from the last tree snapshot
+  bool          mPickMode         = false; // element picker (crosshair) active
+  bool          mColorizedBorders = false; // Rendering tab: Colorize Borders
+  bool          mClosing          = false; // the inspected document is gone
+  // One request of each kind in flight: change events can come in bursts.
+  bool          mTreeInFlight    = false;
+  bool          mTreeAgain       = false;
+  bool          mStatsInFlight   = false;
+  bool          mNetworkInFlight = false;
   std::vector<uint64_t> mRemovedNodeUndoStack;    // most recently removed node IDs (LIFO)
   CrosshairButton*        mInspectBtn   = nullptr;   // Inspect toggle (header)
   glint_button*            mRealtimeBtn  = nullptr;   // Realtime polling toggle (header)
@@ -974,120 +1006,6 @@ private:
 #endif
 
   static std::map<glint_document*, glint_inspector_window*> sInstances;
-
-  // -- Thread entry ----------------------------------------------------------
-#if 0 // dead run() and createWindow() � superseded by glint_window base
-  void run(glint_document* mainRoot)
-  {
-    mRunning  = true;
-    mMainRoot = mainRoot;
-
-    if (!createWindow())
-    {
-      mRunning = false;
-      return;
-    }
-
-    // Subscribe to bus events for this root.
-    mSubIds.push_back(
-      glint_bus::subscribe<glint_tree_changed_event>([this](const auto& e) {
-        if (e.root != mMainRoot) return;
-        if (HWND h = mHWNDAtom.load())
-          ::PostMessage(h, WM_INSP_TREE_CHANGED, 0, 0);
-      })
-    );
-    mSubIds.push_back(
-      glint_bus::subscribe<glint_node_style_changed_event>([this](const auto& e) {
-        if (e.root != mMainRoot) return;
-        if (HWND h = mHWNDAtom.load())
-          ::PostMessage(h, WM_INSP_STYLE_CHANGED,
-                        static_cast<WPARAM>(e.id & 0xFFFFFFFF),
-                        static_cast<LPARAM>(e.id >> 32));
-      })
-    );
-    mSubIds.push_back(
-      glint_bus::subscribe<glint_hovered_node_changed_event>([this](const auto& e) {
-        if (e.root != mMainRoot) return;
-        if (!glint_debug::inspectMode.load()) return;
-        if (HWND h = mHWNDAtom.load())
-          ::PostMessage(h, WM_INSP_HOVER_CHANGED,
-                        static_cast<WPARAM>(e.id & 0xFFFFFFFF),
-                        static_cast<LPARAM>(e.id >> 32));
-      })
-    );
-    mSubIds.push_back(
-      glint_bus::subscribe<glint_selected_node_changed_event>([this](const auto& e) {
-        if (e.root != mMainRoot) return;
-        if (HWND h = mHWNDAtom.load())
-          ::PostMessage(h, WM_INSP_SELECT_CHANGED,
-                        static_cast<WPARAM>(e.id & 0xFFFFFFFF),
-                        static_cast<LPARAM>(e.id >> 32));
-      })
-    );
-
-    // Initial tree snapshot
-    refreshTree();
-
-    // Message loop
-    MSG msg;
-    while (::GetMessage(&msg, nullptr, 0, 0) > 0)
-    {
-      ::TranslateMessage(&msg);
-      ::DispatchMessage(&msg);
-    }
-
-    // Unsubscribe from bus events.
-    for (int id : mSubIds) glint_bus::unsubscribe(id);
-    mSubIds.clear();
-    // Reset inspect mode and both highlights so the main UI returns to normal.
-    glint_debug::inspectMode.store(false);
-    glint_debug::hoveredNode.store(nullptr);
-    glint_debug::inspectedNode.store(nullptr);
-    glint_debug::pinnedNode.store(nullptr);
-    mHWNDAtom = nullptr;
-    mRunning  = false;
-    // Remove from the per-root registry and self-destruct.
-    sInstances.erase(mMainRoot);
-    delete this;
-  }
-
-  // -- Window creation --------------------------------------------------------
-  bool createWindow()
-  {
-    static bool sRegistered = false;
-    if (!sRegistered)
-    {
-      WNDCLASSEXW wc    = {};
-      wc.cbSize         = sizeof(wc);
-      wc.style          = CS_HREDRAW | CS_VREDRAW;
-      wc.lpfnWndProc    = WndProc;
-      wc.hInstance      = glint_win32_host::moduleInstance();
-      wc.hCursor        = ::LoadCursor(nullptr, IDC_ARROW);
-      wc.hbrBackground  = reinterpret_cast<HBRUSH>(::CreateSolidBrush(RGB(26, 26, 26)));
-      wc.lpszClassName  = L"glint_inspector";
-      if (!::RegisterClassExW(&wc)) return false;
-      sRegistered = true;
-    }
-
-    mHWND = ::CreateWindowExW(
-      WS_EX_TOOLWINDOW,
-      L"glint_inspector",
-      L"glint Inspector",
-      WS_OVERLAPPEDWINDOW,
-      CW_USEDEFAULT, CW_USEDEFAULT,
-      mW, mH,
-      nullptr, nullptr,
-      glint_win32_host::moduleInstance(),
-      this   // passed to WM_NCCREATE as lpCreateParams
-    );
-    if (!mHWND) return false;
-
-    ::ShowWindow(mHWND, SW_SHOW);
-    ::UpdateWindow(mHWND);
-    mHWNDAtom = mHWND;
-    return true;
-  }
-#endif
 
   // -- Win32 identity --------------------------------------------------------
   const wchar_t* windowClassName() const override { return L"glint_inspector"; }
@@ -1165,7 +1083,6 @@ private:
     mSubIds.push_back(
       glint_bus::subscribe<glint_hovered_node_changed_event>([this](const auto& e) {
         if (e.root != mMainRoot) return;
-        if (!glint_debug::inspectMode.load()) return;
 #if defined(_WIN32)
         if (HWND h = mHWNDAtom.load())
           ::PostMessage(h, WM_INSP_HOVER_CHANGED,
@@ -1239,16 +1156,18 @@ private:
 #endif
     for (int id : mSubIds) glint_bus::unsubscribe(id);
     mSubIds.clear();
-    glint_debug::inspectMode.store(false);
-    glint_debug::hoveredNode.store(nullptr);
-    glint_debug::inspectedNode.store(nullptr);
-    glint_debug::pinnedNode.store(nullptr);
-    glint_debug::inspectorDoc = nullptr;
+    // Leave the inspected document as it was before the inspector opened.
+    mLink.command([](glint_document& doc) { doc.resetInspectorState(); });
   }
 
   void afterRun() override
   {
-    sInstances.erase(mMainRoot);
+    {
+      std::lock_guard<std::mutex> lk(instancesMutex());
+      auto it = sInstances.find(mMainRoot);
+      if (it != sInstances.end() && it->second == this)   // not a newer inspector's entry
+        sInstances.erase(it);
+    }
     delete this;
   }
 
@@ -1276,7 +1195,7 @@ private:
   // ── HTML export — semantic CSS render ────────────────────────────────────
   void exportDOMTreeHTML() const
   {
-    if (!mMainRoot) return;
+    if (!mLink.appAlive()) return;
 
     // Ask the user where to save the exported HTML.  Falls back to the
     // %TEMP%/tmp path only on platforms without a native dialog implemented
@@ -1322,6 +1241,28 @@ private:
     path = _exportFilePath("html");
 #endif
 
+    // The export reads the whole inspected tree: generate it on the
+    // document's thread, then open the file from here.
+    mLink.request<bool>(
+      [path](glint_document& doc) { return _writeDomHtml(&doc, path); },
+      [path](bool& ok) { if (ok) _openExportedFile(path); });
+  }
+
+  static void _openExportedFile(const std::string& path)
+  {
+#if defined(_WIN32)
+    ::ShellExecuteA(nullptr, "open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#elif defined(__APPLE__)
+    glint_window_mac::openFileInDefaultApp(path);
+#else
+    (void)path;
+#endif
+  }
+
+  // Writes the inspected document as semantic HTML.  Runs on the document's
+  // thread (see exportDOMTreeHTML).
+  static bool _writeDomHtml(glint_document* mainRoot, const std::string& path)
+  {
     std::ofstream f(path);
     if (!f.is_open())
     {
@@ -1330,7 +1271,7 @@ private:
 #else
       fprintf(stderr, "[glint export] ERROR: could not open HTML file for writing\n");
 #endif
-      return;
+      return false;
     }
 
     char hdr[512];
@@ -1438,12 +1379,12 @@ private:
       // returns an empty / cwd-relative path when no such directory exists,
       // which would point exported HTML at the wrong location for fonts and
       // images.
-      if (mMainRoot && mMainRoot->onRequest)
+      if (mainRoot && mainRoot->onRequest)
       {
         glint_resource_request req;
         req.url = raw;
         req.parseUrl();
-        mMainRoot->onRequest(req);
+        mainRoot->onRequest(req);
         if (!req.resolvedFilePath.empty())
           return std::filesystem::path(req.resolvedFilePath)
                    .make_preferred().lexically_normal();
@@ -1751,7 +1692,7 @@ private:
     };
 
     // ── Canvas viewport size (px) — the one hard pixel anchor ────────────
-    const glint_rect rootRect = mMainRoot->mCanvas.GetPaintRECT();
+    const glint_rect rootRect = mainRoot->mCanvas.GetPaintRECT();
     const float vw       = rootRect.W();
     const float vh       = rootRect.H();
 
@@ -1794,7 +1735,7 @@ private:
   .glint-btn:hover { background: #263545; }
 </style>
 )HTML";
-    for (const auto& sheet : mMainRoot->stylesheets())
+    for (const auto& sheet : mainRoot->stylesheets())
     {
       // Always inline the parsed stylesheet (instead of emitting a <link>
       // to the on-disk file) so url(...) references inside it have already
@@ -2353,16 +2294,10 @@ function exportAbsoluteJSON() {
       }
     };
 
-    walk(&mMainRoot->mCanvas);
+    walk(&mainRoot->mCanvas);
 
     f << "</div>\n</body>\n</html>\n"; // close #glint-viewport, body, html
     f.close();
-
-#if defined(_WIN32)
-    ::ShellExecuteA(nullptr, "open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-#elif defined(__APPLE__)
-    glint_window_mac::openFileInDefaultApp(path);
-#endif
 
     char done[512];
     std::snprintf(done, sizeof(done), "[glint export] Semantic HTML wrote: %s\n", path.c_str());
@@ -2371,6 +2306,7 @@ function exportAbsoluteJSON() {
 #else
     fprintf(stderr, "%s", done);
 #endif
+    return true;
   }
 
   // Enable or disable crosshair / element-picker mode.
@@ -2378,13 +2314,9 @@ function exportAbsoluteJSON() {
   // (onCreated, handleMessage, button onClick).
   void applyInspectMode(bool newMode)
   {
-    glint_debug::inspectMode.store(newMode);
-    if (!newMode)
-    {
-      // Leaving inspect mode � clear the transient hover highlight.
-      glint_debug::hoveredNode.store(nullptr);
-      if (mMainRoot) mMainRoot->setDirty(false);
-    }
+    mPickMode = newMode;
+    // Leaving inspect mode also clears the transient hover highlight.
+    mLink.command([newMode](glint_document& doc) { doc.setInspectorPickMode(newMode); });
     if (mInspectBtn)
     {
       mInspectBtn->toggled = newMode;
@@ -2428,8 +2360,7 @@ function exportAbsoluteJSON() {
 
   bool canRemoveSelectedNode() const
   {
-    return mMainRoot && mSelectedComp && mSelectedNodeId != 0
-           && mSelectedComp != &mMainRoot->mCanvas;
+    return mLink.appAlive() && mSelectedNodeId != 0 && mSelectedNodeId != mRootNodeId;
   }
 
   void updateRemoveNodeButtonState()
@@ -2441,61 +2372,72 @@ function exportAbsoluteJSON() {
 
   void clearSelectionState(bool clearTreeSelection)
   {
-    mSelectedComp   = nullptr;
     mSelectedNodeId = 0;
-    glint_debug::hoveredNode.store(nullptr);
-    glint_debug::inspectedNode.store(nullptr);
+    mLink.command([](glint_document& doc) {
+      doc.setInspectorHighlight(glint_document::InspectorHighlight::Hovered, 0);
+      doc.setInspectorHighlight(glint_document::InspectorHighlight::Selected, 0);
+    });
     if (mStylePanel)    mStylePanel->clear();
     if (mComputedPanel) mComputedPanel->clear();
     if (clearTreeSelection && mTree) mTree->selectById(0);
     updateRemoveNodeButtonState();
   }
 
-  void refreshActiveSidebarPanel(glint_element* comp)
+  // The panels fetch the element themselves (and clear the selection if it
+  // no longer exists, through mOnNodeMissing).
+  void refreshActiveSidebarPanel(uint64_t id)
   {
-    if (!comp) return;
+    if (!id) return;
 
     if (mActiveRightTab == 0)
     {
-      if (mStylePanel) mStylePanel->show(comp);
+      if (mStylePanel) mStylePanel->showNode(id);
       return;
     }
 
-    if (mComputedPanel) mComputedPanel->show(comp);
+    if (mComputedPanel) mComputedPanel->showNode(id);
   }
 
   void selectInspectorNodeById(uint64_t id)
   {
-    if (!mMainRoot || id == 0)
+    if (!mLink.appAlive() || id == 0)
     {
       clearSelectionState(true);
       return;
     }
 
-    if (auto* comp = mMainRoot->getNodeById(id))
-    {
-      mSelectedComp   = comp;
-      mSelectedNodeId = id;
-      glint_debug::inspectedNode.store(comp);
-      if (mTree && mTree->selectedId() != id) mTree->selectById(id);
-      refreshActiveSidebarPanel(comp);
-      if (mMainRoot) mMainRoot->setDirty(false);
-      updateRemoveNodeButtonState();
-      return;
-    }
-
-    clearSelectionState(true);
+    mSelectedNodeId = id;
+    mLink.command([id](glint_document& doc) {
+      doc.setInspectorHighlight(glint_document::InspectorHighlight::Selected, id);
+    });
+    if (mTree && mTree->selectedId() != id) mTree->selectById(id);
+    refreshActiveSidebarPanel(id);
+    updateRemoveNodeButtonState();
   }
+
+  struct RemoveResult
+  {
+    bool     ok         = false;
+    uint64_t fallbackId = 0;   // the removed element's parent
+  };
 
   void removeSelectedInspectorNode()
   {
     if (!canRemoveSelectedNode()) return;
 
     const uint64_t removedId = mSelectedNodeId;
-    uint64_t fallbackId = 0;
-    if (!mMainRoot->debugRemoveNodeById(removedId, &fallbackId)) return;
-
-    mRemovedNodeUndoStack.push_back(removedId);
+    mLink.request<RemoveResult>(
+      [removedId](glint_document& doc) {
+        RemoveResult r;
+        r.ok = doc.debugRemoveNodeById(removedId, &r.fallbackId);
+        return r;
+      },
+      [this, removedId](RemoveResult& r) {
+        if (!r.ok) return;
+        mRemovedNodeUndoStack.push_back(removedId);
+        mSelectedNodeId = r.fallbackId;
+        refreshTree();
+      });
 
     applyInspectMode(false);
     if (mPreviewPopup)
@@ -2509,43 +2451,33 @@ function exportAbsoluteJSON() {
 #endif
       mPreviewPopup->dismiss();
     }
-
-    mSelectedNodeId = fallbackId;
-    refreshTree();
   }
 
   void undoLastRemovedInspectorNode()
   {
-    if (!mMainRoot) return;
+    if (mRemovedNodeUndoStack.empty() || !mLink.appAlive()) return;
 
-    while (!mRemovedNodeUndoStack.empty())
-    {
-      const uint64_t restoreId = mRemovedNodeUndoStack.back();
-      mRemovedNodeUndoStack.pop_back();
-      if (!mMainRoot->debugRestoreNodeById(restoreId)) continue;
-
-      mSelectedNodeId = restoreId;
-      refreshTree();
-      return;
-    }
+    const uint64_t restoreId = mRemovedNodeUndoStack.back();
+    mRemovedNodeUndoStack.pop_back();
+    mLink.request<bool>(
+      [restoreId](glint_document& doc) { return doc.debugRestoreNodeById(restoreId); },
+      [this, restoreId](bool& ok) {
+        if (!ok) { undoLastRemovedInspectorNode(); return; }   // gone: try the next one
+        mSelectedNodeId = restoreId;
+        refreshTree();
+      });
   }
 
   // Shared timer handler — called from handleMessage(WM_TIMER) on Win32
   // and from onTimerFired() on macOS.
   /** The inspected document can be destroyed (its window closed) while the
-   *  inspector stays open.  Once its life token expires, drop every pointer
-   *  into it, so the existing `if (mMainRoot)` checks hold, and close. */
+   *  inspector stays open.  Once its life token expires, close. */
   void _dropMainRootIfGone()
   {
-    if (!mMainRoot || !mMainLife.expired()) return;
-    mMainRoot       = nullptr;
-    mSelectedComp   = nullptr;
+    if (mClosing || mLink.appAlive()) return;
+    mClosing        = true;
     mSelectedNodeId = 0;
-    if (mStylePanel)
-    {
-      mStylePanel->mDocument = nullptr;   // before clear(): it would write to it
-      mStylePanel->clear();
-    }
+    if (mStylePanel) mStylePanel->clear();
     stopThread();
   }
 
@@ -2590,61 +2522,68 @@ function exportAbsoluteJSON() {
       }
       return;
     }
-    if (timerId == static_cast<int>(WM_INSP_TIMER_ID) && mMainRoot)
+    // Each refresh fetches from the inspected document; the views update when
+    // the snapshots arrive.
+    if (timerId == static_cast<int>(WM_INSP_TIMER_ID) && mLink.appAlive())
     {
-      bool dirty = false;
-
       // Rendering tab stats (only when that tab is visible)
       if (mActiveTab == 1)
-      {
-        char buf[48];
-        if (mFpsLabel) {
-          snprintf(buf, sizeof(buf), "%.1f fps", mMainRoot->getFPS());
-          mFpsLabel->innerText = buf;
-        }
-        if (mFrameTimeLabel) {
-          snprintf(buf, sizeof(buf), "%.1f ms", mMainRoot->getFrameTimeMs());
-          mFrameTimeLabel->innerText = buf;
-        }
-        if (mDrawCountLabel) {
-          snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(mMainRoot->getDrawCount()));
-          mDrawCountLabel->innerText = buf;
-        }
-        dirty = true;
-      }
+        refreshRenderingStats();
 
       // Network tab live refresh (only when visible).
       if (mActiveTab == 2)
-      {
         refreshNetworkTab();
-        dirty = true;
-      }
 
       // Realtime style-panel polling.
       if (mActiveTab == 0 && mRealtimeMode && mActiveRightTab == 0 &&
-          mStylePanel && mSelectedComp && mStylePanel->canLiveRefresh())
-      {
-        mStylePanel->liveRefresh(mSelectedComp);
-        dirty = true;
-      }
+          mStylePanel && mSelectedNodeId && mStylePanel->canLiveRefresh())
+        mStylePanel->liveRefresh();
 
       // Computed panel live refresh.
-      if (mActiveRightTab == 1 && mComputedPanel && mSelectedComp)
-      {
-        mComputedPanel->liveRefresh(mSelectedComp, mRealtimeMode);
-        dirty = true;
-      }
-
-      if (dirty)
-      {
-        if (mOwnRoot) mOwnRoot->setDirty(false);
-#if defined(_WIN32)
-        ::InvalidateRect(mHWND, nullptr, FALSE);
-#else
-        requestRedraw();
-#endif
-      }
+      if (mActiveRightTab == 1 && mComputedPanel && mSelectedNodeId)
+        mComputedPanel->liveRefresh(mRealtimeMode);
     }
+  }
+
+  struct RenderStats
+  {
+    float              fps     = 0.f;
+    float              frameMs = 0.f;
+    uint64_t           draws   = 0;
+    std::vector<float> samples;
+  };
+
+  void refreshRenderingStats()
+  {
+    if (mStatsInFlight) return;
+    mStatsInFlight = true;
+    mLink.request<RenderStats>(
+      [](glint_document& doc) {
+        RenderStats r;
+        r.fps     = doc.getFPS();
+        r.frameMs = doc.getFrameTimeMs();
+        r.draws   = doc.getDrawCount();
+        r.samples = doc.getFrameSamples();
+        return r;
+      },
+      [this](RenderStats& r) {
+        mStatsInFlight = false;
+        char buf[48];
+        if (mFpsLabel) {
+          snprintf(buf, sizeof(buf), "%.1f fps", r.fps);
+          mFpsLabel->innerText = buf;
+        }
+        if (mFrameTimeLabel) {
+          snprintf(buf, sizeof(buf), "%.1f ms", r.frameMs);
+          mFrameTimeLabel->innerText = buf;
+        }
+        if (mDrawCountLabel) {
+          snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(r.draws));
+          mDrawCountLabel->innerText = buf;
+        }
+        if (mFpsChart) mFpsChart->mSamples = std::move(r.samples);
+        if (mOwnRoot) mOwnRoot->setDirty(false);
+      });
   }
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -2693,7 +2632,7 @@ function exportAbsoluteJSON() {
       glint_color c;
       c.A = (rgba >> 24) & 0xFF;  c.R = (rgba >> 16) & 0xFF;
       c.G = (rgba >>  8) & 0xFF;  c.B =  rgba        & 0xFF;
-      if (mStylePanel) mStylePanel->updateActiveSwatch(c);
+      if (mStylePanel) mStylePanel->updateActiveSwatch(c, static_cast<int>(lp));
       ::InvalidateRect(mHWND, nullptr, FALSE);
       return 0;
     }
@@ -2726,30 +2665,18 @@ function exportAbsoluteJSON() {
       glint_element* focused = mOwnRoot ? mOwnRoot->getFocusedNode() : nullptr;
       if (!mOwnRoot || !focused || !focused->consumesCtrlA())
       {
-        if (mSelectedComp)
+        if (mSelectedNodeId)
         {
-          const std::string text = mSelectedComp->innerText;
-#if defined(_WIN32)
-          if (!text.empty() && ::OpenClipboard(nullptr))
-          {
-            ::EmptyClipboard();
-            const int wlen = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-            if (wlen > 0)
-            {
-              HGLOBAL hg = ::GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(wlen) * sizeof(WCHAR));
-              if (hg) {
-                WCHAR* p = static_cast<WCHAR*>(::GlobalLock(hg));
-                if (p) { ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, p, wlen); ::GlobalUnlock(hg); }
-                ::SetClipboardData(CF_UNICODETEXT, hg);
-              }
-            }
-            ::CloseClipboard();
-          }
-          ::InvalidateRect(mHWND, nullptr, FALSE);
-#elif defined(__APPLE__)
-          glint_platform::setClipboardText(text);
-          requestRedraw();
-#endif
+          // Read on the document's thread, copied here.
+          const uint64_t id = mSelectedNodeId;
+          mLink.request<std::string>(
+            [id](glint_document& doc) {
+              glint_element* el = doc.getNodeById(id);
+              return el ? el->innerText : std::string{};
+            },
+            [](std::string& text) {
+              if (!text.empty()) glint_platform::setClipboardText(text);
+            });
         }
         return;
       }
@@ -2857,8 +2784,8 @@ function exportAbsoluteJSON() {
       mRightTabBtns[i]->style.backgroundColor = a ? "#252525" : "#191919";
     }
 
-    if (mSelectedComp)
-      refreshActiveSidebarPanel(mSelectedComp);
+    if (mSelectedNodeId)
+      refreshActiveSidebarPanel(mSelectedNodeId);
 
     if (mOwnRoot) mOwnRoot->setDirty(false);
   }
@@ -2869,28 +2796,39 @@ function exportAbsoluteJSON() {
   // macOS (compiled as ObjC++ via glint_window_mac.mm).
   void exportScreenshot()
   {
-    if (!mMainRoot) return;
+    if (!mLink.appAlive()) return;
+    mLink.request<sk_sp<SkData>>(
+      [](glint_document& doc) { return _renderPng(doc); },
+      [this](sk_sp<SkData>& png) {
+        if (png && !png->isEmpty()) _saveScreenshot(png);
+      });
+  }
 
-    const glint_rect& bounds = mMainRoot->mCanvas.mRect;
+  // Renders the document into PNG bytes.  Runs on the document's thread.
+  static sk_sp<SkData> _renderPng(glint_document& doc)
+  {
+    const glint_rect& bounds = doc.mCanvas.mRect;
     const int w = static_cast<int>(std::round(bounds.W()));
     const int h = static_cast<int>(std::round(bounds.H()));
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0) return nullptr;
 
     // Render into an off-screen CPU bitmap.
     SkBitmap bmp;
-    if (!bmp.tryAllocPixels(SkImageInfo::MakeN32Premul(w, h))) return;
+    if (!bmp.tryAllocPixels(SkImageInfo::MakeN32Premul(w, h))) return nullptr;
     bmp.eraseColor(SK_ColorTRANSPARENT);
     {
       SkCanvas c(bmp);
-      mMainRoot->DrawToCanvas(c);
+      doc.DrawToCanvas(c);
     }
 
     // Encode to PNG in memory.
     SkDynamicMemoryWStream stream;
-    if (!SkPngEncoder::Encode(&stream, bmp.pixmap(), {})) return;
-    sk_sp<SkData> pngData = stream.detachAsData();
-    if (!pngData || pngData->isEmpty()) return;
+    if (!SkPngEncoder::Encode(&stream, bmp.pixmap(), {})) return nullptr;
+    return stream.detachAsData();
+  }
 
+  void _saveScreenshot(const sk_sp<SkData>& pngData)
+  {
     // -- Platform Save As dialog + write -------------------------------------
 #if defined(_WIN32)
     wchar_t path[MAX_PATH] = L"screenshot.png";
@@ -2934,8 +2872,9 @@ function exportAbsoluteJSON() {
   {
     // Prevent the inspector from being inspected recursively.
     if (mOwnRoot) mOwnRoot->skipInspectMode = false;
-    // Register this document so DrawToCanvas skips the debug border overlay.
-    glint_debug::inspectorDoc = mOwnRoot.get();
+    // Results of requests to the inspected document come back through this
+    // window's own document queue.
+    mLink.bindInspector(mOwnRoot.get(), mSelfLife);
 
     mTree             = nullptr;
     mStylePanel       = nullptr;
@@ -3076,7 +3015,7 @@ function exportAbsoluteJSON() {
       btn->pressed.borderColor     = "#777";     btn->pressed.borderWidth = 1.f;
       btn->pressed.borderRadius    = 4.f;
       mInspectBtn = btn;
-      btn->onClick = [this] { applyInspectMode(!glint_debug::inspectMode.load()); };
+      btn->onClick = [this] { applyInspectMode(!mPickMode); };
 
       header->addChild(btn);
     }
@@ -3104,26 +3043,16 @@ function exportAbsoluteJSON() {
           selectInspectorNodeById(node.id);
         };
         tree->onHover = [this](const glint_tree_node* node) {
-          _dropMainRootIfGone();
-          if (!mMainRoot) return;
-          if (node) {
-            if (auto* comp = mMainRoot->getNodeById(node->id))
-              glint_debug::hoveredNode.store(comp);
-          } else {
-            glint_debug::hoveredNode.store(nullptr);
-          }
-          mMainRoot->setDirty(false);
+          const uint64_t id = node ? node->id : 0;
+          mLink.command([id](glint_document& doc) {
+            doc.setInspectorHighlight(glint_document::InspectorHighlight::Hovered, id);
+          });
         };
         tree->onEyeToggle = [this](uint64_t id, bool active) {
-          _dropMainRootIfGone();
-          if (!mMainRoot) return;
-          if (active && id != 0) {
-            if (auto* comp = mMainRoot->getNodeById(id))
-              glint_debug::pinnedNode.store(comp);
-          } else {
-            glint_debug::pinnedNode.store(nullptr);
-          }
-          mMainRoot->setDirty(false);
+          const uint64_t pinned = active ? id : 0;
+          mLink.command([pinned](glint_document& doc) {
+            doc.setInspectorHighlight(glint_document::InspectorHighlight::Pinned, pinned);
+          });
         };
         mTree = tree;
         body->addChild(tree);
@@ -3192,7 +3121,8 @@ function exportAbsoluteJSON() {
 #elif defined(__APPLE__)
           panel->mOwnerHWND  = this;   // glint_window_mac* stored as void*; enables attr list popup
 #endif
-          panel->mDocument   = mMainRoot;
+          panel->mLink          = &mLink;
+          panel->mOnNodeMissing = [this] { clearSelectionState(true); };
           panel->prewarmPicker();  // spin up hidden picker thread now to avoid first-open delay
           rightCol->addChild(panel);
         }
@@ -3200,6 +3130,8 @@ function exportAbsoluteJSON() {
         // Computed panel (hidden by default)
         {
           auto* panel = new InspComputedPanel();
+          panel->mLink          = &mLink;
+          panel->mOnNodeMissing = [this] { clearSelectionState(true); };
           panel->style.display         = "none";
           panel->style.flexGrow        = 1.f;
           panel->style.width           = "100%";
@@ -3367,8 +3299,6 @@ function exportAbsoluteJSON() {
       // FPS chart
       {
         auto* chart = new InspFpsChart();
-        chart->mMainRoot           = mMainRoot;
-        chart->mMainLife           = mMainLife;
         chart->style.width         = 300.f;
         chart->style.height        = 100.f;
         chart->style.backgroundColor = "#1c1c1c";
@@ -3421,15 +3351,19 @@ function exportAbsoluteJSON() {
         btn->pressed.backgroundColor = "#4a4a4a";  btn->pressed.color = "#fff";
         btn->pressed.borderColor     = "#777";     btn->pressed.borderWidth = 1.f;
         btn->pressed.borderRadius    = 4.f;
-        btn->toggled = glint_debug::colorizedBorders;
+        btn->toggled = mColorizedBorders;
         mColorizeBtn = btn;
         btn->onClick = [this] {
-          glint_debug::colorizedBorders = !glint_debug::colorizedBorders;
+          mColorizedBorders = !mColorizedBorders;
+          const bool on = mColorizedBorders;
+          mLink.command([on](glint_document& doc) {
+            doc.debugColorizedBorders = on;
+            doc.setDirty(false);
+          });
           if (mColorizeBtn) {
-            mColorizeBtn->toggled = glint_debug::colorizedBorders;
+            mColorizeBtn->toggled = mColorizedBorders;
             mColorizeBtn->setDirty(false);
           }
-          if (mMainRoot) mMainRoot->setDirty(false);
         };
         row->addChild(btn);
 
@@ -3501,7 +3435,7 @@ function exportAbsoluteJSON() {
         clearBtn->pressed.borderWidth     = 1.f;
         clearBtn->pressed.borderRadius    = 4.f;
         clearBtn->onClick = [this] {
-          if (mMainRoot) mMainRoot->networkLog.clear();
+          mLink.command([](glint_document& doc) { doc.networkLog.clear(); });
           mNetworkEntryCount = -1;
           refreshNetworkTab();
         };
@@ -3606,9 +3540,19 @@ function exportAbsoluteJSON() {
   // -- Tree / style refresh --------------------------------------------------
   void refreshNetworkTab()
   {
-    if (!mNetworkListContainer || !mMainRoot) return;
+    if (!mNetworkListContainer || mNetworkInFlight) return;
+    mNetworkInFlight = true;
+    mLink.request<std::vector<glint_network_log_entry>>(
+      [](glint_document& doc) { return doc.networkLog.snapshot(); },
+      [this](std::vector<glint_network_log_entry>& entries) {
+        mNetworkInFlight = false;
+        applyNetworkSnapshot(entries);
+      });
+  }
 
-    auto snapshot = mMainRoot->networkLog.snapshot();
+  void applyNetworkSnapshot(const std::vector<glint_network_log_entry>& snapshot)
+  {
+    if (!mNetworkListContainer) return;
     const int newCount = static_cast<int>(snapshot.size());
     if (newCount == mNetworkEntryCount) return;  // nothing changed
     mNetworkEntryCount = newCount;
@@ -3744,15 +3688,28 @@ function exportAbsoluteJSON() {
 
   void refreshTree()
   {
-    if (!mTree || !mMainRoot) return;
+    if (!mTree || !mLink.appAlive()) return;
+    if (mTreeInFlight) { mTreeAgain = true; return; }   // coalesce bursts of tree changes
+    mTreeInFlight = true;
+    mLink.request<glint_tree_node>(
+      [](glint_document& doc) { return doc.getUITree(); },
+      [this](glint_tree_node& tree) {
+        mTreeInFlight = false;
+        applyTree(tree);
+        if (mTreeAgain) { mTreeAgain = false; refreshTree(); }
+      });
+  }
+
+  void applyTree(const glint_tree_node& tree)
+  {
+    if (!mTree) return;
     const uint64_t selectedId = mSelectedNodeId;
-    // Tree rebuild invalidates all component pointers from the previous snapshot.
-    mSelectedComp = nullptr;
-    glint_debug::hoveredNode.store(nullptr);
-    glint_debug::inspectedNode.store(nullptr);
-    if (mStylePanel)    mStylePanel->clear();     // pointers are stale after tree rebuild
-    if (mComputedPanel) mComputedPanel->clear(); // same
-    mTree->setTree(mMainRoot->getUITree());
+    mRootNodeId = tree.id;
+    // The rows are rebuilt under the pointer: drop the row-hover highlight.
+    mLink.command([](glint_document& doc) {
+      doc.setInspectorHighlight(glint_document::InspectorHighlight::Hovered, 0);
+    });
+    mTree->setTree(tree);
     mTree->expandToDepth(2);
     if (selectedId != 0)
       selectInspectorNodeById(selectedId);
@@ -3767,15 +3724,11 @@ function exportAbsoluteJSON() {
 
   void refreshStyle(uint64_t id)
   {
-    if (!mStylePanel || !mMainRoot) return;
+    if (!mStylePanel || !mLink.appAlive()) return;
+    if (id == 0 || id != mSelectedNodeId) return;
     if (mTree && mTree->selectedId() != id) return;
-    if (auto* comp = mMainRoot->getNodeById(id))
-    {
-      mSelectedComp   = comp;
-      mSelectedNodeId = id;
-      refreshActiveSidebarPanel(comp);
-      updateRemoveNodeButtonState();
-    }
+    refreshActiveSidebarPanel(id);
+    updateRemoveNodeButtonState();
 #if defined(_WIN32)
     if (mHWND) ::InvalidateRect(mHWND, nullptr, FALSE);
 #elif defined(__APPLE__)

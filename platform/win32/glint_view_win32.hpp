@@ -389,6 +389,9 @@ private:
       [this]() {
         requestRedrawInternal();
       });
+    // Tasks posted from other threads run from the animation timer, not a
+    // forced repaint per task, and also while the host hides the view.
+    mDocument->taskQueue()->setWake(nullptr);
 
     mDocument->hwnd = mHWND;
     mDocument->devicePixelRatio = mDpr;
@@ -897,6 +900,9 @@ private:
       case WM_TIMER:
         if (wp == kAnimTimer)
         {
+          // Run tasks posted from other threads (see initDocument()).
+          if (self->mDocument) self->mDocument->taskQueue()->drain();
+
           if (!glint_win32_host::shouldScheduleTimerRedraw(self->mDocument.get(), self->mRedrawRequested))
             return 0;
 

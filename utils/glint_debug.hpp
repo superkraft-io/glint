@@ -4,15 +4,13 @@
  * glint_debug.hpp
  * Runtime debug utilities for the glint component library.
  *
- * Enable "Colorize Borders" via the plugin's Debug menu (hamburger icon)
- * to draw a unique coloured outline around every glint_element � useful
- * for visualising component bounds, overlap, and layout issues.
+ * "Colorize Borders" (the inspector's Rendering tab) draws a unique
+ * coloured outline around every glint_element of one document — useful for
+ * visualising component bounds, overlap, and layout issues.  It is a
+ * per-document flag, set on the document's own thread:
  *
- * Flags are plain inline bools so they survive across the whole session
- * without any singleton plumbing. Flip them from anywhere in the UI code:
- *
- *   glint_debug::colorizedBorders = true;
- *   pGraphics->SetAllControlsDirty();
+ *   doc.debugColorizedBorders = true;
+ *   doc.setDirty(false);
  */
 
 #include "../glint_graphics.hpp"
@@ -611,35 +609,9 @@ inline bool glint_load_font(glint_canvas* pGraphics,
 
 namespace glint_debug
 {
-  // When true, every glint_element draws a bright coloured outline
-  // on top of its normal rendering so you can see exact component bounds.
-  inline bool colorizedBorders = false;
-
-  // Pointer to the inspector's own glint_document (stored as void* to avoid
-  // a circular include with glint_document.hpp).  Elements belonging to this
-  // document skip colorized-border rendering so the inspector UI is never
-  // affected by the debug overlay.
-  inline void* inspectorDoc = nullptr;
-
-  // Transient hover highlight (faint).  Set when mouse enters a tree row or
-  // when Inspect mode is active and the cursor moves over a main-UI component.
-  // Cleared on mouse-out / row leave.  Read each frame by glint_document::Draw().
-  inline std::atomic<glint_element*> hoveredNode { nullptr };
-
-  // Persistent selected highlight (bright).  Set when the user clicks a tree
-  // row or clicks a component in the main UI while Inspect mode is active.
-  // Cleared on inspector close or tree rebuild.  Read by glint_document::Draw().
-  inline std::atomic<glint_element*> inspectedNode { nullptr };
-
-  // Eye-pinned highlight.  Set when the user toggles the eye button on a tree
-  // row.  Independent of selection — persists until toggled off or inspector
-  // closes.  Drawn as a teal stroke + faint fill in glint_document::Draw().
-  inline std::atomic<glint_element*> pinnedNode { nullptr };
-
-  // When true, hovering the main plugin UI highlights the component under the
-  // cursor in real time (DevTools element-picker mode). Toggled by the inspector's
-  // Inspect button; read by glint_document::OnMouseOver via atomic poll.
-  inline std::atomic<bool> inspectMode { false };
+  // The inspector's highlights, element picker and "Colorize Borders"
+  // overlay are per-document state (glint_document::setInspectorHighlight,
+  // setInspectorPickMode, debugColorizedBorders).
 
   // Returns a deterministic, visually distinct colour for a given component
   // instance, derived from its pointer address.

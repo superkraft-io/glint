@@ -2159,7 +2159,7 @@ public:
       _rootCanvas->drawRect(SkRect::MakeLTRB(_fr.L, _fr.T, _fr.R, _fr.B), _fp);
     }
 
-    if (glint_debug::colorizedBorders)
+    if (_debugColorizeBorders())
       g.DrawRect(glint_debug::borderColorFor(this),
                  mFilterPad > 0.f ? mPaintRECT : mRect, nullptr, 1.0f);
 
@@ -2730,6 +2730,10 @@ protected:
   // Sets `mRoot->mLayoutDirty = true`. Defined at the bottom of glint_document.hpp
   // after the full document definition (we only have a forward-decl here).
   void _markRootLayoutDirty();
+
+  // True when this element's document draws debug outlines (inspector
+  // "Colorize Borders").  Defined at the bottom of glint_document.hpp.
+  bool _debugColorizeBorders() const;
 
   // Returns mRoot->devicePixelRatio (or 1.f when mRoot is null).
   // Defined at the bottom of glint_document.hpp after the full document definition.

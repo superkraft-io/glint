@@ -20,6 +20,7 @@
 #include "../components/glint_gradient_editor.hpp" // glint_gradient_editor, sk_gradient_stop
 #include "../components/glint_select.hpp"
 #include "glint_attributes_list.hpp"                   // glint_attributes_list_window
+#include "inspector_link.hpp"                         // glint_inspector_link, glint_inspector_node
 
 #include <algorithm>
 #include <cmath>
@@ -1225,7 +1226,6 @@ class InspNameButton : public glint_button
 public:
   std::string      mKey;
   InspStylePanel*  mPanel    = nullptr;
-  glint_element*    mLiveComp = nullptr;
   PropWriter       mWriter;   // set by buildPropRow; routes reset writes to correct layer
 
   const char* typeName() const override { return "insp_name_btn"; }
@@ -1288,7 +1288,6 @@ class InspEnumButton : public glint_button
 public:
   std::string                      mKey;
   const std::vector<std::string>*  mOpts       = nullptr;
-  glint_element*                 mLiveComp   = nullptr;
   std::shared_ptr<bool>            mRowEnabled;
   PropWriter                       mWriter;   // set by buildPropRow; routes enum writes
 
@@ -1332,20 +1331,18 @@ public:
       items.push_back({id, value.empty() ? "(none)" : value});
       if (value == cur) checked.push_back(id);
     }
+    // The menu runs a modal loop: the panel may rebuild (and destroy this
+    // button) before it returns.
+    const auto life = lifeToken();
     const int result = glint_platform::showContextMenu(0, 0, items, {}, checked);
-    if (result < 1) return;
+    if (life.expired() || result < 1) return;
     const int idx = result - 1;
     if (idx >= static_cast<int>(mOpts->size())) return;
     if (mRowEnabled && !*mRowEnabled) return;
     const std::string next = (*mOpts)[static_cast<size_t>(idx)];
     innerText = next.empty() ? "(none)" : next;
     setDirty(false);
-    if (mWriter)
-      mWriter(mKey, next);
-    else {
-      glint_style_set_by_name(mLiveComp->style, mKey, next);
-      mLiveComp->setDirty(false);
-    }
+    if (mWriter) mWriter(mKey, next);
   }
 
   bool OnKeyDown(const glint_key_press& key) override
@@ -1366,12 +1363,7 @@ public:
     const std::string next = (*mOpts)[static_cast<size_t>(idx)];
     innerText = next.empty() ? "(none)" : next;
     setDirty(false);
-    if (mWriter)
-      mWriter(mKey, next);
-    else if (mLiveComp) {
-      glint_style_set_by_name(mLiveComp->style, mKey, next);
-      mLiveComp->setDirty(false);
-    }
+    if (mWriter) mWriter(mKey, next);
     return true;
   }
 };
@@ -1418,8 +1410,8 @@ public:
 // -- CssSaveButton ------------------------------------------------------------
 // Small yellow rounded-square button shown in a CSS rule header when that rule
 // has unsaved inspector edits.  Invisible (no paint) when clean so it takes no
-// visual space until needed.  onClick is wired by buildCssRuleBlock to call
-// mDocument->saveRuleToFile() and reset the dirty flag.
+// visual space until needed.  onClick is wired by buildCssRuleBlock to save
+// the rule (glint_document::saveRuleToFile, via the link) and reset the flag.
 class CssSaveButton : public glint_button
 {
 public:
@@ -1510,6 +1502,229 @@ public:
 
   const char* typeName() const override { return "insp_style_panel"; }
 
+  // ── The shown element ──────────────────────────────────────────────────────
+  // The panel shows and edits a copy of the inspected element (mNode), fetched
+  // from the inspected document through mLink and refreshed after edits.  Every
+  // edit is applied to the copy at once and sent to the real element as a
+  // command, so the panel never touches the other thread's document.
+
+  const glint_inspector_node& node() const { return mNode; }
+
+  /** Show element `id`: fetch it from the inspected document, then rebuild. */
+  void showNode(uint64_t id)
+  {
+    if (!id) { clear(); return; }
+    if (id == mNode.id && mWantedId == id) { refreshFromApp(); return; }
+    mWantedId = id;
+    if (!mLink) return;
+    const auto life = lifeToken();
+    mLink->request<glint_inspector_node>(
+      [id](glint_document& doc) { return glint_inspector_capture_node(doc, id); },
+      [this, id, life](glint_inspector_node& n) {
+        if (life.expired() || id != mWantedId) return;   // a newer selection won
+        if (!n.id) { _nodeMissing(); return; }
+        show(n);
+      });
+  }
+
+  /** Fetch the shown element again and rebuild from it: realtime refresh,
+   *  and after edits (computed values and CSS rules come from the document). */
+  void refreshFromApp()
+  {
+    if (!mLink || !mNode.id) return;
+    if (mRefreshInFlight) { mRefreshAgain = true; return; }
+    mRefreshInFlight = true;
+    const uint64_t id  = mNode.id;
+    const uint64_t seq = mEditSeq;
+    const auto life = lifeToken();
+    mLink->request<glint_inspector_node>(
+      [id](glint_document& doc) { return glint_inspector_capture_node(doc, id); },
+      [this, id, seq, life](glint_inspector_node& n) {
+        if (life.expired()) return;
+        mRefreshInFlight = false;
+        const bool again = mRefreshAgain || seq != mEditSeq;
+        mRefreshAgain = false;
+        if (id != mNode.id || id != mWantedId) return;   // the selection changed
+        // Edits made since the request are not in this copy: fetch again.
+        if (again) { refreshFromApp(); return; }
+        if (!n.id) { _nodeMissing(); return; }
+        if (!canLiveRefresh()) return;                   // the user is editing a row
+        show(n);
+      });
+  }
+
+  /** Captures the attributes the "element { }" block shows.  Runs on the
+   *  inspected document's thread (glint_inspector_capture_node). */
+  static std::vector<std::pair<std::string, std::string>> collectElementAttributes(glint_element* comp)
+  {
+    std::vector<std::pair<std::string, std::string>> attrs;
+    if (!comp) return attrs;
+
+    attrs.emplace_back("id", comp->id);
+    attrs.emplace_back("className", comp->className);
+    attrs.emplace_back("innerText", comp->innerText);
+
+    if (auto* img = dynamic_cast<glint_image*>(comp))
+    {
+      attrs.emplace_back("src", img->src);
+    }
+
+    if (auto* input = dynamic_cast<glint_input*>(comp))
+    {
+      attrs.emplace_back("value", input->getValue());
+      attrs.emplace_back("type", input->type);
+      attrs.emplace_back("placeholder", input->placeholder);
+      attrs.emplace_back("min", _floatToString(input->min));
+      attrs.emplace_back("max", _floatToString(input->max));
+      attrs.emplace_back("readonly", _boolToString(input->readonly));
+      attrs.emplace_back("disabled", _boolToString(input->disabled));
+    }
+
+    if (auto* cb = dynamic_cast<glint_checkbox*>(comp))
+    {
+      attrs.emplace_back("checked", _boolToString(cb->checked));
+      attrs.emplace_back("keepChecked", _boolToString(cb->keepChecked));
+    }
+
+    if (auto* sel = dynamic_cast<glint_select*>(comp))
+    {
+      attrs.emplace_back("selectedIndex", _intToString(sel->selectedIndex));
+      attrs.emplace_back("placeholder", sel->placeholder);
+      attrs.emplace_back("options", _joinStringList(sel->options));
+    }
+
+    if (auto* dial = dynamic_cast<glint_dial*>(comp))
+      attrs.emplace_back("angle", _floatToString(dial->angle));
+
+    if (auto* picker = dynamic_cast<glint_colorpicker*>(comp))
+    {
+      attrs.emplace_back("value", _colorToHex(picker->value));
+      attrs.emplace_back("mode", _colorModeToString(picker->mode));
+    }
+
+    if (auto* grad = dynamic_cast<glint_gradient_editor*>(comp))
+    {
+      attrs.emplace_back("stops", _serializeGradientStops(grad->stops));
+      attrs.emplace_back("direction", _floatToString(grad->direction));
+      attrs.emplace_back("centerX", _floatToString(grad->centerX));
+      attrs.emplace_back("centerY", _floatToString(grad->centerY));
+      attrs.emplace_back("radius", _floatToString(grad->radius));
+    }
+
+    if (auto* list = dynamic_cast<glint_list*>(comp))
+      attrs.emplace_back("highlightOnSelect", _boolToString(list->highlightOnSelect));
+
+    return attrs;
+  }
+
+  /** Applies an edit from the "element { }" block.  Runs on the inspected
+   *  document's thread. */
+  static void applyElementAttribute(glint_element& el, const std::string& key, const std::string& v)
+  {
+    if (key == "id")        { el.id = v; return; }
+    if (key == "className") { el.className = v; if (el.mApplyCss) el.mApplyCss(&el); return; }
+    if (key == "innerText") { el.innerText = v; return; }
+
+    if (auto* img = dynamic_cast<glint_image*>(&el))
+    {
+      if (key == "src") img->SetSrc(v.c_str(), img->numFrames);
+      return;
+    }
+
+    if (auto* input = dynamic_cast<glint_input*>(&el))
+    {
+      if (key == "value")            input->setValue(v);
+      else if (key == "type")        input->type = _trim(v);
+      else if (key == "placeholder") input->placeholder = v;
+      else if (key == "min")         { float f = input->min; if (_tryParseFloat(v, f)) input->min = f; }
+      else if (key == "max")         { float f = input->max; if (_tryParseFloat(v, f)) input->max = f; }
+      else if (key == "readonly")    { bool b = input->readonly; if (_tryParseBool(v, b)) input->readonly = b; }
+      else if (key == "disabled")    { bool b = input->disabled; if (_tryParseBool(v, b)) input->disabled = b; }
+      return;
+    }
+
+    if (auto* cb = dynamic_cast<glint_checkbox*>(&el))
+    {
+      if (key == "checked")          { bool b = cb->checked; if (_tryParseBool(v, b)) cb->SetChecked(b); }
+      else if (key == "keepChecked") { bool b = cb->keepChecked; if (_tryParseBool(v, b)) cb->keepChecked = b; }
+      return;
+    }
+
+    if (auto* sel = dynamic_cast<glint_select*>(&el))
+    {
+      if (key == "selectedIndex")
+      {
+        int i = sel->selectedIndex;
+        if (!_tryParseInt(v, i)) return;
+        sel->selectedIndex = i;
+      }
+      else if (key == "placeholder") sel->placeholder = v;
+      else if (key == "options")     sel->options = _splitCommaList(v);
+      else return;
+      if (sel->selectedIndex >= static_cast<int>(sel->options.size()))
+        sel->selectedIndex = sel->options.empty() ? -1 : static_cast<int>(sel->options.size()) - 1;
+      return;
+    }
+
+    if (auto* dial = dynamic_cast<glint_dial*>(&el))
+    {
+      if (key == "angle") { float f = dial->angle; if (_tryParseFloat(v, f)) dial->angle = f; }
+      return;
+    }
+
+    if (auto* picker = dynamic_cast<glint_colorpicker*>(&el))
+    {
+      if (key == "value")
+      {
+        const std::string colorText = _trim(v);
+        if (glint_style_is_valid_by_name("color", colorText))
+          picker->setValue(sk_color(colorText.c_str()).value);
+      }
+      else if (key == "mode")
+      {
+        glint_colorpicker::ColorMode mode;
+        if (_parseColorMode(v, mode)) picker->setMode(mode);
+      }
+      return;
+    }
+
+    if (auto* grad = dynamic_cast<glint_gradient_editor*>(&el))
+    {
+      float f = 0.f;
+      if (key == "stops")
+      {
+        std::vector<sk_gradient_stop> stops;
+        if (_parseGradientStops(v, stops)) grad->setStops(std::move(stops));
+      }
+      else if (key == "direction" && _tryParseFloat(v, f))
+      {
+        grad->direction = f;
+        if (grad->onDirectionChange) grad->onDirectionChange(grad->direction);
+      }
+      else if (key == "centerX" && _tryParseFloat(v, f))
+      {
+        grad->centerX = std::clamp(f, 0.f, 1.f);
+        if (grad->onCenterChange) grad->onCenterChange(grad->centerX, grad->centerY);
+      }
+      else if (key == "centerY" && _tryParseFloat(v, f))
+      {
+        grad->centerY = std::clamp(f, 0.f, 1.f);
+        if (grad->onCenterChange) grad->onCenterChange(grad->centerX, grad->centerY);
+      }
+      else if (key == "radius" && _tryParseFloat(v, f))
+      {
+        grad->radius = std::max(0.01f, f);
+        if (grad->onRadiusChange) grad->onRadiusChange(grad->radius);
+      }
+      return;
+    }
+
+    if (auto* list = dynamic_cast<glint_list*>(&el))
+    {
+      if (key == "highlightOnSelect") { bool b = list->highlightOnSelect; if (_tryParseBool(v, b)) list->highlightOnSelect = b; }
+    }
+  }
+
   // Called from inspector's handleMessage(WM_INSP_ATTR_PICKED) on the inspector
   // thread � safe to modify component state and call setDirty.
   void commitAddProperty(const std::string& key)
@@ -1547,7 +1762,7 @@ public:
   // Called from the inspector window on Ctrl+S.
   void saveAllDirtyRules()
   {
-    if (!mDocument) return;
+    if (!mLink) return;
     for (const auto& key : mDirtyRules)
     {
       // ruleKey format: "sourceUrl|sourceLine"
@@ -1557,7 +1772,7 @@ public:
       uint32_t line = 0;
       try { line = static_cast<uint32_t>(std::stoul(key.substr(sep + 1))); } catch (...) {}
       if (!url.empty() && line > 0)
-        mDocument->saveRuleToFile(url, line);
+        _cssSave(url, line);
     }
     mDirtyRules.clear();
     mRebuildPending = true;
@@ -1570,39 +1785,43 @@ public:
   {
     if (mRebuildPending) {
       mRebuildPending = false;
-      if (!mPendingAddKey.empty() && mLiveComp) {
+      if (!mPendingAddKey.empty() && mNode.id) {
         mFocusAfterBuild      = mPendingAddKey;  // remember before clearing
         mFocusAfterBuildIsCss = !mPendingAddRuleUrl.empty();  // CSS vs inline
-        if (!mPendingAddRuleUrl.empty() && mDocument)
+        if (!mPendingAddRuleUrl.empty())
         {
           // Route add to the CSS stylesheet AST, not element.style.
-          mDocument->updateCssDeclaration(mPendingAddRuleUrl, mPendingAddRuleLine,
-                                           mPendingAddKey, glint_add_default(mPendingAddKey),
-                                           mLiveComp);
+          _cssUpdate(mPendingAddRuleUrl, mPendingAddRuleLine,
+                     mPendingAddKey, glint_add_default(mPendingAddKey));
           mPendingAddRuleUrl.clear();
           mPendingAddRuleLine = 0;
         }
         else
         {
-          glint_style_set_by_name(mLiveComp->style, mPendingAddKey, glint_add_default(mPendingAddKey));
-          mLiveComp->setDirty(false);
+          const std::string key = mPendingAddKey;
+          const std::string val = glint_add_default(mPendingAddKey);
+          _editInline([key, val](glint_style& st) { glint_style_set_by_name(st, key, val); });
         }
         mPendingAddKey.clear();
       }
       mInputToFocus = nullptr;  // reset; buildPropRow populates if key == mFocusAfterBuild
-      show(mLiveComp);  // triggers setDirty(false) -> another Layout() pass
+      // Rebuild from the local copy now; the fresh copy requested below brings
+      // the document's computed values.
+      if (mNode.id) show(mNode);
       // Auto-focus the value input of a freshly-added attribute.
       if (mInputToFocus && mRoot) mRoot->SetFocus(mInputToFocus);
       mInputToFocus = nullptr;
       mFocusAfterBuild.clear();
       mFocusAfterBuildIsCss = false;
+      refreshFromApp();
+      _layoutNextFrame();
       return;           // children just rebuilt; base Layout() runs next frame
     }
 
     if (mDeferredCssRulesStage == 1)
     {
       mDeferredCssRulesStage = 2;
-      setDirty(false);
+      _layoutNextFrame();
       glint_element::Layout(g);
       return;
     }
@@ -1616,15 +1835,15 @@ public:
     glint_element::Layout(g);
   }
 
-  // Rebuild for a new component (clears previous children, safe to call
-  // outside the DOM/keyboard dispatch chain).
-  void show(glint_element* comp)
+  // Rebuild from a copy of the element (clears previous children, safe to
+  // call outside the DOM/keyboard dispatch chain).
+  void show(const glint_inspector_node& n)
   {
-    if (!comp) { clear(); return; }
+    if (!n.id) { clear(); return; }
     clearDeferredCssRuleBuild();
     _dismissPickerWindow();                       // close any open picker first
     _dismissAttrList();                           // close any open attribute picker
-    const bool isFirstShow = (comp != mLiveComp);
+    const bool isFirstShow = (n.id != mNode.id);
     if (isFirstShow) {
       mColorPickerKey.clear();
       mBgFlatMode = false;   // reset flat-colour mode when switching to a new component
@@ -1633,14 +1852,16 @@ public:
       mLastValues.clear();    // reset flash baseline when switching to a new node
       mFlashProgress.clear(); // cancel any in-progress flashes
     }
-    mLiveComp = comp;
+    if (&n != &mNode) mNode = n;
+    mWantedId = mNode.id;
+    const glint_inspector_node& comp = mNode;
     // Register disabled-decl set with the cascade engine (Option A).
-    if (mDocument) mDocument->setInspectorDisabledDecls(&mDisabledDecls);
+    _pushDisabledDecls(/*reapplyAll=*/false, /*reapplyShown=*/false);
 
     // ── Realtime flash: detect value changes since the previous tick ─────────
     // info is computed here, before clearChildren(), so mLastValues can be
     // compared to the new snapshot while the old panel children still exist.
-    const glint_style_info info = glint_style_serialize(comp->style);
+    const glint_style_info info = glint_style_serialize(comp.style);
     if (!mLastValues.empty() && !isFirstShow)
     {
       auto _chkFlash = [&](const std::string& fkey, const std::string& newVal)
@@ -1649,13 +1870,13 @@ public:
         if (it != mLastValues.end() && it->second != newVal)
           mFlashProgress[fkey] = 1.0f;
       };
-      for (const auto& attr : _collectElementAttributeValues(comp))
+      for (const auto& attr : comp.attributes)
         _chkFlash(attr.first, attr.second);
       for (const auto& kv : info) _chkFlash(kv.first, kv.second);
     }
     // Refresh the baseline snapshot for the next tick.
     mLastValues.clear();
-    for (const auto& attr : _collectElementAttributeValues(comp))
+    for (const auto& attr : comp.attributes)
       mLastValues[attr.first] = attr.second;
     for (const auto& kv : info) mLastValues[kv.first] = kv.second;
 
@@ -1668,16 +1889,12 @@ public:
     // properties are beaten by a !important CSS rule.  Those rows must be
     // shown struck-through in the element.style block (inline loses to
     // !important author rules per the CSS cascade spec).
-    std::vector<GlintMatchedCssRule> liveRules;
+    std::vector<GlintMatchedCssRule> liveRules = comp.rules;
     std::unordered_set<std::string> importantCssProps;
-    if (comp->mRoot)
-    {
-      liveRules = comp->mRoot->matchedCssRulesFor(comp, /*forcePseudoClasses=*/false);
-      for (const auto& rule : liveRules)
-        for (const auto& decl : rule.declarations)
-          if (decl.important && !selectorHasPseudo(rule.selectorText))
-            importantCssProps.insert(decl.property);
-    }
+    for (const auto& rule : liveRules)
+      for (const auto& decl : rule.declarations)
+        if (decl.important && !selectorHasPseudo(rule.selectorText))
+          importantCssProps.insert(decl.property);
 
     // -- Header: element.style { --------------------------------------------
     buildLine("element.style {", 26.f, 8.f);
@@ -1687,16 +1904,16 @@ public:
     {
       const std::string key = k;
       const std::string dId = _declId("", "", key);
-      bool isSet = glint_inline_prop_is_set(comp->style, key, info);
+      bool isSet = glint_inline_prop_is_set(comp.style, key, info);
       // Chrome spec: glint_optional_float properties carry an explicit isSet flag
       // that is more authoritative than value comparison.  Without this, setting
       // e.g. style.opacity = 1.f is invisible because "1" == default "1", yet
       // Chrome DevTools DOES show it in element.style {} whenever it was
       // authored.  style.*= "" (removeProperty equivalent) clears isSet so the
       // row correctly disappears again.
-      if      (key == "opacity")        isSet = comp->style.opacity.isSet;
-      else if (key == "font-weight")    isSet = comp->style.fontWeight.isSet;
-      else if (key == "stroke-opacity") isSet = comp->style.strokeOpacity.isSet;
+      if      (key == "opacity")        isSet = comp.style.opacity.isSet;
+      else if (key == "font-weight")    isSet = comp.style.fontWeight.isSet;
+      else if (key == "stroke-opacity") isSet = comp.style.strokeOpacity.isSet;
       // When the property was just added via the picker, force-show it even if
       // its value equals the struct default (e.g. font-weight: 400).
       if (!isSet && !mFocusAfterBuild.empty() && key == mFocusAfterBuild && !mFocusAfterBuildIsCss) isSet = true;
@@ -1730,22 +1947,22 @@ public:
     // -- Footer: } -----------------------------------------------------------
     buildLine("}", 24.f, 8.f);
 
-    const bool shouldDeferCssRules = isFirstShow && comp->mRoot;
+    const bool shouldDeferCssRules = isFirstShow;
     if (shouldDeferCssRules)
     {
-      mDeferredCssComp              = comp;
+      mDeferredCssId                = comp.id;
       mDeferredCssInfo              = info;
       mDeferredLiveRules            = std::move(liveRules);
       mDeferredImportantCssProps    = std::move(importantCssProps);
       mDeferredCssSeedDisabledDecls = isFirstShow;
       mDeferredCssRulesStage        = 1;
     }
-    else if (comp->mRoot)
+    else
     {
       appendCssRuleBlocks(comp,
                           info,
                           liveRules,
-                          comp->mRoot->matchedCssRulesFor(comp, /*forcePseudoClasses=*/true),
+                          comp.forcedRules,
                           importantCssProps,
                           isFirstShow);
     }
@@ -1757,26 +1974,26 @@ public:
   // Called from GradModeButton's click listener on the inspector thread.
   void toggleBgGradientMode()
   {
-    if (!mLiveComp) return;
-    const bool isGradNow = !mLiveComp->style.backgroundGradient.empty();
+    if (!mNode.id) return;
+    const bool isGradNow = !mNode.style.backgroundGradient.empty();
     if (isGradNow)
     {
       // Gradient → flat: just remove the gradient, leave backgroundColor untouched.
-      mLiveComp->style.backgroundGradient.clear();
+      _editInline([](glint_style& st) { st.backgroundGradient.clear(); });
       mBgFlatMode = true;   // keep "background" row visible in flat-colour mode
     }
     else
     {
       // Flat ? gradient: seed two stops from the current flat colour.
-      glint_color c = mLiveComp->style.backgroundColor;
+      glint_color c = mNode.style.backgroundColor;
       glint_color darker(c.A,
                     std::max(0, (int)(c.R * 0.55f)),
                     std::max(0, (int)(c.G * 0.55f)),
                     std::max(0, (int)(c.B * 0.55f)));
-      mLiveComp->style.backgroundGradient = { {0.f, darker}, {1.f, c} };
+      const std::vector<sk_gradient_stop> stops = { {0.f, darker}, {1.f, c} };
+      _editInline([stops](glint_style& st) { st.backgroundGradient = stops; });
     }
     _dismissPickerWindow();
-    mLiveComp->setDirty(false);
     mRebuildPending = true;
     setDirty(false);
   }
@@ -1787,21 +2004,21 @@ public:
     clearDeferredCssRuleBuild();
     _dismissPickerWindow();
     _dismissAttrList();
-    if (mDocument) mDocument->setInspectorDisabledDecls(nullptr);
-    mLiveComp = nullptr;
+    if (mLink) mLink->command([](glint_document& doc) { doc.setInspectorDisabledDecls(nullptr); });
+    mNode     = glint_inspector_node{};
+    mWantedId = 0;
     mDisabledDecls.clear();
     mDisabledSavedVals.clear();
     clearChildren();
     setDirty(false);
   }
 
-  // Timer-driven live refresh for the Style tab. Rebuilds from the current
-  // live node when safe, so runtime value changes show up without requiring
-  // explicit inspector notifications.
-  void liveRefresh(glint_element* comp)
+  // Timer-driven live refresh for the Style tab. Rebuilds from a fresh copy
+  // of the element when safe, so runtime value changes show up without
+  // requiring explicit inspector notifications.
+  void liveRefresh()
   {
-    if (!comp) { clear(); return; }
-    if (!canLiveRefresh()) return;
+    if (!mNode.id || !canLiveRefresh()) return;
     // Tick down all active flash animations (~1 s total at 150 ms cadence).
     constexpr float kFlashDecrement = 0.16f;
     for (auto it = mFlashProgress.begin(); it != mFlashProgress.end(); )
@@ -1810,7 +2027,7 @@ public:
       if (it->second <= 0.f) it = mFlashProgress.erase(it);
       else                   ++it;
     }
-    show(comp);
+    refreshFromApp();
   }
 
   bool canLiveRefresh() const
@@ -1830,7 +2047,7 @@ public:
 
   void clearDeferredCssRuleBuild()
   {
-    mDeferredCssComp = nullptr;
+    mDeferredCssId = 0;
     mDeferredCssInfo.clear();
     mDeferredLiveRules.clear();
     mDeferredImportantCssProps.clear();
@@ -1840,31 +2057,30 @@ public:
 
   void appendDeferredCssRuleBlocks()
   {
-    if (!mDeferredCssComp || mDeferredCssComp != mLiveComp || !mDeferredCssComp->mRoot)
+    if (!mDeferredCssId || mDeferredCssId != mNode.id)
     {
       clearDeferredCssRuleBuild();
       return;
     }
 
-    auto rules = mDeferredCssComp->mRoot->matchedCssRulesFor(mDeferredCssComp, /*forcePseudoClasses=*/true);
-    appendCssRuleBlocks(mDeferredCssComp,
+    appendCssRuleBlocks(mNode,
                         mDeferredCssInfo,
                         mDeferredLiveRules,
-                        rules,
+                        mNode.forcedRules,
                         mDeferredImportantCssProps,
                         mDeferredCssSeedDisabledDecls);
     clearDeferredCssRuleBuild();
     setDirty(false);
   }
 
-  void appendCssRuleBlocks(glint_element* comp,
+  void appendCssRuleBlocks(const glint_inspector_node& comp,
                            const glint_style_info& info,
                            const std::vector<GlintMatchedCssRule>& liveRules,
                            const std::vector<GlintMatchedCssRule>& rules,
                            const std::unordered_set<std::string>& importantCssProps,
                            bool seedDisabledDecls)
   {
-    if (!comp || rules.empty()) return;
+    if (!comp.id || rules.empty()) return;
 
     if (seedDisabledDecls)
     {
@@ -1872,7 +2088,7 @@ public:
         for (const auto& decl : rule.declarations)
           if (decl.disabled)
             mDisabledDecls.insert(_declId(rule.sourceUrl, rule.selectorText, decl.property));
-      if (mDocument) mDocument->setInspectorDisabledDecls(&mDisabledDecls);
+      _pushDisabledDecls(/*reapplyAll=*/false, /*reapplyShown=*/false);
     }
 
     std::unordered_set<std::string> activeRuleKeys;
@@ -1884,9 +2100,9 @@ public:
     {
       const std::string ck = k;
       bool ckSet = glint_prop_is_set(ck, info);
-      if      (ck == "opacity")        ckSet = comp->style.opacity.isSet;
-      else if (ck == "font-weight")    ckSet = comp->style.fontWeight.isSet;
-      else if (ck == "stroke-opacity") ckSet = comp->style.strokeOpacity.isSet;
+      if      (ck == "opacity")        ckSet = comp.style.opacity.isSet;
+      else if (ck == "font-weight")    ckSet = comp.style.fontWeight.isSet;
+      else if (ck == "stroke-opacity") ckSet = comp.style.strokeOpacity.isSet;
       if (ckSet && !mDisabledDecls.count(_declId("", "", ck)) && !importantCssProps.count(ck))
         claimed.insert(ck);
     }
@@ -1907,7 +2123,7 @@ public:
   {
     // destroy() tears down the picker thread; unlike hide() it does NOT fire
     // onClosed, so no stale WM_INSP_CP_CLOSED arrives on the now-dead inspector.
-    if (mDocument) mDocument->setInspectorDisabledDecls(nullptr);
+    if (mLink) mLink->command([](glint_document& doc) { doc.setInspectorDisabledDecls(nullptr); });
     if (mPickerWindow) { mPickerWindow->destroy(); mPickerWindow = nullptr; }
     _dismissAttrList();
   }
@@ -1925,10 +2141,10 @@ public:
 #endif
   }
 
-  glint_element*  mLiveComp    = nullptr;
-  void*          mOwnerHWND   = nullptr;  // inspector HWND (Win32) or null (macOS)
-  glint_document* mDocument    = nullptr;  // set by window.hpp; used for CSS rule writes
-  glint_element*  mDeferredCssComp = nullptr;
+  void*                 mOwnerHWND = nullptr;  // inspector HWND (Win32) or null (macOS)
+  glint_inspector_link* mLink      = nullptr;  // set by window.hpp: the only path to the inspected document
+  std::function<void()> mOnNodeMissing;         // the shown element no longer exists
+  uint64_t mDeferredCssId = 0;
   glint_style_info mDeferredCssInfo;
   std::vector<GlintMatchedCssRule> mDeferredLiveRules;
   std::unordered_set<std::string> mDeferredImportantCssProps;
@@ -1936,9 +2152,13 @@ public:
   int  mDeferredCssRulesStage = 0;
 
   // Called from inspector's handleMessage(WM_INSP_CP_CHANGED) on the inspector
-  // thread � safe to update glint components directly.
-  void updateActiveSwatch(glint_color c)
+  // thread � safe to update glint components directly.  Writes the colour too:
+  // the picker window's own thread only reports it.  `gen` drops colours from
+  // a picker that has since been reopened for another row.
+  void updateActiveSwatch(glint_color c, int gen)
   {
+    if (gen != mPickerGeneration) return;
+    if (mPickerWriter && mNode.id) mPickerWriter(mPickerKey, _colorToHex(c));
     if (mSwatchForPicker)
     {
       mSwatchForPicker->style.backgroundColor = c;
@@ -1976,7 +2196,7 @@ public:
   {
 #if defined(_WIN32)
     _dismissAttrList();
-    if (!mLiveComp) return;
+    if (!mNode.id) return;
 
     std::set<std::string> setKeys;
     if (ruleSetKeys)
@@ -1985,7 +2205,7 @@ public:
     }
     else
     {
-      const glint_style_info info = glint_style_serialize(mLiveComp->style);
+      const glint_style_info info = glint_style_serialize(mNode.style);
       for (const char* k : glint_all_style_keys())
         if (glint_prop_is_set(k, info)) setKeys.insert(k);
     }
@@ -2012,7 +2232,7 @@ public:
     *opened = mAttrListWin;
 #elif defined(__APPLE__)
     _dismissAttrList();
-    if (!mLiveComp) return;
+    if (!mNode.id) return;
 
     std::set<std::string> setKeys;
     if (ruleSetKeys)
@@ -2021,7 +2241,7 @@ public:
     }
     else
     {
-      const glint_style_info info = glint_style_serialize(mLiveComp->style);
+      const glint_style_info info = glint_style_serialize(mNode.style);
       for (const char* k : glint_all_style_keys())
         if (glint_prop_is_set(k, info)) setKeys.insert(k);
     }
@@ -2045,6 +2265,13 @@ public:
   }
 
 private:
+  glint_inspector_node       mNode;                    // copy of the shown element (id 0: none)
+  uint64_t                   mWantedId        = 0;     // element the panel should show
+  uint64_t                   mEditSeq         = 0;     // bumped by every edit (see refreshFromApp)
+  bool                       mRefreshInFlight = false;
+  bool                       mRefreshAgain    = false;
+  PropWriter                 mPickerWriter;            // writes picker colours to the row's layer
+  std::string                mPickerKey;               // property the picker edits
   bool                       mRebuildPending  = false;
   bool                       mBgFlatMode      = false;  // true: show "background" row in flat-colour mode after gradient toggled off
   // Tracks explicitly-disabled property rows across panel rebuilds.
@@ -2310,66 +2537,134 @@ private:
     return true;
   }
 
-  std::vector<std::pair<std::string, std::string>> _collectElementAttributeValues(glint_element* comp) const
+  // ── Edits ───────────────────────────────────────────────────────────────────
+  // Applied to the local copy at once (so rebuilds show them) and posted to
+  // the inspected document, where they run on its thread.  The functions they
+  // carry run on both threads, so they may only capture values.
+
+  void _editInline(std::function<void(glint_style&)> edit)
   {
-    std::vector<std::pair<std::string, std::string>> attrs;
-    if (!comp) return attrs;
+    if (!mNode.id || !edit) return;
+    edit(mNode.style);
+    ++mEditSeq;
+    if (!mLink) return;
+    const uint64_t id = mNode.id;
+    mLink->command([id, edit](glint_document& doc) {
+      if (glint_element* el = doc.getNodeById(id))
+      {
+        edit(el->style);
+        el->setDirty(false);
+      }
+    });
+  }
 
-    attrs.emplace_back("id", comp->id);
-    attrs.emplace_back("className", comp->className);
-    attrs.emplace_back("innerText", comp->innerText);
+  void _editAttribute(const std::string& key, const std::string& value)
+  {
+    if (!mNode.id) return;
+    if      (key == "id")        mNode.elementId = value;
+    else if (key == "className") mNode.className = value;
+    else if (key == "innerText") mNode.innerText = value;
+    for (auto& attr : mNode.attributes)
+      if (attr.first == key) { attr.second = value; break; }
+    ++mEditSeq;
+    if (!mLink) return;
+    const uint64_t id = mNode.id;
+    mLink->command([id, key, value](glint_document& doc) {
+      if (glint_element* el = doc.getNodeById(id))
+      {
+        applyElementAttribute(*el, key, value);
+        el->setDirty(false);
+      }
+    });
+  }
 
-    if (auto* img = dynamic_cast<glint_image*>(comp))
-    {
-      attrs.emplace_back("src", img->src);
-    }
+  // Keep the copied CSS rules in step with a rule edit (value == nullptr:
+  // the declaration was removed), so a rebuild before the next copy shows it.
+  void _mirrorCssDeclaration(const std::string& url, uint32_t line,
+                             const std::string& prop, const std::string* value)
+  {
+    for (auto* rules : { &mNode.rules, &mNode.forcedRules })
+      for (auto& rule : *rules)
+      {
+        if (rule.sourceUrl != url || rule.sourceLine != line) continue;
+        auto& decls = rule.declarations;
+        auto it = std::find_if(decls.begin(), decls.end(),
+                               [&](const GlintCssDeclaration& d) { return d.property == prop; });
+        if (!value)
+        {
+          if (it != decls.end()) decls.erase(it);
+          continue;
+        }
+        if (it == decls.end())
+        {
+          GlintCssDeclaration d;
+          d.property = prop;
+          decls.push_back(std::move(d));
+          it = std::prev(decls.end());
+        }
+        it->value    = *value;
+        it->disabled = false;
+      }
+  }
 
-    if (auto* input = dynamic_cast<glint_input*>(comp))
-    {
-      attrs.emplace_back("value", input->getValue());
-      attrs.emplace_back("type", input->type);
-      attrs.emplace_back("placeholder", input->placeholder);
-      attrs.emplace_back("min", _floatToString(input->min));
-      attrs.emplace_back("max", _floatToString(input->max));
-      attrs.emplace_back("readonly", _boolToString(input->readonly));
-      attrs.emplace_back("disabled", _boolToString(input->disabled));
-    }
+  void _cssUpdate(const std::string& url, uint32_t line, const std::string& prop, const std::string& value)
+  {
+    if (!mNode.id) return;
+    _mirrorCssDeclaration(url, line, prop, &value);
+    ++mEditSeq;
+    if (!mLink) return;
+    const uint64_t id = mNode.id;
+    mLink->command([id, url, line, prop, value](glint_document& doc) {
+      doc.updateCssDeclaration(url, line, prop, value, doc.getNodeById(id));
+    });
+  }
 
-    if (auto* cb = dynamic_cast<glint_checkbox*>(comp))
-    {
-      attrs.emplace_back("checked", _boolToString(cb->checked));
-      attrs.emplace_back("keepChecked", _boolToString(cb->keepChecked));
-    }
+  void _cssRemove(const std::string& url, uint32_t line, const std::string& prop)
+  {
+    if (!mNode.id) return;
+    _mirrorCssDeclaration(url, line, prop, nullptr);
+    ++mEditSeq;
+    if (!mLink) return;
+    const uint64_t id = mNode.id;
+    mLink->command([id, url, line, prop](glint_document& doc) {
+      doc.removeCssDeclaration(url, line, prop, doc.getNodeById(id));
+    });
+  }
 
-    if (auto* sel = dynamic_cast<glint_select*>(comp))
-    {
-      attrs.emplace_back("selectedIndex", _intToString(sel->selectedIndex));
-      attrs.emplace_back("placeholder", sel->placeholder);
-      attrs.emplace_back("options", _joinStringList(sel->options));
-    }
+  void _cssSave(const std::string& url, uint32_t line)
+  {
+    if (mLink) mLink->command([url, line](glint_document& doc) { doc.saveRuleToFile(url, line); });
+  }
 
-    if (auto* dial = dynamic_cast<glint_dial*>(comp))
-      attrs.emplace_back("angle", _floatToString(dial->angle));
+  // The cascade skips the disabled declarations; the document keeps a copy.
+  void _pushDisabledDecls(bool reapplyAll, bool reapplyShown)
+  {
+    if (!mLink) return;
+    const auto decls  = mDisabledDecls;
+    const uint64_t id = mNode.id;
+    mLink->command([decls, id, reapplyAll, reapplyShown](glint_document& doc) {
+      doc.setInspectorDisabledDecls(&decls);
+      if (reapplyAll)        doc.reapplyAllCss();
+      else if (reapplyShown) doc.reapplyCss(doc.getNodeById(id));
+    });
+  }
 
-    if (auto* picker = dynamic_cast<glint_colorpicker*>(comp))
-    {
-      attrs.emplace_back("value", _colorToHex(picker->value));
-      attrs.emplace_back("mode", _colorModeToString(picker->mode));
-    }
+  void _nodeMissing()
+  {
+    clear();
+    if (mOnNodeMissing) mOnNodeMissing();
+  }
 
-    if (auto* grad = dynamic_cast<glint_gradient_editor*>(comp))
-    {
-      attrs.emplace_back("stops", _serializeGradientStops(grad->stops));
-      attrs.emplace_back("direction", _floatToString(grad->direction));
-      attrs.emplace_back("centerX", _floatToString(grad->centerX));
-      attrs.emplace_back("centerY", _floatToString(grad->centerY));
-      attrs.emplace_back("radius", _floatToString(grad->radius));
-    }
-
-    if (auto* list = dynamic_cast<glint_list*>(comp))
-      attrs.emplace_back("highlightOnSelect", _boolToString(list->highlightOnSelect));
-
-    return attrs;
+  // Ask for another layout pass from inside Layout(): a setDirty() there is
+  // lost, because the document clears its layout flag when the pass ends.
+  // A task runs before the next frame's layout.
+  void _layoutNextFrame()
+  {
+    if (!mRoot) return;
+    const auto life = lifeToken();
+    mRoot->taskQueue()->post([this, life] {
+      if (!life.expired()) setDirty(false);
+    });
   }
 
   // Hide the picker window and reset swatch state.  The window is kept alive
@@ -2427,14 +2722,17 @@ private:
     ++mPickerGeneration;
     const int gen = mPickerGeneration;
 
-    auto onChange = [this, k, ownerH, writer](glint_color c)
+    // Runs on the picker window's thread: only report the colour to the
+    // inspector thread, where updateActiveSwatch() writes it.
+    mPickerWriter = writer;
+    mPickerKey    = k;
+    auto onChange = [ownerH, gen](glint_color c)
     {
-      if (mLiveComp) writer(k, _colorToHex(c));
       const uint32_t rgba = (static_cast<uint32_t>(c.A) << 24)
                           | (static_cast<uint32_t>(c.R) << 16)
                           | (static_cast<uint32_t>(c.G) <<  8)
                           |  static_cast<uint32_t>(c.B);
-      if (ownerH) ::PostMessage(ownerH, WM_INSP_CP_CHANGED, (WPARAM)rgba, 0);
+      if (ownerH) ::PostMessage(ownerH, WM_INSP_CP_CHANGED, (WPARAM)rgba, (LPARAM)(LONG_PTR)gen);
     };
     auto onClosed = [ownerH, gen]()
     {
@@ -2465,10 +2763,11 @@ private:
     const int gen = mPickerGeneration;
 
     // On macOS everything runs on the main thread — call update functions directly.
-    auto onChange = [this, k, writer](glint_color c)
+    mPickerWriter = writer;
+    mPickerKey    = k;
+    auto onChange = [this, gen](glint_color c)
     {
-      if (mLiveComp) writer(k, _colorToHex(c));
-      updateActiveSwatch(c);
+      updateActiveSwatch(c, gen);
       setDirty(false);
     };
     auto onClosed = [this, gen]()
@@ -2489,7 +2788,7 @@ private:
   // -- HTML Attributes section (innerText etc.) ----------------------------
   void buildAttributesSection()
   {
-    if (!mLiveComp) return;
+    if (!mNode.id) return;
 
     buildLine("element {", 26.f, 8.f);
 
@@ -2549,17 +2848,8 @@ private:
       inp->style.color       = glint_color(255, 255, 255, 255);
       inp->style.marginRight = 2.f;
       inp->onChange = [this, cb = std::move(onCommit)](const std::string& v) {
-        if (!mLiveComp) return;
+        if (!mNode.id) return;
         cb(v);
-        // Force an immediate layout pass on the main document so mRect is
-        // updated right away (e.g. auto-sized elements resize with the new text).
-        // tickTransitionsAll() must run first so computedStyle is synced from
-        // style before childPrefH/W measures element sizes.
-        if (mLiveComp->mRoot) {
-          mLiveComp->mRoot->mCanvas.tickTransitionsAll();
-          mLiveComp->mRoot->mCanvas.Layout(nullptr);
-        }
-        mLiveComp->setDirty(false);
       };
       inp->onFocus = [inp]() {
         inp->style.borderWidth  = 1.f;
@@ -2636,220 +2926,12 @@ private:
       row->addChild(semi);
     };
 
-    auto* img    = dynamic_cast<glint_image*>(mLiveComp);
-    auto* input  = dynamic_cast<glint_input*>(mLiveComp);
-    auto* cb     = dynamic_cast<glint_checkbox*>(mLiveComp);
-    auto* sel    = dynamic_cast<glint_select*>(mLiveComp);
-    auto* dial   = dynamic_cast<glint_dial*>(mLiveComp);
-    auto* picker = dynamic_cast<glint_colorpicker*>(mLiveComp);
-    auto* grad   = dynamic_cast<glint_gradient_editor*>(mLiveComp);
-    auto* list   = dynamic_cast<glint_list*>(mLiveComp);
-
-    for (const auto& attr : _collectElementAttributeValues(mLiveComp))
+    // Edits run on the inspected document's thread (applyElementAttribute).
+    for (const auto& attr : mNode.attributes)
     {
-      const std::string& key = attr.first;
-      const std::string& value = attr.second;
-
-      if (key == "id")
-      {
-        buildAttrRow("id", value,
-          [this](const std::string& v) { mLiveComp->id = v; });
-      }
-      else if (key == "className")
-      {
-        buildAttrRow("className", value,
-          [this](const std::string& v) {
-            mLiveComp->className = v;
-            if (mLiveComp->mApplyCss) mLiveComp->mApplyCss(mLiveComp);
-          });
-      }
-      else if (key == "innerText")
-      {
-        buildAttrRow("innerText", value,
-          [this](const std::string& v) { mLiveComp->innerText = v; });
-      }
-      else if (img && key == "src")
-      {
-        buildAttrRow("src", value,
-          [img](const std::string& v) { img->SetSrc(v.c_str(), img->numFrames); });
-      }
-      else if (input && key == "value")
-      {
-        buildAttrRow("value", value,
-          [input](const std::string& v) { input->setValue(v); });
-      }
-      else if (input && key == "type")
-      {
-        buildAttrRow("type", value,
-          [input](const std::string& v) { input->type = _trim(v); });
-      }
-      else if (input && key == "placeholder")
-      {
-        buildAttrRow("placeholder", value,
-          [input](const std::string& v) { input->placeholder = v; });
-      }
-      else if (input && key == "min")
-      {
-        buildAttrRow("min", value,
-          [input](const std::string& v) {
-            float parsed = input->min;
-            if (_tryParseFloat(v, parsed)) input->min = parsed;
-          });
-      }
-      else if (input && key == "max")
-      {
-        buildAttrRow("max", value,
-          [input](const std::string& v) {
-            float parsed = input->max;
-            if (_tryParseFloat(v, parsed)) input->max = parsed;
-          });
-      }
-      else if (input && key == "readonly")
-      {
-        buildAttrRow("readonly", value,
-          [input](const std::string& v) {
-            bool parsed = input->readonly;
-            if (_tryParseBool(v, parsed)) input->readonly = parsed;
-          });
-      }
-      else if (input && key == "disabled")
-      {
-        buildAttrRow("disabled", value,
-          [input](const std::string& v) {
-            bool parsed = input->disabled;
-            if (_tryParseBool(v, parsed)) input->disabled = parsed;
-          });
-      }
-      else if (cb && key == "checked")
-      {
-        buildAttrRow("checked", value,
-          [cb](const std::string& v) {
-            bool parsed = cb->checked;
-            if (_tryParseBool(v, parsed)) cb->SetChecked(parsed);
-          });
-      }
-      else if (cb && key == "keepChecked")
-      {
-        buildAttrRow("keepChecked", value,
-          [cb](const std::string& v) {
-            bool parsed = cb->keepChecked;
-            if (_tryParseBool(v, parsed)) cb->keepChecked = parsed;
-          });
-      }
-      else if (sel && key == "selectedIndex")
-      {
-        buildAttrRow("selectedIndex", value,
-          [sel](const std::string& v) {
-            int parsed = sel->selectedIndex;
-            if (!_tryParseInt(v, parsed)) return;
-            sel->selectedIndex = parsed;
-            if (sel->selectedIndex >= static_cast<int>(sel->options.size()))
-              sel->selectedIndex = sel->options.empty() ? -1 : static_cast<int>(sel->options.size()) - 1;
-          });
-      }
-      else if (sel && key == "placeholder")
-      {
-        buildAttrRow("placeholder", value,
-          [sel](const std::string& v) { sel->placeholder = v; });
-      }
-      else if (sel && key == "options")
-      {
-        buildAttrRow("options", value,
-          [sel](const std::string& v) {
-            sel->options = _splitCommaList(v);
-            if (sel->selectedIndex >= static_cast<int>(sel->options.size()))
-              sel->selectedIndex = sel->options.empty() ? -1 : static_cast<int>(sel->options.size()) - 1;
-          });
-      }
-      else if (dial && key == "angle")
-      {
-        buildAttrRow("angle", value,
-          [dial](const std::string& v) {
-            float parsed = dial->angle;
-            if (_tryParseFloat(v, parsed)) dial->angle = parsed;
-          });
-      }
-      else if (picker && key == "value")
-      {
-        buildAttrRow("value", value,
-          [picker](const std::string& v) {
-            const std::string colorText = _trim(v);
-            if (glint_style_is_valid_by_name("color", colorText))
-              picker->setValue(sk_color(colorText.c_str()).value);
-          });
-      }
-      else if (picker && key == "mode")
-      {
-        buildAttrRow("mode", value,
-          [picker](const std::string& v) {
-            glint_colorpicker::ColorMode mode;
-            if (_parseColorMode(v, mode)) picker->setMode(mode);
-          });
-      }
-      else if (grad && key == "stops")
-      {
-        buildAttrRow("stops", value,
-          [grad](const std::string& v) {
-            std::vector<sk_gradient_stop> stops;
-            if (_parseGradientStops(v, stops)) grad->setStops(std::move(stops));
-          });
-      }
-      else if (grad && key == "direction")
-      {
-        buildAttrRow("direction", value,
-          [grad](const std::string& v) {
-            float parsed = grad->direction;
-            if (_tryParseFloat(v, parsed))
-            {
-              grad->direction = parsed;
-              if (grad->onDirectionChange) grad->onDirectionChange(grad->direction);
-            }
-          });
-      }
-      else if (grad && key == "centerX")
-      {
-        buildAttrRow("centerX", value,
-          [grad](const std::string& v) {
-            float parsed = grad->centerX;
-            if (_tryParseFloat(v, parsed))
-            {
-              grad->centerX = std::clamp(parsed, 0.f, 1.f);
-              if (grad->onCenterChange) grad->onCenterChange(grad->centerX, grad->centerY);
-            }
-          });
-      }
-      else if (grad && key == "centerY")
-      {
-        buildAttrRow("centerY", value,
-          [grad](const std::string& v) {
-            float parsed = grad->centerY;
-            if (_tryParseFloat(v, parsed))
-            {
-              grad->centerY = std::clamp(parsed, 0.f, 1.f);
-              if (grad->onCenterChange) grad->onCenterChange(grad->centerX, grad->centerY);
-            }
-          });
-      }
-      else if (grad && key == "radius")
-      {
-        buildAttrRow("radius", value,
-          [grad](const std::string& v) {
-            float parsed = grad->radius;
-            if (_tryParseFloat(v, parsed))
-            {
-              grad->radius = std::max(0.01f, parsed);
-              if (grad->onRadiusChange) grad->onRadiusChange(grad->radius);
-            }
-          });
-      }
-      else if (list && key == "highlightOnSelect")
-      {
-        buildAttrRow("highlightOnSelect", value,
-          [list](const std::string& v) {
-            bool parsed = list->highlightOnSelect;
-            if (_tryParseBool(v, parsed)) list->highlightOnSelect = parsed;
-          });
-      }
+      const std::string key = attr.first;
+      buildAttrRow(key.c_str(), attr.second,
+        [this, key](const std::string& v) { _editAttribute(key, v); });
     }
 
     buildLine("}", 22.f, 8.f);
@@ -2980,7 +3062,7 @@ private:
     auto saveBtnRef = std::make_shared<CssSaveButton*>(nullptr);
 
     auto onSave = [this, ruleUrl, ruleLine, ruleKey, dirtyFlag, saveBtnRef]() {
-      if (mDocument) mDocument->saveRuleToFile(ruleUrl, ruleLine);
+      _cssSave(ruleUrl, ruleLine);
       *dirtyFlag = false;
       mDirtyRules.erase(ruleKey);
       if (*saveBtnRef) (*saveBtnRef)->setDirty(false);
@@ -3002,8 +3084,8 @@ private:
     PropWriter writer = [this, ruleUrl, ruleLine, markDirty]
                         (const std::string& p, const std::string& v)
     {
-      if (!mLiveComp || !mDocument) return;
-      mDocument->updateCssDeclaration(ruleUrl, ruleLine, p, v, mLiveComp);
+      if (!mNode.id) return;
+      _cssUpdate(ruleUrl, ruleLine, p, v);
       markDirty();
     };
 
@@ -3013,8 +3095,7 @@ private:
       const bool overridden   = ruleClaimsProperties && claimed.count(decl.property) > 0;
       const std::string dProp = decl.property;
       PropDeleter deleter = [this, ruleUrl, ruleLine, dProp]() {
-        if (mDocument && mLiveComp)
-          mDocument->removeCssDeclaration(ruleUrl, ruleLine, dProp, mLiveComp);
+        _cssRemove(ruleUrl, ruleLine, dProp);
         mRebuildPending = true;
         setDirty(false);
       };
@@ -3065,8 +3146,8 @@ private:
     // Only applies to "background" (always gradient when stops are present).
     // isBgGrad is ONLY true for element.style rows (writer == null); CSS rule rows use
     // isCssRuleBgGrad so they read from the rule's declared value, not the live element.
-    const bool isBgGrad = mLiveComp
-                          && !mLiveComp->style.backgroundGradient.empty()
+    const bool isBgGrad = mNode.id
+                          && !mNode.style.backgroundGradient.empty()
                           && key == "background"
                           && !writer;  // ← element.style only
     const bool isMaskGrad = (key == "mask" && _isCssGradientString(val));
@@ -3086,9 +3167,7 @@ private:
     // Route writes to the correct style layer: CSS rule (via writer) or element.style (inline).
     PropWriter _write = writer ? writer : PropWriter{[this](const std::string& p, const std::string& v)
     {
-      if (!mLiveComp) return;
-      glint_style_set_by_name(mLiveComp->style, p, v);
-      mLiveComp->setDirty(false);
+      _editInline([p, v](glint_style& st) { glint_style_set_by_name(st, p, v); });
     }};
 
     // -- Row container
@@ -3170,7 +3249,7 @@ private:
     chk->style.height      = "100%";
     chk->style.alignItems  = "center";
     const std::string kForChk = key;
-    // Shared enabled flag: value widgets check this before writing to mLiveComp.
+    // Shared enabled flag: value widgets check this before writing.
     auto rowEnabled = std::make_shared<bool>(!rowIsDisabled);
     // Shared so that the uncheck branch can write the latest value for restore.
     // Initialise from the persistent saved-value map so a rebuild after disable
@@ -3195,8 +3274,8 @@ private:
         // rebuild can restore it regardless of what _write puts in the sheet.
         // For inline rows, try to read the freshest live value first.
         mDisabledSavedVals[dId] = *savedVal;
-        if (isInlineRow && mLiveComp) {
-          const auto curInfo = glint_style_serialize(mLiveComp->style);
+        if (isInlineRow && mNode.id) {
+          const auto curInfo = glint_style_serialize(mNode.style);
           auto it = curInfo.find(kForChk);
           if (it != curInfo.end()) {
             *savedVal = it->second;
@@ -3215,16 +3294,12 @@ private:
         if (!isInlineRow && onDirty) onDirty();
         // CSS rule rows affect every element matching the selector — walk the
         // whole tree so sibling/ancestor elements with the same class update.
-        if (mDocument)
-        {
-          if (isInlineRow) mDocument->reapplyCss(mLiveComp);
-          else             mDocument->reapplyAllCss();
-        }
+        _pushDisabledDecls(/*reapplyAll=*/!isInlineRow, /*reapplyShown=*/isInlineRow);
       } else {
         mDisabledDecls.erase(dId);
         mDisabledSavedVals.erase(dId);
         row->style.filter = overridden ? "opacity(0.45)" : (inactive ? "opacity(0.65)" : "");
-        if (mLiveComp && !savedVal->empty()) {
+        if (mNode.id && !savedVal->empty()) {
           // Inline rows: restore saved value to el->style.
           // CSS rule rows: restore in case the user typed a different value
           // while the row was disabled; if unchanged, this is a no-op.
@@ -3240,11 +3315,7 @@ private:
         // Re-cascade so the restored declaration is immediately effective.
         // CSS rule rows: walk the whole tree — all elements with the same class
         // must update.  Inline rows: only the inspected element needs it.
-        if (mDocument)
-        {
-          if (isInlineRow) mDocument->reapplyCss(mLiveComp);
-          else             mDocument->reapplyAllCss();
-        }
+        _pushDisabledDecls(/*reapplyAll=*/!isInlineRow, /*reapplyShown=*/isInlineRow);
       }
       // Rebuild the panel so the "claimed" set is recomputed and any previously
       // overridden row that this declaration was masking gets its strikethrough removed.
@@ -3258,7 +3329,6 @@ private:
     auto* nameBtn         = new InspNameButton();
     nameBtn->mKey         = key;
     nameBtn->mPanel       = this;
-    nameBtn->mLiveComp    = mLiveComp;
     nameBtn->mWriter      = _write;
     nameBtn->innerText    = key;
     nameBtn->style.width          = 112.f;
@@ -3353,7 +3423,7 @@ private:
       sw->style.borderColor  = glint_color(255, 110, 110, 110);
       sw->style.marginRight  = 4.f;
       const std::vector<sk_gradient_stop>* initialStops = nullptr;
-      if (useLiveGradientState) initialStops = &mLiveComp->style.backgroundGradient;
+      if (useLiveGradientState) initialStops = &mNode.style.backgroundGradient;
       else                      initialStops = &maskGradState->backgroundGradient;
       if (initialStops && !initialStops->empty())
         sw->style.backgroundColor = initialStops->front().color;
@@ -3377,11 +3447,10 @@ private:
       inp2->style.marginRight   = 2.f;
       *inpSh = inp2;
       inp2->onChange = [this, k, inpSh, geSh, rowEnabled, sw, _write](const std::string& v) {
-        if (!mLiveComp || !*rowEnabled) return;
+        if (!mNode.id || !*rowEnabled) return;
         // Emptying the field turns off gradient mode.
         if (v.empty()) {
-          mLiveComp->style.backgroundGradient.clear();
-          mLiveComp->setDirty(false);
+          _editInline([](glint_style& st) { st.backgroundGradient.clear(); });
           mBgFlatMode = true;
           mRebuildPending = true;
           setDirty(false);
@@ -3389,20 +3458,20 @@ private:
         }
         if (!glint_style_is_valid_by_name(k, v)) return;
         _write(k, v);
-        if (*geSh && !mLiveComp->style.backgroundGradient.empty()) {
-          (*geSh)->stops       = mLiveComp->style.backgroundGradient;
-          (*geSh)->direction   = mLiveComp->style.backgroundGradientAngle;
-          (*geSh)->gradientType= mLiveComp->style.backgroundGradientType;
+        if (*geSh && !mNode.style.backgroundGradient.empty()) {
+          (*geSh)->stops       = mNode.style.backgroundGradient;
+          (*geSh)->direction   = mNode.style.backgroundGradientAngle;
+          (*geSh)->gradientType= mNode.style.backgroundGradientType;
           (*geSh)->setDirty(false);
         }
-        if (!mLiveComp->style.backgroundGradient.empty())
-          sw->style.backgroundColor = mLiveComp->style.backgroundGradient.front().color;
+        if (!mNode.style.backgroundGradient.empty())
+          sw->style.backgroundColor = mNode.style.backgroundGradient.front().color;
         sw->setDirty(false);
       };
       if (isMaskGrad || isCssRuleBgGrad)
       {
         inp2->onChange = [this, k, inpSh, geSh, rowEnabled, sw, _write, maskGradState](const std::string& v) {
-          if (!mLiveComp || !*rowEnabled) return;
+          if (!mNode.id || !*rowEnabled) return;
           if (v.empty()) {
             maskGradState->backgroundGradient.clear();
             _write(k, v);
@@ -3445,12 +3514,12 @@ private:
       if (overridden) inp2->style.textDecoration = "line-through";
       if (useLiveGradientState) {
         inp2->setValue(_gradientToCssString(
-            mLiveComp->style.backgroundGradient,
-            mLiveComp->style.backgroundGradientType,
-            mLiveComp->style.backgroundGradientAngle,
-            mLiveComp->style.backgroundGradientDirection,
-            mLiveComp->style.backgroundGradientCX,
-            mLiveComp->style.backgroundGradientCY));
+            mNode.style.backgroundGradient,
+            mNode.style.backgroundGradientType,
+            mNode.style.backgroundGradientAngle,
+            mNode.style.backgroundGradientDirection,
+            mNode.style.backgroundGradientCX,
+            mNode.style.backgroundGradientCY));
       } else {
         inp2->setValue(_gradientToCssString(
             maskGradState->backgroundGradient,
@@ -3476,29 +3545,29 @@ private:
       ge->style.flexGrow = 1.f;
       ge->style.height   = kGE_BaseH;
       if (useLiveGradientState) {
-        ge->stops        = mLiveComp->style.backgroundGradient;
-        ge->direction    = mLiveComp->style.backgroundGradientAngle;
-        ge->gradientType = mLiveComp->style.backgroundGradientType;
-        ge->centerX      = mLiveComp->style.backgroundGradientCX;
-        ge->centerY      = mLiveComp->style.backgroundGradientCY;
-        ge->radius       = mLiveComp->style.backgroundGradientRadius;
+        ge->stops        = mNode.style.backgroundGradient;
+        ge->direction    = mNode.style.backgroundGradientAngle;
+        ge->gradientType = mNode.style.backgroundGradientType;
+        ge->centerX      = mNode.style.backgroundGradientCX;
+        ge->centerY      = mNode.style.backgroundGradientCY;
+        ge->radius       = mNode.style.backgroundGradientRadius;
 
         auto _syncCss = [this, inpSh, sw]() {
           const std::string css = _gradientToCssString(
-              mLiveComp->style.backgroundGradient,
-              mLiveComp->style.backgroundGradientType,
-              mLiveComp->style.backgroundGradientAngle,
-              mLiveComp->style.backgroundGradientDirection,
-              mLiveComp->style.backgroundGradientCX,
-              mLiveComp->style.backgroundGradientCY);
+              mNode.style.backgroundGradient,
+              mNode.style.backgroundGradientType,
+              mNode.style.backgroundGradientAngle,
+              mNode.style.backgroundGradientDirection,
+              mNode.style.backgroundGradientCX,
+              mNode.style.backgroundGradientCY);
           if (*inpSh) { (*inpSh)->setValue(css); (*inpSh)->setDirty(false); }
-          if (!mLiveComp->style.backgroundGradient.empty())
-            sw->style.backgroundColor = mLiveComp->style.backgroundGradient.front().color;
+          if (!mNode.style.backgroundGradient.empty())
+            sw->style.backgroundColor = mNode.style.backgroundGradient.front().color;
           sw->setDirty(false);
         };
 
         ge->onChange = [this, k, _syncCss, _write](const std::vector<sk_gradient_stop>& stops) {
-          if (!mLiveComp) return;
+          if (!mNode.id) return;
           std::string gs;
           for (const auto& st : stops) {
             if (!gs.empty()) gs += '|';
@@ -3510,27 +3579,25 @@ private:
           _syncCss();
         };
         ge->onDirectionChange = [this, _syncCss](float deg) {
-          if (!mLiveComp) return;
-          mLiveComp->style.backgroundGradientAngle = deg;
-          mLiveComp->style.backgroundGradientDirection.clear();
-          mLiveComp->setDirty(false); _syncCss();
+          _editInline([deg](glint_style& st) {
+            st.backgroundGradientAngle = deg;
+            st.backgroundGradientDirection.clear();
+          });
+          _syncCss();
         };
         ge->onTypeChange = [this, _syncCss](const std::string& t) {
-          if (!mLiveComp) return;
-          mLiveComp->style.backgroundGradientType = t;
-          mLiveComp->setDirty(false); _syncCss();
+          _editInline([t](glint_style& st) { st.backgroundGradientType = t; });
+          _syncCss();
         };
         ge->onCenterChange = [this, _syncCss](float cx, float cy) {
-          if (!mLiveComp) return;
-          mLiveComp->style.backgroundGradientCX = cx;
-          mLiveComp->style.backgroundGradientCY = cy;
-          mLiveComp->setDirty(false);
+          _editInline([cx, cy](glint_style& st) {
+            st.backgroundGradientCX = cx;
+            st.backgroundGradientCY = cy;
+          });
           _syncCss();
         };
         ge->onRadiusChange = [this](float r) {
-          if (!mLiveComp) return;
-          mLiveComp->style.backgroundGradientRadius = r;
-          mLiveComp->setDirty(false);
+          _editInline([r](glint_style& st) { st.backgroundGradientRadius = r; });
         };
       } else {
         ge->stops        = maskGradState->backgroundGradient;
@@ -3586,7 +3653,7 @@ private:
       chkBool->size            = 11.f;
       chkBool->style.marginRight = 4.f;
       chkBool->onChange = [this, k, rowEnabled, _write](bool v) {
-        if (!mLiveComp) return;
+        if (!mNode.id) return;
         if (!*rowEnabled) return;
         _write(k, v ? "true" : "false");
       };
@@ -3600,7 +3667,6 @@ private:
       auto* btn              = new InspEnumButton();
       btn->mKey              = k;
       btn->mOpts             = opts;
-      btn->mLiveComp         = mLiveComp;
       btn->mRowEnabled       = rowEnabled;
       btn->mWriter           = _write;
       btn->innerText         = val.empty() ? "(none)" : val;
@@ -3654,7 +3720,7 @@ private:
         // Auto-activate gradient mode instead of writing to backgroundColor.
         if (isBgFlatRow && _isCssGradientString(v))
         {
-          if (mLiveComp && *rowEnabled)
+          if (mNode.id && *rowEnabled)
             _write("background", v);
           mBgFlatMode = false;
           mRebuildPending = true;
@@ -3663,7 +3729,7 @@ private:
         }
         if (k == "mask" && _isCssGradientString(v))
         {
-          if (mLiveComp && *rowEnabled)
+          if (mNode.id && *rowEnabled)
             _write(k, v);
           mRebuildPending = true;
           setDirty(false);
@@ -3674,7 +3740,7 @@ private:
                                                    : glint_color(255, 255, 255, 255))
                                  : glint_color(255, 220,  72,  72);
         inp->setDirty(false);
-        if (!mLiveComp || !valid || v.empty()) return;
+        if (!mNode.id || !valid || v.empty()) return;
         if (!*rowEnabled) return;
         // Strip "!important" before writing: the CSS rule writer (updateCssDeclaration)
         // handles it internally, but the inline writer (glint_style_set_by_name) and
@@ -3713,7 +3779,7 @@ private:
         inp->setDirty(false);
         // After typing a gradient string the panel must rebuild so the visual
         // gradient editor in the backgroundColor row becomes visible.
-        if ((mLiveComp && !mLiveComp->style.backgroundGradient.empty() && k == "background") ||
+        if ((mNode.id && !mNode.style.backgroundGradient.empty() && k == "background") ||
             (k == "mask" && _isCssGradientString(inp->getValue())))
         {
           mRebuildPending = true;
@@ -3760,7 +3826,7 @@ private:
         {
           auto& we = static_cast<glint_wheel_event&>(e);
           we.preventDefault();
-          if (!mLiveComp) return;
+          if (!mNode.id) return;
           if (!*rowEnabled) return;
           if (!*focused) return;
 #ifdef __APPLE__
@@ -3821,11 +3887,11 @@ private:
         _dismissPickerWindow();   // close any existing picker
         mColorPickerKey = k;      // restore after _dismiss cleared it
         glint_color init;
-        if (mLiveComp) {
+        if (mNode.id) {
           // Always read from computedStyle — it is the effective displayed value
           // (merge of cssStyle_ + inline style), so both CSS-rule rows and inline
           // rows open the picker at the correct current color.
-          const glint_style_info info = glint_style_serialize(mLiveComp->computedStyle);
+          const glint_style_info info = glint_style_serialize(mNode.computedStyle);
           if (info.count(k)) {
             const std::string& cur = info.at(k);
             if (!cur.empty()) { sk_color c; c = cur.c_str(); init = c; }
@@ -3884,17 +3950,18 @@ private:
       {
         ownedDeleter();
       }
-      else if (mLiveComp)
+      else if (mNode.id)
       {
-        if (!glint_style_clear_inline_by_name(mLiveComp->style, delKey))
-        {
-          // Inline element.style row: reset the property to its spec default.
-          const auto& def = glint_default_style_info();
-          auto it = def.find(delKey);
-          if (it != def.end())
-            glint_style_set_by_name(mLiveComp->style, delKey, it->second);
-        }
-        mLiveComp->setDirty(false);
+        _editInline([delKey](glint_style& st) {
+          if (!glint_style_clear_inline_by_name(st, delKey))
+          {
+            // Inline element.style row: reset the property to its spec default.
+            const auto& def = glint_default_style_info();
+            auto it = def.find(delKey);
+            if (it != def.end())
+              glint_style_set_by_name(st, delKey, it->second);
+          }
+        });
       }
       mRebuildPending = true;
       setDirty(false);
@@ -3970,23 +4037,17 @@ inline void InspAddAttrButton::OnMouseDown(float x, float y, const glint_mouse_m
 inline void InspNameButton::OnMouseDown(float /*x*/, float /*y*/, const glint_mouse_mod& /*mod*/)
 {
   // Don't call base — the popup replaces the normal click/pressed dance.
+  // The menu runs a modal loop: the panel may rebuild (and destroy this
+  // button) before it returns.
+  const auto life = lifeToken();
   const int result = glint_platform::showContextMenu(0, 0, {{1, "Reset to default"}}, {}, {});
-  if (result != 1 || !mPanel || !mLiveComp) return;
+  if (life.expired() || result != 1 || !mPanel) return;
 
-  InspStylePanel* panel    = mPanel;
-  glint_element*  liveComp = mLiveComp;
+  InspStylePanel* panel = mPanel;
   const auto& def = glint_default_style_info();
   auto it = def.find(mKey);
-  if (it != def.end())
-  {
-    if (mWriter)
-      mWriter(mKey, it->second);
-    else {
-      if (!glint_style_clear_inline_by_name(liveComp->style, mKey))
-        glint_style_set_by_name(liveComp->style, mKey, it->second);
-      liveComp->setDirty(false);
-    }
-  }
+  if (it != def.end() && mWriter)
+    mWriter(mKey, it->second);
   panel->requestRebuild();
 }
 
@@ -4021,7 +4082,7 @@ inline GradModeButton::GradModeButton()
 //
 // Draws 4 concentric layers (margin / border / padding / content).
 // Each ring has a tinted background and editable number inputs on each edge.
-// Editing an input writes back to mLiveComp->style via glint_style_set_by_name.
+// Editing an input reports (property, value) through onEdit.
 // The innermost box shows computed content W × H (read-only).
 //
 // Layout strategy: every element gets an explicit pixel height derived from the
@@ -4034,15 +4095,18 @@ class InspBoxModelDiagram : public glint_element
 public:
   int mFocusCount = 0;   // incremented by inputs on focus, decremented on blur
 
+  // Called with (property, value) when an input is edited.
+  std::function<void(const std::string&, const std::string&)> onEdit;
+
   const char* typeName() const override { return "insp_box_model"; }
 
   // skipIfFocused=true: return without rebuild if any input has focus (timer path).
-  void update(glint_element* comp, bool skipIfFocused = false)
+  void update(const glint_inspector_node& comp, bool skipIfFocused = false)
   {
     if (skipIfFocused && mFocusCount > 0) return;
     clearChildren();
     mFocusCount = 0;
-    if (!comp) return;
+    if (!comp.id) return;
 
     // ── Height constants ──────────────────────────────────────────────────────
     // Every layer height is computed explicitly so no element collapses.
@@ -4072,15 +4136,15 @@ public:
     const glint_color labelCol  (180, 200, 200, 200);
 
     // ── Resolved values ───────────────────────────────────────────────────────
-    const glint_style& s = comp->computedStyle;
+    const glint_style& s = comp.computedStyle;
     const float mT = static_cast<float>(s.marginTop),    mR = static_cast<float>(s.marginRight);
     const float mB = static_cast<float>(s.marginBottom), mL = static_cast<float>(s.marginLeft);
     const float bT = s.resolvedBorderWidth(0), bR = s.resolvedBorderWidth(1);
     const float bB = s.resolvedBorderWidth(2), bL = s.resolvedBorderWidth(3);
     const float pT = static_cast<float>(s.paddingTop),    pR = static_cast<float>(s.paddingRight);
     const float pB = static_cast<float>(s.paddingBottom), pL = static_cast<float>(s.paddingLeft);
-    const float cW = std::max(0.f, comp->mRect.W() - bL - bR - pL - pR);
-    const float cH = std::max(0.f, comp->mRect.H() - bT - bB - pT - pB);
+    const float cW = std::max(0.f, comp.rect.W() - bL - bR - pL - pR);
+    const float cH = std::max(0.f, comp.rect.H() - bT - bB - pT - pB);
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     auto fmt = [](float v) -> std::string {
@@ -4090,7 +4154,7 @@ public:
       return buf;
     };
 
-    // Editable number input — writes back to comp->style on change.
+    // Editable number input — reports edits through onEdit.
     auto makeInp = [&](const char* key, float val, glint_color tc) -> glint_input*
     {
       auto* inp = new glint_input();
@@ -4104,12 +4168,10 @@ public:
       inp->style.borderWidth     = 0.f;
       inp->style.textAlign       = EAlign::Center;
       inp->style.padding         = "0 2";
-      glint_element* lc = comp;
       const std::string k = key;
-      inp->onChange = [lc, k](const std::string& v) {
+      inp->onChange = [this, k](const std::string& v) {
         if (v.empty()) return;
-        glint_style_set_by_name(lc->style, k, v);
-        lc->setDirty(false);
+        if (onEdit) onEdit(k, v);
       };
       // Track focus and gate wheel scrub on it.
       auto focused = std::make_shared<bool>(false);
@@ -4122,7 +4184,7 @@ public:
         if (mFocusCount > 0) --mFocusCount;
       });
       // Wheel-to-scrub: nudge by 1 (Shift → 0.1), only when focused.
-      inp->element.addEventListener("wheel", [inp, lc, k, focused](glint_event& e) {
+      inp->element.addEventListener("wheel", [this, inp, k, focused](glint_event& e) {
         if (!*focused) return;
         auto& we = static_cast<glint_wheel_event&>(e);
         we.preventDefault();
@@ -4142,8 +4204,7 @@ public:
         }
         inp->setValue(newVal);
         inp->setDirty(false);
-        glint_style_set_by_name(lc->style, k, newVal);
-        lc->setDirty(false);
+        if (onEdit) onEdit(k, newVal);
       });
       return inp;
     };
@@ -4373,14 +4434,26 @@ public:
     mOnRowLeave = std::move(onLeave);
   }
 
-  // Full rebuild — called on selection change and explicit style edits.
-  void show(glint_element* comp)
+  /** Show element `id`: fetch it from the inspected document, then rebuild. */
+  void showNode(uint64_t id)
   {
-    if (!comp) { clear(); return; }
+    if (!id) { clear(); return; }
+    mWantedId = id;
+    _request(id, [this, id](glint_inspector_node& n) {
+      if (id != mWantedId) return;
+      if (!n.id) { clear(); if (mOnNodeMissing) mOnNodeMissing(); return; }
+      show(n);
+    });
+  }
+
+  // Full rebuild — called on selection change and explicit style edits.
+  void show(const glint_inspector_node& comp)
+  {
+    if (!comp.id) { clear(); return; }
 
     // ── Realtime flash: detect value changes since the previous tick ─────────
-    const glint_style_info newInfo = glint_style_serialize(comp->computedStyle);
-    const bool switchedNode = (comp != mLiveComp);
+    const glint_style_info newInfo = glint_style_serialize(comp.computedStyle);
+    const bool switchedNode = (comp.id != mNode.id);
     if (!switchedNode && !mLastValues.empty())
     {
       for (const auto& kv : newInfo)
@@ -4395,14 +4468,16 @@ public:
     for (const auto& kv : newInfo) mLastValues[kv.first] = kv.second;
     if (switchedNode) { mFlashProgress.clear(); }
 
-    mLiveComp    = comp;
+    if (&comp != &mNode) mNode = comp;
+    mWantedId    = mNode.id;
     mDiagram     = nullptr;
     clearChildren();
 
     // -- Box Model diagram ---------------------------------------------------
 
     auto* diag = new InspBoxModelDiagram();
-    diag->update(comp, false);
+    diag->onEdit = [this](const std::string& k, const std::string& v) { _editInline(k, v); };
+    diag->update(mNode, false);
     mDiagram = diag;
     addChild(diag);
 
@@ -4427,33 +4502,44 @@ public:
   // Timer-driven live refresh. The default path updates only the box-model
   // diagram; realtime mode can request a full rebuild of the computed property
   // list too, but still skips while a diagram input has focus.
-  void liveRefresh(glint_element* comp, bool fullRebuild = false)
+  void liveRefresh(bool fullRebuild = false)
   {
-    if (!comp) { clear(); return; }
-    if (fullRebuild)
-    {
-      if (mDiagram && mDiagram->mFocusCount > 0) return;
-      // Tick down flash animations before rebuilding so the opacity is
-      // already decremented when buildRow() reads mFlashProgress.
-      constexpr float kFlashDecrement = 0.16f;
-      for (auto it = mFlashProgress.begin(); it != mFlashProgress.end(); )
+    if (!mNode.id) return;
+    if (mRefreshInFlight) return;   // one fetch at a time
+    mRefreshInFlight = true;
+    const uint64_t id = mNode.id;
+    _request(id, [this, id, fullRebuild](glint_inspector_node& n) {
+      mRefreshInFlight = false;
+      if (id != mNode.id || id != mWantedId) return;
+      if (!n.id) { clear(); if (mOnNodeMissing) mOnNodeMissing(); return; }
+      if (fullRebuild)
       {
-        it->second -= kFlashDecrement;
-        if (it->second <= 0.f) it = mFlashProgress.erase(it);
-        else                   ++it;
+        if (mDiagram && mDiagram->mFocusCount > 0) return;
+        // Tick down flash animations before rebuilding so the opacity is
+        // already decremented when buildRow() reads mFlashProgress.
+        constexpr float kFlashDecrement = 0.16f;
+        for (auto it = mFlashProgress.begin(); it != mFlashProgress.end(); )
+        {
+          it->second -= kFlashDecrement;
+          if (it->second <= 0.f) it = mFlashProgress.erase(it);
+          else                   ++it;
+        }
+        show(n);
+        return;
       }
-      show(comp);
-      return;
-    }
 
-    if (!mDiagram) return;
-    mDiagram->update(comp, true /*skipIfFocused*/);
-    setDirty(false);
+      if (!mDiagram) return;
+      if (mDiagram->mFocusCount > 0) return;
+      mNode = n;
+      mDiagram->update(mNode, true /*skipIfFocused*/);
+      setDirty(false);
+    });
   }
 
   void clear()
   {
-    mLiveComp = nullptr;
+    mNode     = glint_inspector_node{};
+    mWantedId = 0;
     mDiagram  = nullptr;
     clearChildren();
     mLastValues.clear();
@@ -4461,10 +4547,39 @@ public:
     setDirty(false);
   }
 
-  glint_element*        mLiveComp = nullptr;
-  InspBoxModelDiagram* mDiagram  = nullptr;
+  InspBoxModelDiagram*  mDiagram = nullptr;
+  glint_inspector_link* mLink    = nullptr;   // set by window.hpp: the only path to the inspected document
+  std::function<void()> mOnNodeMissing;        // the shown element no longer exists
 
 private:
+  glint_inspector_node mNode;                  // copy of the shown element (id 0: none)
+  uint64_t             mWantedId        = 0;
+  bool                 mRefreshInFlight = false;
+
+  void _request(uint64_t id, std::function<void(glint_inspector_node&)> done)
+  {
+    if (!mLink) return;
+    const auto life = lifeToken();
+    mLink->request<glint_inspector_node>(
+      [id](glint_document& doc) { return glint_inspector_capture_node(doc, id); },
+      [life, done](glint_inspector_node& n) { if (!life.expired()) done(n); });
+  }
+
+  // Box-model edits write the element's inline style, then refresh the view.
+  void _editInline(const std::string& key, const std::string& value)
+  {
+    if (!mLink || !mNode.id) return;
+    const uint64_t id = mNode.id;
+    mLink->command([id, key, value](glint_document& doc) {
+      if (glint_element* el = doc.getNodeById(id))
+      {
+        glint_style_set_by_name(el->style, key, value);
+        el->setDirty(false);
+      }
+    });
+    liveRefresh(false);
+  }
+
   // ── Section header: uppercase 10 px grey label with hairline below ────────
   void buildSectionHeader(const char* title)
   {
@@ -4603,4 +4718,28 @@ private:
   std::unordered_map<std::string, float>       mFlashProgress; // 1.0→0, per changed key
 };
 
+// Captures what the inspector panels show about element `id`.  Runs on the
+// inspected document's thread (glint_inspector_link::request).
+inline glint_inspector_node glint_inspector_capture_node(glint_document& doc, uint64_t id)
+{
+  glint_inspector_node n;
+  if (id == 0) return n;
+  // Computed styles and boxes must include edits posted just before.
+  doc.updateLayoutNow();
+  glint_element* el = doc.getNodeById(id);
+  if (!el) return n;
 
+  n.id            = id;
+  n.isRoot        = (el == &doc.mCanvas);
+  n.typeName      = el->typeName() ? el->typeName() : "";
+  n.elementId     = el->id;
+  n.className     = el->className;
+  n.innerText     = el->innerText;
+  n.rect          = el->mRect;
+  n.style         = el->style;
+  n.computedStyle = el->computedStyle;
+  n.attributes    = InspStylePanel::collectElementAttributes(el);
+  n.rules         = doc.matchedCssRulesFor(el, /*forcePseudoClasses=*/false);
+  n.forcedRules   = doc.matchedCssRulesFor(el, /*forcePseudoClasses=*/true);
+  return n;
+}
