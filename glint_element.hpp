@@ -2473,8 +2473,10 @@ public:
     return sAnimationClock ? sAnimationClock() : std::chrono::steady_clock::now();
   }
 
-  /** Skip drawing children entirely outside the clip (see _paintBounds()). */
-  static inline bool sPaintCulling = true;
+  /** Use conservative paint bounds (_paintBounds()) to skip drawing children
+   *  entirely outside the clip and to size opacity group layers. Off = draw
+   *  everything with unbounded layers (reference for verification). */
+  static inline bool sUsePaintBounds = true;
 
   /** True when this element only paints inside its box (plus shadow and its
    *  laid-out text): no custom drawing. Builder divs with a draw callback
@@ -2799,7 +2801,7 @@ protected:
    *  (e.g. rows scrolled out of a scroll container) are skipped. */
   static void _drawChildTimed(glint_element* child, SkCanvas* canvas)
   {
-    if (sPaintCulling)
+    if (sUsePaintBounds)
     {
       glint_rect b;
       if (child->_paintBounds(b) && canvas->quickReject(SkRect::MakeLTRB(b.L, b.T, b.R, b.B)))

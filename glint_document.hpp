@@ -3200,18 +3200,19 @@ private:
                              std::vector<glint_element*>* restyled = nullptr)
   {
     if (!el || !deps || deps->empty()) return glint_restyle_none;
-    bool desc = false, sib = false;
+    bool desc = false, nextSib = false, allSibs = false;
     GlintCssDomAdapter adapter(el);
     for (const auto& d : *deps)
     {
-      bool& want = d.siblings ? sib : desc;
+      bool& want = !d.siblings ? desc : (d.adjacentOnly ? nextSib : allSibs);
       if (!want && _compoundMatchesLoosely(*d.compound, adapter)) want = true;
-      if (desc && sib) break;
+      if (desc && allSibs) break;
     }
     uint8_t flags = glint_restyle_none;
     if (desc) flags |= _restyleSubtree(el, restyled);
-    if (sib && el->mParent)
+    if ((nextSib || allSibs) && el->mParent)
     {
+      // `+` reaches only the next sibling, `~` every following one.
       bool after = false;
       for (auto& s : el->mParent->mChildren)
       {
@@ -3221,6 +3222,7 @@ private:
         flags |= f;
         if (restyled && f != glint_restyle_none) restyled->push_back(s.get());
         flags |= _restyleSubtree(s.get(), restyled);
+        if (!allSibs) break;
       }
     }
     return flags;

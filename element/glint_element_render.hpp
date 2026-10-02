@@ -1408,7 +1408,18 @@ public:
       SkPaint _compPaint;
       _compPaint.setAlphaf(_selfOpacity);
       _compPaint.setBlendMode(_selfBlendMode);
-      canvas->saveLayer(nullptr, &_compPaint);
+      // Size the group layer to what the subtree actually paints instead of
+      // the whole clip (a full-window layer per fading element otherwise).
+      // Only for plain src-over composites; unbounded subtrees keep nullptr.
+      SkRect _layerBounds;
+      const SkRect* _layerBoundsPtr = nullptr;
+      glint_rect _pb;
+      if (sUsePaintBounds && _selfBlendMode == SkBlendMode::kSrcOver && _paintBounds(_pb))
+      {
+        _layerBounds = SkRect::MakeLTRB(_pb.L - 2.f, _pb.T - 2.f, _pb.R + 2.f, _pb.B + 2.f);
+        _layerBoundsPtr = &_layerBounds;
+      }
+      canvas->saveLayer(_layerBoundsPtr, &_compPaint);
       _drawToCanvasImpl(canvas, false, true, _skipSelfFilter);
       canvas->restore();
       if (mFilterPad > 0.f) mRect = _expandedRECT;

@@ -282,6 +282,7 @@ public:
     {
       const GlintCompoundSelector* compound = nullptr;
       bool                         siblings = false;   // else descendants
+      bool                         adjacentOnly = false; // `+`: just the next sibling
     };
     std::unordered_map<std::string, std::vector<Dependency>> pseudoDeps;  // lower-case name
     std::unordered_map<std::string, std::vector<Dependency>> classDeps;
@@ -293,19 +294,19 @@ public:
     }
 
     void addDependencies(const GlintCompoundSelector& compound, bool siblings,
-                         const GlintCompoundSelector& owner)
+                         bool adjacentOnly, const GlintCompoundSelector& owner)
     {
       for (const auto& ss : compound.simples)
       {
         if (ss.kind == GlintSimpleKind::PSEUDO_CLASS)
-          pseudoDeps[lower(ss.name)].push_back({ &owner, siblings });
+          pseudoDeps[lower(ss.name)].push_back({ &owner, siblings, adjacentOnly });
         else if (ss.kind == GlintSimpleKind::CLASS)
-          classDeps[ss.name].push_back({ &owner, siblings });
+          classDeps[ss.name].push_back({ &owner, siblings, adjacentOnly });
         // Features inside :not() / :is() / :where() count for the owner too.
         for (const auto& nested : ss.nestedSelectors)
           if (nested)
             for (const auto& st : nested->steps)
-              addDependencies(st.compound, siblings, owner);
+              addDependencies(st.compound, siblings, adjacentOnly, owner);
       }
     }
 
@@ -346,9 +347,10 @@ public:
         for (size_t k = 1; k < complexSel.steps.size(); ++k)
         {
           const auto comb = complexSel.steps[k].combinator;
-          const bool siblings = comb == GlintCombinator::ADJACENT_SIBLING
-                             || comb == GlintCombinator::GENERAL_SIBLING;
-          addDependencies(complexSel.steps[k].compound, siblings, complexSel.steps[k].compound);
+          const bool adjacent = comb == GlintCombinator::ADJACENT_SIBLING;
+          const bool siblings = adjacent || comb == GlintCombinator::GENERAL_SIBLING;
+          addDependencies(complexSel.steps[k].compound, siblings, adjacent,
+                          complexSel.steps[k].compound);
         }
       }
     }

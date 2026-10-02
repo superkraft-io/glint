@@ -8,6 +8,8 @@
 //   glint_bench --scenario list --frames 120  one scenario
 //   glint_bench --json                        machine-readable output
 //   glint_bench --no-paint                    style + layout only
+//   glint_bench --gpu                         render on D3D12 (offscreen) instead of CPU raster;
+//                                             each frame waits for the GPU ("gpu" column)
 //   glint_bench --snapshot-out DIR            write DIR/<scenario>.txt layout dumps
 //   glint_bench --snapshot-compare DIR        diff against DIR/<scenario>.txt (exit 1 on diff)
 //   glint_bench --verify                      after the run, force a full relayout of the
@@ -26,8 +28,17 @@
 #include "glint/components/input/glint_input.hpp"
 #include "glint_snapshot.hpp"
 
+#include "include/core/SkBitmap.h"
 #include "include/core/SkPixmap.h"
 #include "include/core/SkSurface.h"
+
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) \
+    && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+  #define GLINT_BENCH_HAS_D3D12 1
+  #include "glint/platform/win32/glint_win32_surface_shared.hpp"
+  #include "include/gpu/ganesh/GrDirectContext.h"
+  #include "include/gpu/ganesh/SkSurfaceGanesh.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -39,6 +50,43 @@
 
 namespace
 {
+
+// ── GPU (D3D12, offscreen) ─────────────────────────────────────────────────────
+#ifdef GLINT_BENCH_HAS_D3D12
+struct GpuContext
+{
+  gr_cp<IDXGIAdapter1>       adapter;
+  gr_cp<ID3D12Device>        device;
+  gr_cp<ID3D12CommandQueue>  queue;
+  sk_sp<GrDirectContext>     context;
+  std::string                adapterName;
+
+  bool init()
+  {
+    gr_cp<IDXGIFactory4> factory;
+    if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) return false;
+    if (!glint_win32_surface::chooseHardwareAdapter(factory.get(), adapter)) return false;
+    if (FAILED(::D3D12CreateDevice(adapter.get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) return false;
+    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)))) return false;
+    GrD3DBackendContext backend{};
+    backend.fAdapter = adapter;
+    backend.fDevice  = device;
+    backend.fQueue   = queue;
+    context = GrDirectContext::MakeDirect3D(backend);
+    DXGI_ADAPTER_DESC1 desc = {};
+    if (SUCCEEDED(adapter->GetDesc1(&desc)))
+    {
+      char name[256] = {};
+      ::WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), nullptr, nullptr);
+      adapterName = name;
+    }
+    return context != nullptr;
+  }
+};
+GpuContext* gGpu = nullptr;
+#endif
 
 // ── Fixed-step animation clock ─────────────────────────────────────────────────
 std::chrono::steady_clock::time_point gClockNow{};
@@ -366,7 +414,7 @@ std::vector<Scenario> makeScenarios()
 // ── Measurement ───────────────────────────────────────────────────────────────
 struct PhaseSamples
 {
-  std::vector<double> cascade, tick, layout, paint, total;
+  std::vector<double> cascade, tick, layout, paint, gpu, total;
 };
 
 double median(std::vector<double> v)
@@ -400,6 +448,7 @@ struct Options
   std::string snapshotCompare;
   bool verify = false;
   bool paintPhases = false;
+  bool gpu = false;
 };
 
 struct Result
@@ -421,7 +470,14 @@ struct Result
 uint64_t pixelHash(SkSurface& surface)
 {
   SkPixmap pm;
-  if (!surface.peekPixels(&pm)) return 0;
+  SkBitmap readback;
+  if (!surface.peekPixels(&pm))
+  {
+    // GPU surface: read it back first.
+    if (!readback.tryAllocPixels(surface.imageInfo()) || !surface.readPixels(readback, 0, 0))
+      return 0;
+    pm = readback.pixmap();
+  }
   uint64_t h = 1469598103934665603ull;   // FNV-1a over all rows
   for (int y = 0; y < pm.height(); ++y)
   {
@@ -439,8 +495,29 @@ Result runScenario(const Scenario& sc, const Options& opt)
 
   constexpr int W = 1280, H = 800;
   glint_document doc{ glint_rect(0, 0, static_cast<float>(W), static_cast<float>(H)), nullptr, [] {} };
-  sk_sp<SkSurface> surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(W, H));
+  sk_sp<SkSurface> surface;
+#ifdef GLINT_BENCH_HAS_D3D12
+  if (opt.gpu && gGpu)
+    surface = SkSurfaces::RenderTarget(gGpu->context.get(), skgpu::Budgeted::kNo,
+                                       SkImageInfo::Make(W, H, kRGBA_8888_SkColorType,
+                                                         kPremul_SkAlphaType));
+#endif
+  if (!surface) surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(W, H));
   SkCanvas& canvas = *surface->getCanvas();
+
+  // GPU: submit the frame and wait for it, so frame times include GPU work
+  // (DrawToCanvas only records commands). Returns the wait in ms.
+  auto finishGpu = [&]() -> double {
+#ifdef GLINT_BENCH_HAS_D3D12
+    if (opt.gpu && gGpu)
+    {
+      const auto s = std::chrono::steady_clock::now();
+      gGpu->context->flushAndSubmit(GrSyncCpu::kYes);
+      return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s).count();
+    }
+#endif
+    return 0.0;
+  };
 
   const std::string css = sc.css ? sc.css : "";
   doc.onRequest = [&css](glint_resource_request& req) {
@@ -452,6 +529,12 @@ Result runScenario(const Scenario& sc, const Options& opt)
   auto paint = [&]() {
     canvas.clear(SK_ColorBLACK);
     doc.DrawToCanvas(canvas);
+    finishGpu();
+  };
+  auto paintTimed = [&]() -> double {   // like paint(), returns the GPU wait
+    canvas.clear(SK_ColorBLACK);
+    doc.DrawToCanvas(canvas);
+    return finishGpu();
   };
   auto runFrame = [&]() {
     if (opt.noPaint) doc.updateStyleAndLayout();
@@ -479,13 +562,16 @@ Result runScenario(const Scenario& sc, const Options& opt)
     ctx.frame = f;
     if (sc.step) sc.step(ctx);
     const auto fs = std::chrono::steady_clock::now();
-    runFrame();
+    double gpuMs = 0.0;
+    if (opt.noPaint) runFrame();
+    else             gpuMs = paintTimed();
     const auto fe = std::chrono::steady_clock::now();
     const glint_frame_stats& st = doc.lastFrameStats();
     res.s.cascade.push_back(st.cascadeMs);
     res.s.tick.push_back(st.tickMs);
     res.s.layout.push_back(st.layoutMs);
     res.s.paint.push_back(st.paintMs);
+    res.s.gpu.push_back(gpuMs);
     res.s.total.push_back(std::chrono::duration<double, std::milli>(fe - fs).count() + st.cascadeMs);
     if (st.layoutRan) ++res.layoutFrames;
     advanceClock(16);
@@ -559,15 +645,16 @@ Result runScenario(const Scenario& sc, const Options& opt)
     const std::string label = std::string(sc.name) + " memo";
     res.verifyDiffs += glint_snapshot::compare(noMemoDump, fullDump, label.c_str());
 
-    // Paint culling must not change pixels: repaint the same state without it.
+    // Paint bounds (culling + bounded opacity layers) must not change pixels:
+    // repaint the same state without them.
     paint();
-    const uint64_t culledPixels = pixelHash(*surface);
-    glint_element::sPaintCulling = false;
+    const uint64_t boundedPixels = pixelHash(*surface);
+    glint_element::sUsePaintBounds = false;
     paint();
-    glint_element::sPaintCulling = true;
-    if (pixelHash(*surface) != culledPixels)
+    glint_element::sUsePaintBounds = true;
+    if (pixelHash(*surface) != boundedPixels)
     {
-      std::printf("[%s] pixels differ with paint culling off\n", sc.name);
+      std::printf("[%s] pixels differ with paint bounds off\n", sc.name);
       ++res.verifyDiffs;
     }
 
@@ -621,11 +708,11 @@ Result runScenario(const Scenario& sc, const Options& opt)
 
 void printTable(const std::vector<Result>& results, const Options& opt)
 {
-  std::printf("glint_bench: %d frames per scenario%s (times in ms, median / p95)\n\n",
-              opt.frames, opt.noPaint ? ", no paint" : "");
-  std::printf("%-18s %6s %8s %8s | %-13s %-13s %-13s %-13s %-13s | %s\n",
+  std::printf("glint_bench: %d frames per scenario%s, %s (times in ms, median / p95)\n\n",
+              opt.frames, opt.noPaint ? ", no paint" : "", opt.gpu ? "GPU" : "CPU raster");
+  std::printf("%-18s %6s %8s %8s | %-13s %-13s %-13s %-13s %-13s %-13s | %s\n",
               "scenario", "nodes", "build", "first", "cascade", "tick", "layout", "paint",
-              "frame", "layouts");
+              "gpu", "frame", "layouts");
   for (const auto& r : results)
   {
     auto cell = [](const std::vector<double>& v) {
@@ -633,10 +720,10 @@ void printTable(const std::vector<Result>& results, const Options& opt)
       std::snprintf(b, sizeof(b), "%6.3f/%-6.3f", median(v), p95(v));
       return std::string(b);
     };
-    std::printf("%-18s %6zu %8.2f %8.2f | %s %s %s %s %s | %zu/%zu\n",
+    std::printf("%-18s %6zu %8.2f %8.2f | %s %s %s %s %s %s | %zu/%zu\n",
                 r.name.c_str(), r.nodes, r.buildMs, r.firstFrameMs,
                 cell(r.s.cascade).c_str(), cell(r.s.tick).c_str(), cell(r.s.layout).c_str(),
-                cell(r.s.paint).c_str(), cell(r.s.total).c_str(),
+                cell(r.s.paint).c_str(), cell(r.s.gpu).c_str(), cell(r.s.total).c_str(),
                 r.layoutFrames, r.s.total.size());
   }
 #ifdef GLINT_PERF_COUNTERS
@@ -663,7 +750,8 @@ void printTable(const std::vector<Result>& results, const Options& opt)
 
 void printJson(const std::vector<Result>& results, const Options& opt)
 {
-  std::printf("{\"frames\":%d,\"noPaint\":%s,\"scenarios\":[", opt.frames, opt.noPaint ? "true" : "false");
+  std::printf("{\"frames\":%d,\"noPaint\":%s,\"gpu\":%s,\"scenarios\":[", opt.frames,
+              opt.noPaint ? "true" : "false", opt.gpu ? "true" : "false");
   for (size_t i = 0; i < results.size(); ++i)
   {
     const auto& r = results[i];
@@ -676,6 +764,7 @@ void printJson(const std::vector<Result>& results, const Options& opt)
     ph("tick", r.s.tick);       std::printf(",");
     ph("layout", r.s.layout);   std::printf(",");
     ph("paint", r.s.paint);     std::printf(",");
+    ph("gpu", r.s.gpu);         std::printf(",");
     ph("frame", r.s.total);
     const auto& c = r.perFrame;
     std::printf(",\"layoutFrames\":%zu,\"counters\":{\"applyCss\":%llu,\"rulesTested\":%llu,"
@@ -716,6 +805,7 @@ int main(int argc, char** argv)
     else if (a == "--verify")           opt.verify = true;
     else if (a == "--paint-phases")     opt.paintPhases = true;
     else if (a == "--no-memo")          glint_element::sLayoutMemoEnabled = false;
+    else if (a == "--gpu")              opt.gpu = true;
     else if (a == "--no-incremental")   glint_element::sIncrementalStyle = glint_element::sIncrementalLayout = false;
     else if (a == "--no-inc-layout")    glint_element::sIncrementalLayout = false;
     else if (a == "--no-cascade-index") glint_document::sCascadeIndexEnabled = false;
@@ -734,6 +824,23 @@ int main(int argc, char** argv)
   }
 
   glint_element::sAnimationClock = &benchClock;
+
+  if (opt.gpu)
+  {
+#ifdef GLINT_BENCH_HAS_D3D12
+    static GpuContext gpu;
+    if (!gpu.init())
+    {
+      std::fprintf(stderr, "--gpu: D3D12 initialization failed\n");
+      return 2;
+    }
+    gGpu = &gpu;
+    std::fprintf(opt.json ? stderr : stdout, "GPU: %s (D3D12)\n", gpu.adapterName.c_str());
+#else
+    std::fprintf(stderr, "--gpu: this build has no D3D12 backend\n");
+    return 2;
+#endif
+  }
   if (opt.verify)
   {
     glint_element::sVerifyIncrementalStyle = true;
