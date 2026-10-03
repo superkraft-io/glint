@@ -79,9 +79,6 @@ Options:
   --skip-sync  Skip 'python tools/git-sync-deps' (use if deps are already present)
   --skia-src <dir>   Build from an existing Skia checkout (with deps synced) instead
                      of cloning one into third_party/skia/tmp
-  --allow-msvc       Windows only: build with MSVC when clang-cl is not installed.
-                     Not recommended: Skia's CPU rasterizer is 10-40x slower when
-                     compiled with MSVC (text, anti-aliased shapes, shadows).
   --arch       Target architecture(s). Default: host. On macOS, use 'universal'
                to build both arm64 and x64 libs and lipo them into mac/universal/.
 
@@ -108,8 +105,7 @@ function parseArgs(argv) {
     target: defaultTargetForPlatform(),
     skipSync: false,
     arch: 'host',
-    skiaSrc: null,
-    allowMsvc: false
+    skiaSrc: null
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -166,8 +162,8 @@ function parseArgs(argv) {
     }
 
     if (arg === '--allow-msvc' || arg === '-allow-msvc') {
-      options.allowMsvc = true;
-      continue;
+      fail('--allow-msvc was removed: Skia is always built with clang-cl on Windows. '
+         + 'Built with MSVC, its CPU rendering runs 10-40x slower.');
     }
 
     if (arg === '--skia-src' || arg === '-skia-src') {
@@ -360,7 +356,7 @@ function resolveClangWinToolchain() {
 }
 
 // Records which compiler built the libraries, next to them. Glint's CMake
-// warns when it finds a Windows Skia built with MSVC.
+// refuses Windows Skia libraries without this file or built with MSVC.
 function writeBuildInfo(libDir, info) {
   ensureDirectory(libDir);
   fs.writeFileSync(path.join(libDir, 'glint_skia_build.json'), JSON.stringify(info, null, 2) + '\n');
@@ -527,16 +523,24 @@ extra_ldflags = [ "-stdlib=libc++" ]`;
   }
 
   if (target === 'win') {
-    const extraCFlag = isDebug ? '"/MTd"' : '"/MT"';
+    if (!clangWin) fail('Internal error: Windows Skia builds require clang-cl.');
+    // Debug keeps the debug runtime (/MTd) and SK_DEBUG so it links with a
+    // Debug app, but is optimized: GN's is_debug only drops /O2, and an
+    // unoptimized Skia makes every Debug launch draw several times slower.
+    const extraCFlag = isDebug ? '"/MTd", "/O2", "/Zc:inline"' : '"/MT"';
     // clang-cl + recent MSVC intrin.h: Skia's per-CPU-target files include
     // <immintrin.h> under a target() pragma, and clang's rtmintrin.h then
     // redefines _xend, which intrin.h also declares ("target multiversioning
     // cannot be combined with always_inline"). Skia uses no RTM intrinsics,
     // so skip that header via its include guard.
-    const clangCFlags = clangWin ? ', "-D__RTMINTRIN_H"' : '';
+    // is_trivial_abi = false: non-official (Debug) builds otherwise mark
+    // sk_sp & co. [[clang::trivial_abi]], which MSVC ignores. Skia and the
+    // MSVC-built app would then pass them differently across calls and
+    // corrupt them (DirectWrite crashes loading an @font-face).
     // GN strings: forward slashes avoid escaping backslashes.
-    const clangArg = clangWin ? `\nclang_win = "${clangWin.rootDir.replace(/\\/g, '/')}"` : '';
-    return `${common}\nextra_cflags = [ ${extraCFlag}${clangCFlags} ]${clangArg}`;
+    return `${common}\nis_trivial_abi = false`
+         + `\nextra_cflags = [ ${extraCFlag}, "-D__RTMINTRIN_H" ]`
+         + `\nclang_win = "${clangWin.rootDir.replace(/\\/g, '/')}"`;
   }
 
   if (target === 'mac') {
@@ -813,11 +817,50 @@ async function downloadPrebuilt(backend) {
   await downloadFile(url, zipPath);
   console.log('  Download complete.');
 
-  console.log(`Extracting to ${depsDir}...`);
-  await extractZip(zipPath, depsDir);
-  console.log('  Extraction complete.');
-
+  // Extract to a staging folder and check it before replacing anything in
+  // depsDir, so a rejected package leaves the current libraries in place.
+  const stageDir = path.join(tmpDir, 'prebuilt-stage');
+  fs.rmSync(stageDir, { recursive: true, force: true });
+  console.log('Extracting...');
+  await extractZip(zipPath, stageDir);
   fs.rmSync(zipPath, { force: true });
+
+  if (platform === 'win32') verifyWindowsPrebuilt(stageDir);
+
+  console.log(`Installing to ${depsDir}...`);
+  fs.cpSync(stageDir, depsDir, { recursive: true, force: true });
+  fs.rmSync(stageDir, { recursive: true, force: true });
+  console.log('  Done.');
+}
+
+// Every Windows library folder in the package must be a clang-cl build
+// (glint_skia_build.json). Skia built with MSVC renders 10-40x slower on the CPU.
+function verifyWindowsPrebuilt(stageDir) {
+  const winDir = path.join(stageDir, 'win');
+  const problems = [];
+  // win/<arch>/<config>; win/bin holds ICU data, not libraries.
+  const isDir = (p) => fs.statSync(p).isDirectory();
+  const archs = fs.existsSync(winDir)
+    ? fs.readdirSync(winDir).filter((name) => name !== 'bin' && isDir(path.join(winDir, name)))
+    : [];
+  for (const arch of archs) {
+    for (const configName of fs.readdirSync(path.join(winDir, arch))) {
+      if (!isDir(path.join(winDir, arch, configName))) continue;
+      const infoPath = path.join(winDir, arch, configName, 'glint_skia_build.json');
+      let compiler = 'unknown (no glint_skia_build.json)';
+      if (fs.existsSync(infoPath)) {
+        try { compiler = JSON.parse(fs.readFileSync(infoPath, 'utf8')).compiler || compiler; } catch {}
+      }
+      if (compiler !== 'clang-cl') problems.push(`win/${arch}/${configName}: ${compiler}`);
+    }
+  }
+  if (archs.length === 0) problems.push('no win/ libraries in the package');
+  if (problems.length) {
+    fs.rmSync(stageDir, { recursive: true, force: true });
+    fail('The prebuilt Skia package was not built with clang-cl:\n  ' + problems.join('\n  ')
+       + '\nNothing was installed. Build from source instead (needs clang-cl):\n'
+       + '  node third_party/glint/scripts/init_skia.mjs --source --backend <backend> --config Both');
+  }
 }
 
 function main() {
@@ -921,19 +964,15 @@ function main() {
   let clangWin = null;
   if (options.target === 'win') {
     clangWin = resolveClangWinToolchain();
-    if (clangWin) {
-      console.log(`  Compiler: ${clangWin.version} (${clangWin.rootDir})`);
-    } else if (options.allowMsvc) {
-      console.warn('  Compiler: MSVC (--allow-msvc). Skia\'s CPU rendering will be 10-40x slower than a clang-cl build.');
-    } else {
+    if (!clangWin) {
       fail('clang-cl not found. Skia must be built with clang-cl on Windows: with MSVC its CPU '
          + 'rasterizer (text, anti-aliased shapes, shadows) runs 10-40x slower.\n'
          + '  Install it with the Visual Studio Installer: Modify -> Individual components -> '
          + '"C++ Clang Compiler for Windows" (+ "MSBuild support for LLVM (clang-cl) toolset"),\n'
          + '  or install LLVM from https://github.com/llvm/llvm-project/releases, '
-         + 'or set CLANG_WIN to an LLVM root (the folder containing bin\\clang-cl.exe).\n'
-         + '  To build with MSVC anyway, pass --allow-msvc.');
+         + 'or set CLANG_WIN to an LLVM root (the folder containing bin\\clang-cl.exe).');
     }
+    console.log(`  Compiler: ${clangWin.version} (${clangWin.rootDir})`);
   }
 
   ensureDirectory(depsDir);
@@ -1071,9 +1110,10 @@ function main() {
       } else {
         copyLibraries(outDir, configName, arch);
         writeBuildInfo(path.join(depsDir, 'win', arch, configName), {
-          compiler: clangWin ? 'clang-cl' : 'msvc',
-          compilerVersion: clangWin ? clangWin.version : '',
+          compiler: 'clang-cl',
+          compilerVersion: clangWin.version,
           config: configName,
+          optimized: true,
           backend: options.backend,
           builtAt: new Date().toISOString()
         });

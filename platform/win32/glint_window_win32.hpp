@@ -1125,6 +1125,7 @@ private:
   void paint()
   {
     if (!mOwnRoot) return;
+    mOwnRoot->renderBackend = { glint_backend_name(mActiveBackend), mRenderer && mRenderer->isGpu() };
 
     double drawMs = 0.0;
     double presentMs = 0.0;

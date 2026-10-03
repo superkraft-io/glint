@@ -88,7 +88,7 @@ node .\third_party\glint\scripts\init_skia.mjs --source --config Both --backend 
 node .\third_party\glint\scripts\init_skia.mjs --source --config Both --backend d3d12
 ```
 
-On Windows, the source build uses **clang-cl**, found automatically from your Visual Studio installation or a standalone LLVM install (or set `CLANG_WIN` to an LLVM folder that contains `bin\clang-cl.exe`). Skia's CPU renderer relies on Clang's vector extensions; built with MSVC it falls back to scalar code, and text, anti-aliased shapes and shadows draw **10–40× slower**. This matters even for GPU apps, because Glint falls back to CPU rendering when the GPU can't be used (Remote Desktop, virtual machines, broken drivers). The script stops with installation instructions when clang-cl is missing; `--allow-msvc` builds with MSVC anyway, which is not recommended.
+On Windows, the source build uses **clang-cl**, found automatically from your Visual Studio installation or a standalone LLVM install (or set `CLANG_WIN` to an LLVM folder that contains `bin\clang-cl.exe`). Skia's CPU renderer relies on Clang's vector extensions; built with MSVC it falls back to scalar code, and text, anti-aliased shapes and shadows draw **10–40× slower**. This matters even for GPU apps, because Glint falls back to CPU rendering when the GPU can't be used (Remote Desktop, virtual machines, broken drivers). The script stops with installation instructions when clang-cl is missing; there is no MSVC fallback. Debug Skia libraries are built optimized too (with the debug runtime and Skia's debug checks), so Debug builds of your app draw at nearly Release speed. CMake refuses Windows Skia libraries that weren't built with clang-cl, and `--prebuilt` refuses a package that wasn't.
 
 Useful options:
 
@@ -288,6 +288,28 @@ GLINT WINDOW: active backend = D3D12 (GPU)
 ```
 
 If telemetry is enabled, you should also see timing lines.
+
+### Ship compiled shaders (Direct3D)
+
+The first time a page draws an effect it hasn't drawn before (a blur, a blend mode, a gradient, a custom shader), Skia generates a GPU shader for it and Windows compiles it with `D3DCompile`, which takes 3–10 ms per shader. A page with new effects can pause for 100–200 ms the first time it opens.
+
+Glint caches compiled shaders so this happens at most once:
+
+- **On disk:** every compiled shader is saved in `%LOCALAPPDATA%\Glint\ShaderCache\D3D`. Later launches on the same PC skip compiling.
+- **Inside your app:** capture the shaders your app uses once, and embed them, so even a user's first launch doesn't compile:
+
+  1. Run your app with `GLINT_D3D_SHADER_CAPTURE=<path>\glint_d3d_shaders.bin` and open every page (the demo's `demo/scripts/capture_d3d_shaders.ps1` does this automatically).
+  2. Embed the pack in your executable:
+
+     ```cmake
+     glint_embed_d3d_shaders(my_app "${CMAKE_CURRENT_SOURCE_DIR}/shaders/glint_d3d_shaders.bin")
+     ```
+
+  3. Capture again after updating Skia or changing what your pages draw. A shader missing from the pack still works: it compiles once and goes to the disk cache.
+
+Nothing in Skia is modified: Glint intercepts `D3DCompile` in its own process and looks shaders up by their exact source text, so a stale pack can only make things slower, never wrong. `GLINT_D3D_SHADER_CACHE=0` turns the cache off.
+
+> **Debugging tip:** when a debugger starts your app, Windows switches to a debug memory allocator that makes shader compilation (and other allocation-heavy work) up to 10× slower. Set `_NO_DEBUG_HEAP=1` in your launch configuration's environment.
 
 ## 11. Embed Glint into an existing Win32 app when needed
 

@@ -994,6 +994,8 @@ private:
   glint_element*     mFpsLabel       = nullptr;
   glint_element*     mFrameTimeLabel = nullptr;
   glint_element*     mDrawCountLabel = nullptr;
+  glint_element*     mRendererLabel  = nullptr;   // active backend + GPU / software
+  glint_element*     mBuildLabel     = nullptr;   // build configuration + compile time
 
   std::vector<int> mSubIds;                               // glint_bus subscription IDs
   std::wstring     mDynTitle;                             // "Inspecting <name>" � built in constructor
@@ -2551,6 +2553,8 @@ function exportAbsoluteJSON() {
     float              frameMs = 0.f;
     uint64_t           draws   = 0;
     std::vector<float> samples;
+    std::string        backend;
+    bool               gpu     = false;
   };
 
   void refreshRenderingStats()
@@ -2564,6 +2568,8 @@ function exportAbsoluteJSON() {
         r.frameMs = doc.getFrameTimeMs();
         r.draws   = doc.getDrawCount();
         r.samples = doc.getFrameSamples();
+        r.backend = doc.renderBackend.name ? doc.renderBackend.name : "unknown";
+        r.gpu     = doc.renderBackend.gpu;
         return r;
       },
       [this](RenderStats& r) {
@@ -2580,6 +2586,12 @@ function exportAbsoluteJSON() {
         if (mDrawCountLabel) {
           snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(r.draws));
           mDrawCountLabel->innerText = buf;
+        }
+        if (mRendererLabel) {
+          // "D3D12 · GPU" in green, "CPU · software" in amber.
+          mRendererLabel->innerText = r.backend + (r.gpu ? " \xc2\xb7 GPU" : " \xc2\xb7 software");
+          mRendererLabel->style.color = r.gpu ? glint_color(255, 110, 210, 130)
+                                              : glint_color(255, 230, 170, 80);
         }
         if (mFpsChart) mFpsChart->mSamples = std::move(r.samples);
         if (mOwnRoot) mOwnRoot->setDirty(false);
@@ -3266,6 +3278,21 @@ function exportAbsoluteJSON() {
 
         makeCard("FPS",        mFpsLabel);
         makeCard("FRAME TIME", mFrameTimeLabel);
+        makeCard("RENDERER",   mRendererLabel);
+        makeCard("BUILD",      mBuildLabel);
+        // Configuration + when this code was compiled: tells at a glance
+        // whether the running app is the build you just made.
+#ifndef GLINT_BUILD_CONFIG
+  #ifdef NDEBUG
+    #define GLINT_BUILD_CONFIG "Release"
+  #else
+    #define GLINT_BUILD_CONFIG "Debug"
+  #endif
+#endif
+        mBuildLabel->innerText = std::string(GLINT_BUILD_CONFIG) + " \xc2\xb7 " + __TIME__;
+        mBuildLabel->style.color = std::string(GLINT_BUILD_CONFIG) == "Release"
+                                   ? glint_color(255, 215, 215, 215)     // optimized
+                                   : glint_color(255, 230, 170, 80);     // Debug / RelWithDebInfo (/Od): slow
       }
 
       // Total draw calls card

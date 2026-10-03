@@ -160,8 +160,9 @@ set(GLINT_MSVC_RUNTIME_LIBRARY_EXPR "${_GLINT_MSVC_RUNTIME_LIBRARY_EXPR}" CACHE 
 set(_SKIA_LIB_DIR "${_SKIA_LIB_ROOT}/${_SKIA_CONFIG_DIR}")
 
 # Skia's CPU rasterizer needs Clang's vector extensions: built with MSVC, text
-# and anti-aliased drawing run 10-40x slower. init_skia.mjs records the
-# compiler next to the libraries (glint_skia_build.json).
+# and anti-aliased drawing run 10-40x slower, so Windows Skia must be a
+# clang-cl build. init_skia.mjs records the compiler next to the libraries
+# (glint_skia_build.json); libraries without that record are refused too.
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   # _SKIA_LIB_DIR may be a generator expression (multi-config generators):
   # check each config directory that exists.
@@ -173,20 +174,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(_GLINT_SKIA_BUILD_INFO "${_glint_skia_cfg_dir}/glint_skia_build.json")
     if(EXISTS "${_GLINT_SKIA_BUILD_INFO}")
       file(READ "${_GLINT_SKIA_BUILD_INFO}" _glint_skia_build_info)
-      if(_glint_skia_build_info MATCHES "\"compiler\": *\"msvc\"")
-        message(WARNING
-          "glint: the Skia ${_glint_skia_cfg} libraries in ${_glint_skia_cfg_dir} were built "
-          "with MSVC. Their CPU rendering (text, anti-aliased shapes, shadows) is 10-40x "
-          "slower than a clang-cl build. Rebuild with: "
-          "node third_party/glint/scripts/init_skia.mjs --source")
-      else()
+      if(_glint_skia_build_info MATCHES "\"compiler\": *\"clang-cl\"")
         message(STATUS "glint: Skia ${_glint_skia_cfg} libraries built with clang-cl")
+      else()
+        message(FATAL_ERROR
+          "glint: the Skia ${_glint_skia_cfg} libraries in ${_glint_skia_cfg_dir} were not "
+          "built with clang-cl. Skia built with MSVC renders text, anti-aliased shapes and "
+          "shadows 10-40x slower. Rebuild with: "
+          "node third_party/glint/scripts/init_skia.mjs --source --backend <backend> --config Both")
       endif()
     else()
-      message(STATUS
-        "glint: unknown compiler for the Skia ${_glint_skia_cfg} libraries (no "
-        "glint_skia_build.json). A Skia built with MSVC renders 10-40x slower on the CPU; "
-        "see guide.md.")
+      message(FATAL_ERROR
+        "glint: unknown compiler for the Skia ${_glint_skia_cfg} libraries in "
+        "${_glint_skia_cfg_dir} (no glint_skia_build.json), probably an old MSVC build. "
+        "Skia must be built with clang-cl on Windows. Rebuild with: "
+        "node third_party/glint/scripts/init_skia.mjs --source --backend <backend> --config Both")
     endif()
   endforeach()
 endif()
@@ -287,8 +289,16 @@ target_compile_definitions(glint_core INTERFACE
   $<$<AND:$<PLATFORM_ID:Windows>,$<BOOL:${_GLINT_SKIA_DEBUG_FALLBACK}>,$<NOT:$<CONFIG:Debug>>>:_ITERATOR_DEBUG_LEVEL=2>
 )
 
+# Lets tools (the inspector's Rendering tab) show which configuration is running.
+target_compile_definitions(glint_core INTERFACE "GLINT_BUILD_CONFIG=\"$<CONFIG>\"")
+
+# RelWithDebInfo: unoptimized glint for debugging. /Ob0 too: CMake's default
+# /Ob1 still inlines `inline` functions, and the inline-only definitions that
+# glint's support libraries call (e.g. glint_document::showInspector, defined
+# in inspector/window.hpp) then had no out-of-line copy: unresolved externals.
 target_compile_options(glint_core INTERFACE
   $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/Od>
+  $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/Ob0>
   $<$<CXX_COMPILER_ID:MSVC>:/bigobj>
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
   $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<BOOL:${_GLINT_SKIA_DEBUG_FALLBACK}>,$<NOT:$<CONFIG:Debug>>>:/UNDEBUG>
@@ -506,8 +516,29 @@ if(WIN32)
       TARGET_DIRECTORY ${target}
       PROPERTIES VS_TOOL_OVERRIDE "Manifest")
   endfunction()
+
+  # Ships compiled Direct3D shaders inside `target`: embeds the shader pack
+  # `pack` (written by running the app with GLINT_D3D_SHADER_CAPTURE=<pack>)
+  # as the GLINT_D3D_SHADERS resource, which glint_d3d_shader_cache loads at
+  # startup. Shaders in it skip D3DCompile, even on a user's first launch.
+  function(glint_embed_d3d_shaders target pack)
+    get_filename_component(_pack "${pack}" ABSOLUTE)
+    if(NOT EXISTS "${_pack}")
+      message(STATUS "glint: no D3D shader pack at ${_pack} yet; shaders compile at "
+                     "first use. Capture one with GLINT_D3D_SHADER_CAPTURE=<pack>.")
+      return()
+    endif()
+    file(TO_CMAKE_PATH "${_pack}" _pack)
+    set(_rc "${CMAKE_CURRENT_BINARY_DIR}/${target}_glint_d3d_shaders.rc")
+    file(GENERATE OUTPUT "${_rc}" CONTENT "GLINT_D3D_SHADERS RCDATA \"${_pack}\"\n")
+    target_sources(${target} PRIVATE "${_rc}")
+    set_source_files_properties("${_rc}" TARGET_DIRECTORY ${target}
+      PROPERTIES OBJECT_DEPENDS "${_pack}")
+  endfunction()
 else()
   function(glint_configure_win32_app target)
+  endfunction()
+  function(glint_embed_d3d_shaders target pack)
   endfunction()
 endif()
 

@@ -33,6 +33,7 @@
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include "glint_d3d_shader_cache.hpp"
 #endif
 
 namespace glint_win32_surface
@@ -536,6 +537,9 @@ inline direct3d_init_result initializeDirect3DContext(
   queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
   if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue))))
     return direct3d_init_result::queue_failed;
+
+  // Compiled shaders from the binary / disk instead of D3DCompile per shader.
+  glint_d3d_shader_cache::install();
 
   GrD3DBackendContext backendContext{};
   backendContext.fAdapter = adapter;

@@ -75,6 +75,16 @@ public:
   const char* typeName() const override { return "list-item"; }
   const char* tagName()  const override { return "li"; }
 
+  // State styles (hover / pressed / selected) usually set only a background.
+  // A text color they leave at its default (fully transparent) means "keep
+  // the normal text color", not "draw invisible text".
+  const sk_color& _textColorFor(const glint_style& active) const
+  {
+    if (&active != &style && active.color.value.A == 0)
+      return computedStyle.color;
+    return active.color;
+  }
+
   // ── Selection helper ───────────────────────────────────────────────────────
   void setSelected(bool v)
   {
@@ -131,7 +141,7 @@ protected:
       const char* _fn_ = _fid_.empty()
           ? (s.fontFamily.empty() ? nullptr : s.fontFamily.c_str())
           : _fid_.c_str();
-      glint_text t(style.fontSize.toFloat(), s.color, _fn_,
+      glint_text t(style.fontSize.toFloat(), _textColorFor(s), _fn_,
               EAlign::Near, EVAlign::Middle);
       g.DrawText(t, innerText.c_str(), content);
     }
@@ -188,7 +198,7 @@ protected:
     {
       const float fontSize = style.fontSize.toFloat() > 0.f ? style.fontSize.toFloat() : 13.f;
       SkFont  font = skFont(fontSize);
-      SkPaint tp;  tp.setColor(skColor(active.color.value)); tp.setAntiAlias(true);
+      SkPaint tp;  tp.setColor(skColor(_textColorFor(active).value)); tp.setAntiAlias(true);
       const float textY = content.T + content.H() * 0.5f + fontSize * 0.35f;
       canvas->drawString(innerText.c_str(), textX, textY, font, tp);
     }

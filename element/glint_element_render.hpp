@@ -678,10 +678,14 @@ public:
           canvas->restore();
         }
       }
-      else
+      else if (!glint_img_cache_lookup(bgSrc, bgImg))
       {
-        (void)isSVG;
-        bgImg = glint_load_image(bgSrc, _getOnRequest(), this, _getNetworkLog());
+        // Not decoded yet: decode in the background and draw the element
+        // without its img until then, instead of stalling this frame.
+        glint_owner_poster post = ownerThreadPoster();
+        glint_element* self = const_cast<glint_element*>(static_cast<const glint_element*>(this));
+        bgImg = glint_load_image_async(bgSrc, _getOnRequest(), this, _getNetworkLog(),
+                                       [post, self] { post([self] { self->setPaintOnlyDirty(); }); });
       }
 
       if (bgImg)

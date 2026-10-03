@@ -962,6 +962,15 @@ public:
   /** Total number of Draw() / DrawToCanvas() calls since this root was created. */
   uint64_t getDrawCount() const { return mDrawCount; }
 
+  /** Renderer the host is currently drawing this document with (set by the
+   *  host every paint, so it reflects a CPU fallback too). */
+  struct render_backend_info
+  {
+    const char* name = "unknown";   // e.g. "D3D12", "OpenGL", "CPU"
+    bool        gpu  = false;
+  };
+  render_backend_info renderBackend;
+
   /** Per-frame FPS values derived from the ring buffer, oldest → newest.
    *  Each element is 1000 / (dt_ms between consecutive recorded frames).
    *  Returns an empty vector if fewer than 2 frames have been recorded.

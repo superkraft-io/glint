@@ -593,6 +593,7 @@ private:
       acknowledgePendingPaint();
       return;
     }
+    mDocument->renderBackend = { glint_backend_name(mActiveBackend), mRenderer->isGpu() };
 
     double drawMs = 0.0;
     double presentMs = 0.0;

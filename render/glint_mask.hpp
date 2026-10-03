@@ -50,12 +50,16 @@
 #include "modules/svg/include/SkSVGSVG.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -827,40 +831,30 @@ inline std::unordered_map<std::string, sk_sp<SkImage>>& glint_img_cache()
 // shared map, and a static mutex gave every translation unit its own lock.
 inline std::mutex gGlintImgCacheMutex;
 
-/** Load (or retrieve from cache) an SkImage for the given path.
- *  If onRequest is non-null, it is fired before the disk lookup; if the
- *  callback populates responseData the bytes are decoded directly (no cache). */
-inline sk_sp<SkImage> glint_load_image(
-    const std::string& path,
-    const std::function<void(glint_resource_request&)>* onRequest = nullptr,
-    const glint_element* source = nullptr,
-    glint_network_log* netLog = nullptr)
+/** Looks `path` up in glint_img_cache(). True when it has an entry (which is
+ *  nullptr for an img that failed to load). */
+inline bool glint_img_cache_lookup(const std::string& path, sk_sp<SkImage>& out)
 {
-  // ── Cache — checked first regardless of whether a handler is registered ──
-  // This prevents the onRequest handler (and its disk I/O) from firing every
-  // render frame for images that have already been loaded once.
-  {
-    std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
-    auto& cache = glint_img_cache();
-    auto it = cache.find(path);
-    if (it != cache.end()) return it->second;
-  }
+  std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+  auto& cache = glint_img_cache();
+  auto it = cache.find(path);
+  if (it == cache.end()) return false;
+  out = it->second;
+  return true;
+}
 
+/** Fetches the encoded bytes of an img: resource cache, then the onRequest
+ *  handler, then disk. Records the request in the network log. nullptr when
+ *  the img is missing. Runs on the calling thread. */
+inline sk_sp<SkData> glint_fetch_image_bytes(
+    const std::string& path,
+    const std::function<void(glint_resource_request&)>* onRequest,
+    const glint_element* source,
+    glint_network_log* netLog)
+{
   GlintCachedResource cachedRes;
   if (glint_resource_cache_lookup(path, glint_resource_request::Type::Image, &cachedRes))
-  {
-    if (!cachedRes.data)
-    {
-      std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
-      glint_img_cache()[path] = nullptr;
-      return nullptr;
-    }
-
-    auto img = SkImages::DeferredFromEncodedData(cachedRes.data);
-    std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
-    glint_img_cache()[path] = img;
-    return img;
-  }
+    return cachedRes.data;
 
   // ── Callback path ─────────────────────────────────────────────────────────
   if (onRequest && *onRequest)
@@ -876,36 +870,181 @@ inline sk_sp<SkImage> glint_load_image(
     if (!req.handled) req.error(500, "Handler did not respond to request");
     glint_network_log_push(netLog, path, glint_resource_request::Type::Image, req);
     glint_resource_cache_store(path, glint_resource_request::Type::Image, req);
-    // Store in cache (hit or miss) so subsequent frames skip the handler entirely.
-    if (req.responseData)
-    {
-      auto img = SkImages::DeferredFromEncodedData(req.responseData);
-      std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
-      glint_img_cache()[path] = img;
-      return img;
-    }
-    // Explicit failure — cache nullptr so we don't retry every frame.
-    std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
-    glint_img_cache()[path] = nullptr;
-    return nullptr;
+    return req.responseData;
   }
   // ── Disk path (no handler registered) ─────────────────────────────────────
-  std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
-  auto& cache = glint_img_cache();
-  auto it = cache.find(path);
-  if (it != cache.end()) return it->second;  // double-checked after lock
-
   auto data = SkData::MakeFromFileName(path.c_str());
   glint_resource_cache_store_disk(path, glint_resource_request::Type::Image, data, path);
-  if (!data) {
-    glint_network_log_push_disk(netLog, path, glint_resource_request::Type::Image, false);
-    cache[path] = nullptr;
-    return nullptr;
+  glint_network_log_push_disk(netLog, path, glint_resource_request::Type::Image, data != nullptr);
+  return data;
+}
+
+/** Load (or retrieve from cache) an SkImage for the given path.
+ *  If onRequest is non-null, it is fired before the disk lookup. The result
+ *  (also a failure, as nullptr) is cached, so the handler and the disk are hit
+ *  once per path. Decodes lazily, inside the first draw: draw paths that can
+ *  show the element without the img first use glint_load_image_async(). */
+inline sk_sp<SkImage> glint_load_image(
+    const std::string& path,
+    const std::function<void(glint_resource_request&)>* onRequest = nullptr,
+    const glint_element* source = nullptr,
+    glint_network_log* netLog = nullptr)
+{
+  sk_sp<SkImage> cached;
+  if (glint_img_cache_lookup(path, cached)) return cached;
+
+  sk_sp<SkData> data = glint_fetch_image_bytes(path, onRequest, source, netLog);
+  sk_sp<SkImage> img = data ? SkImages::DeferredFromEncodedData(std::move(data)) : nullptr;
+
+  std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+  // A background decode of the same path may have finished meanwhile; keep it.
+  return glint_img_cache().emplace(path, img).first->second;
+}
+
+// ── Background img decode ───────────────────────────────────────────────────
+// Decoding a large PNG / JPEG and building its mipmaps takes 50-150 ms (a
+// 2400x1792 PNG: ~100 ms). Done lazily inside the first frame that draws the
+// img, that stalls opening the page. glint_load_image_async() fetches the
+// bytes on the calling thread (so the onRequest handler and the network log
+// keep their threading), decodes them on one shared worker thread into a
+// raster img with mipmaps (the GPU upload then only copies), stores it in
+// glint_img_cache() and calls the waiters, from the worker thread.
+
+/** Off (e.g. for headless captures that need every img in their first
+ *  frame): glint_load_image_async() decodes synchronously, like
+ *  glint_load_image(). */
+inline std::atomic<bool> gGlintAsyncImageDecode{ true };
+
+/** path -> callbacks waiting for its background decode.
+ *  Guarded by gGlintImgCacheMutex. */
+inline std::unordered_map<std::string, std::vector<std::function<void()>>>& glint_img_pending()
+{
+  static std::unordered_map<std::string, std::vector<std::function<void()>>> pending;
+  return pending;
+}
+
+/** Stores the result for `path` and runs (outside the lock) everything that
+ *  waited for it. */
+inline void glint_img_finish_pending(const std::string& path, sk_sp<SkImage> img)
+{
+  std::vector<std::function<void()>> waiters;
+  {
+    std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+    glint_img_cache()[path] = std::move(img);
+    auto& pending = glint_img_pending();
+    auto it = pending.find(path);
+    if (it != pending.end())
+    {
+      waiters.swap(it->second);
+      pending.erase(it);
+    }
+  }
+  for (auto& waiter : waiters)
+    if (waiter) waiter();
+}
+
+class glint_img_decoder
+{
+public:
+  static glint_img_decoder& instance()
+  {
+    static glint_img_decoder decoder;
+    return decoder;
   }
 
-  sk_sp<SkImage> img = SkImages::DeferredFromEncodedData(data);
-  glint_network_log_push_disk(netLog, path, glint_resource_request::Type::Image, img != nullptr);
-  cache[path] = img;
-  return img;
+  void enqueue(std::string path, sk_sp<SkData> data)
+  {
+    {
+      std::lock_guard<std::mutex> lk(mMutex);
+      if (!mThread.joinable()) mThread = std::thread([this] { run(); });
+      mJobs.push_back({ std::move(path), std::move(data) });
+    }
+    mCv.notify_one();
+  }
+
+  /** Full decode into a raster img with mipmaps; nullptr when undecodable. */
+  static sk_sp<SkImage> decode(sk_sp<SkData> data)
+  {
+    sk_sp<SkImage> img = SkImages::DeferredFromEncodedData(std::move(data));
+    if (!img) return nullptr;
+    sk_sp<SkImage> raster = img->makeRasterImage(nullptr);
+    if (!raster) return img;
+    sk_sp<SkImage> mipped = raster->withDefaultMipmaps();
+    return mipped ? mipped : raster;
+  }
+
+  ~glint_img_decoder()
+  {
+    {
+      std::lock_guard<std::mutex> lk(mMutex);
+      mStop = true;
+    }
+    mCv.notify_all();
+    if (mThread.joinable()) mThread.join();
+  }
+
+private:
+  struct job { std::string path; sk_sp<SkData> data; };
+
+  void run()
+  {
+    for (;;)
+    {
+      job next;
+      {
+        std::unique_lock<std::mutex> lk(mMutex);
+        mCv.wait(lk, [this] { return mStop || !mJobs.empty(); });
+        if (mStop) return;
+        next = std::move(mJobs.front());
+        mJobs.pop_front();
+      }
+      glint_img_finish_pending(next.path, decode(std::move(next.data)));
+    }
+  }
+
+  std::mutex              mMutex;
+  std::condition_variable mCv;
+  std::deque<job>         mJobs;
+  bool                    mStop = false;
+  std::thread             mThread;
+};
+
+/** Like glint_load_image(), but never decodes on the calling thread: returns
+ *  nullptr while the img is decoded in the background, and `onReady` is
+ *  called (from the decode thread) once it is in the cache. Use it where the
+ *  element can be drawn without the img for a frame or two. */
+inline sk_sp<SkImage> glint_load_image_async(
+    const std::string& path,
+    const std::function<void(glint_resource_request&)>* onRequest,
+    const glint_element* source,
+    glint_network_log* netLog,
+    std::function<void()> onReady)
+{
+  if (!gGlintAsyncImageDecode.load(std::memory_order_relaxed))
+    return glint_load_image(path, onRequest, source, netLog);
+
+  {
+    std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+    auto& cache = glint_img_cache();
+    auto it = cache.find(path);
+    if (it != cache.end()) return it->second;
+    auto& pending = glint_img_pending();
+    auto pit = pending.find(path);
+    if (pit != pending.end())
+    {
+      pit->second.push_back(std::move(onReady));
+      return nullptr;
+    }
+    pending[path].push_back(std::move(onReady));
+  }
+
+  sk_sp<SkData> data = glint_fetch_image_bytes(path, onRequest, source, netLog);
+  if (!data)
+  {
+    glint_img_finish_pending(path, nullptr);
+    return nullptr;
+  }
+  glint_img_decoder::instance().enqueue(path, std::move(data));
+  return nullptr;
 }
 
