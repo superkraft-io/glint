@@ -33,6 +33,7 @@
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <dcomp.h>
 #include "glint_d3d_shader_cache.hpp"
 #endif
 
@@ -563,8 +564,62 @@ inline direct3d_device createDirect3DDevice()
   return d;
 }
 
+// A DirectComposition visual showing a swapchain over a window's GDI content.
+//
+// The swapchain can be shown or hidden at any time, and the window's own GDI
+// content (its redirection surface) shows when it is hidden. That lets a
+// window switch between presenting through the swapchain and through GDI:
+// the CPU renderer's first frames at startup, and live resizes, where
+// Windows shows a GDI window's new size and content in the same frame while
+// swapchain frames trail the border (see setPresentThroughGdi()).
+struct direct3d_composition
+{
+  gr_cp<IDCompositionDesktopDevice> device;
+  gr_cp<IDCompositionTarget>        target;
+  gr_cp<IDCompositionVisual2>       visual;
+  bool                              shown = false;
+
+  bool create(HWND hwnd, IDXGISwapChain1* swapChain)
+  {
+    if (FAILED(::DCompositionCreateDevice2(nullptr, IID_PPV_ARGS(&device)))) return false;
+    if (FAILED(device->CreateTargetForHwnd(hwnd, TRUE, &target)))           return false;
+    if (FAILED(device->CreateVisual(&visual)))                               return false;
+    if (FAILED(visual->SetContent(swapChain)))                               return false;
+    shown = false;
+    return true;
+  }
+
+  // Show the swapchain over the window. Call after a Present(), so what it
+  // shows is a current frame.
+  void show()
+  {
+    if (shown || !device) return;
+    shown = SUCCEEDED(target->SetRoot(visual.get())) && SUCCEEDED(device->Commit());
+  }
+
+  // Stop showing it: the window's GDI content shows. Call after that content
+  // was drawn.
+  void hide()
+  {
+    if (!shown || !device) return;
+    target->SetRoot(nullptr);
+    device->Commit();
+    shown = false;
+  }
+
+  void reset()
+  {
+    hide();
+    visual.reset(nullptr);
+    target.reset(nullptr);
+    device.reset(nullptr);
+  }
+};
+
 // Creates the swapchain, fence and fence event for `hwnd` on a device from
-// createDirect3DDevice().
+// createDirect3DDevice(). With `composition`, the swapchain is shown through
+// DirectComposition (see direct3d_composition); otherwise it is an HWND
+// swapchain.
 inline direct3d_init_result createDirect3DSwapChain(
   HWND hwnd,
   IDXGIFactory4* factory,
@@ -575,7 +630,8 @@ inline direct3d_init_result createDirect3DSwapChain(
   HANDLE& fenceEvent,
   uint64_t* fenceValues,
   const int bufferCount,
-  unsigned int& bufferIndex)
+  unsigned int& bufferIndex,
+  direct3d_composition* composition = nullptr)
 {
   if (!hwnd)
     return direct3d_init_result::missing_window;
@@ -593,13 +649,35 @@ inline direct3d_init_result createDirect3DSwapChain(
   swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
   swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
   swapChainDesc.SampleDesc.Count = 1;
+  // Waitable swapchain with a one-frame queue (set below): each frame is drawn
+  // only once the previous one was taken by the compositor, so what is shown
+  // is at most one frame old. With the default queue of 3, a live resize
+  // showed frames several window sizes behind the window border.
+  swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
   // While a live resize outruns rendering, DWM shows the last frame at its
   // own size instead of stretching it to the new window size (stretching
   // made the whole UI wobble when dragging the right / bottom edge).
   swapChainDesc.Scaling = DXGI_SCALING_NONE;
 
   gr_cp<IDXGISwapChain1> swapChain1;
-  if (FAILED(factory->CreateSwapChainForHwnd(
+  bool composed = false;
+  if (composition)
+  {
+    // Composition swapchains require stretch scaling; the visual shows the
+    // buffer 1:1 at its own size (clipped to the window), so nothing stretches.
+    DXGI_SWAP_CHAIN_DESC1 compDesc = swapChainDesc;
+    compDesc.Scaling   = DXGI_SCALING_STRETCH;
+    compDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    if (SUCCEEDED(factory->CreateSwapChainForComposition(queue, &compDesc, nullptr, &swapChain1))
+        && composition->create(hwnd, swapChain1.get()))
+      composed = true;
+    else
+    {
+      composition->reset();
+      swapChain1.reset(nullptr);
+    }
+  }
+  if (!composed && FAILED(factory->CreateSwapChainForHwnd(
         queue,
         hwnd,
         &swapChainDesc,
@@ -613,6 +691,7 @@ inline direct3d_init_result createDirect3DSwapChain(
   factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
   if (FAILED(swapChain1->QueryInterface(IID_PPV_ARGS(&swapChain))))
     return direct3d_init_result::swapchain_failed;
+  swapChain->SetMaximumFrameLatency(1);
 
   bufferIndex = swapChain->GetCurrentBackBufferIndex();
 
@@ -640,7 +719,8 @@ inline direct3d_init_result initializeDirect3DContext(
   sk_sp<GrDirectContext>& grContext,
   uint64_t* fenceValues,
   const int bufferCount,
-  unsigned int& bufferIndex)
+  unsigned int& bufferIndex,
+  direct3d_composition* composition = nullptr)
 {
   if (!hwnd)
     return direct3d_init_result::missing_window;
@@ -654,7 +734,7 @@ inline direct3d_init_result initializeDirect3DContext(
   queue     = std::move(d.queue);
   grContext = std::move(d.grContext);
   return createDirect3DSwapChain(hwnd, d.factory.get(), device.get(), queue.get(), swapChain, fence, fenceEvent,
-                                 fenceValues, bufferCount, bufferIndex);
+                                 fenceValues, bufferCount, bufferIndex, composition);
 }
 
 inline bool recreateDirect3DSurfaces(
@@ -695,7 +775,10 @@ inline bool recreateDirect3DSurfaces(
     buffers[index].reset(nullptr);
   }
 
-  if (FAILED(swapChain->ResizeBuffers(0, static_cast<UINT>(width), static_cast<UINT>(height), DXGI_FORMAT_R8G8B8A8_UNORM, 0)))
+  DXGI_SWAP_CHAIN_DESC1 currentDesc = {};
+  swapChain->GetDesc1(&currentDesc);
+  if (FAILED(swapChain->ResizeBuffers(0, static_cast<UINT>(width), static_cast<UINT>(height), DXGI_FORMAT_R8G8B8A8_UNORM,
+                                      currentDesc.Flags)))
     return false;
 
   GrD3DTextureResourceInfo info(

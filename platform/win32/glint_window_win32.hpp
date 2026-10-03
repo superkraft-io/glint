@@ -70,6 +70,9 @@ protected:
   HWND              mHWND     = nullptr;
   std::atomic<HWND> mHWNDAtom{ nullptr };
   std::atomic<bool> mRedrawRequested{ false };
+  bool              mHeartbeatOn = false;   // SKUI_ANIM_TIMER running (window thread only)
+  bool              mInSizeMove = false;    // inside the live move / resize loop
+  bool              mGdiResize = false;     // presenting through GDI for this live resize
   uint64_t mPaintCount = 0;
   uint64_t mRedrawRequestCount = 0;
   uint64_t mTimerWakeCount = 0;
@@ -175,6 +178,18 @@ protected:
   // WM_PAINT chains never stall when Windows withholds its low-priority
   // background WM_PAINT (e.g. during a burst of WM_MOUSEMOVE messages).
   static constexpr UINT SKUI_ANIM_TIMER = 1;
+  // Posted when another thread queued a task for this window (see initRoot()).
+  static constexpr UINT WM_GLINT_RUN_TASKS = WM_USER + 202;
+
+  // Starts the heartbeat timer if it is stopped. Window thread only. Called
+  // on every paint: anything that changes what is drawn requests a paint
+  // first, so animations and transitions restart the heartbeat themselves.
+  void ensureHeartbeat()
+  {
+    if (mHeartbeatOn || !mHWND) return;
+    ::SetTimer(mHWND, SKUI_ANIM_TIMER, 16, nullptr);
+    mHeartbeatOn = true;
+  }
 
   // Layered transparency is intentionally top-level-only. Embedded views stay
   // on the normal opaque child-HWND paint path and never use UpdateLayeredWindow.
@@ -191,6 +206,15 @@ protected:
       return glint_backend::CPU;
 
     if (!useGpu())
+      return glint_backend::CPU;
+
+    // GLINT_RENDERER=cpu forces the CPU renderer (diagnostics / comparisons).
+    static const bool forceCpu = [] {
+      char value[16] = {};
+      const DWORD n = ::GetEnvironmentVariableA("GLINT_RENDERER", value, sizeof(value));
+      return n > 0 && _stricmp(value, "cpu") == 0;
+    }();
+    if (forceCpu)
       return glint_backend::CPU;
 
     return glint_resolve_backend(preferredBackend());
@@ -607,6 +631,11 @@ protected:
 
   /** Returns true while the window thread is alive. */
   bool isRunning() const { return mRunning.load(); }
+
+  /** Blocks until the window thread has ended (the window was closed).
+   *  Unlike polling isRunning() in a loop, the caller does not wake up at all
+   *  until then. */
+  void waitUntilClosed() const { mRunning.wait(true); }
 
   /** Spawn the background thread and wait (max 3 s) for the HWND to appear. */
   void startThread()
@@ -1105,10 +1134,13 @@ private:
     }
 
     // Tasks posted from other threads (popup callbacks, the inspector) run
-    // from the animation timer instead of a repaint per task: no frames are
-    // forced just to run them, and they still run while the window is
-    // minimized (it gets no WM_PAINT then).
-    mOwnRoot->taskQueue()->setWake(nullptr);
+    // from a posted message instead of a repaint per task: no frames are
+    // forced just to run them, they still run while the window is minimized
+    // (it gets no WM_PAINT then), and they don't need the heartbeat timer,
+    // which stops while the window is idle.
+    mOwnRoot->taskQueue()->setWake([this] {
+      if (HWND h = mHWNDAtom.load()) ::PostMessageW(h, WM_GLINT_RUN_TASKS, 0, 0);
+    });
 
     // Stamp the HWND on the root so components (labels, inputs) can open
     // Win32 context menus via TrackPopupMenu even when mpG is nullptr.
@@ -1214,7 +1246,7 @@ private:
     mRunning = true;
     startupMark("window thread started");
     startGpuSetup();
-    if (!createWindow()) { mRunning = false; return; }
+    if (!createWindow()) { mRunning = false; mRunning.notify_all(); return; }
     // WM_CREATE fires synchronously inside CreateWindowExW above, so
     // initRoot() + buildUI() + onCreated() have already completed by here.
 
@@ -1230,6 +1262,7 @@ private:
     onThreadEnded();
     mHWNDAtom = nullptr;
     mRunning  = false;
+    mRunning.notify_all();   // waitUntilClosed()
     afterRun(); // inspector uses this to delete this
   }
 
@@ -1237,6 +1270,7 @@ private:
   void paint()
   {
     if (!mOwnRoot) return;
+    ensureHeartbeat();
     mOwnRoot->renderBackend = { glint_backend_name(mActiveBackend), mRenderer && mRenderer->isGpu() };
 
     double drawMs = 0.0;
@@ -1393,10 +1427,33 @@ private:
       // Without this, a transition that calls InvalidateRect from inside
       // DrawToCanvas may not receive its follow-up WM_PAINT if the queue happens
       // to be momentarily non-empty (e.g. a burst of WM_MOUSEMOVE messages).
-      ::SetTimer(hwnd, SKUI_ANIM_TIMER, 16, nullptr);
+      // It stops itself while the window is idle (see WM_TIMER).
+      self->ensureHeartbeat();
+      return 0;
+
+    // Live resize: from its first size step until it ends, GPU frames reach
+    // the window through GDI (see setPresentThroughGdi()), so the content
+    // keeps up with the edge being dragged. A plain move doesn't switch.
+    case WM_ENTERSIZEMOVE:
+      self->mInSizeMove = true;
+      return 0;
+
+    case WM_EXITSIZEMOVE:
+      self->mInSizeMove = false;
+      if (self->mGdiResize)
+      {
+        self->mGdiResize = false;
+        if (self->mRenderer) self->mRenderer->setPresentThroughGdi(false);
+        glint_win32_host::invalidateWindow(hwnd);
+      }
       return 0;
 
     case WM_SIZE:
+      if (self->mInSizeMove && !self->mGdiResize && self->mRenderer && self->mRenderer->isGpu())
+      {
+        self->mGdiResize = self->mRenderer->setPresentThroughGdi(true);
+        if (self->mGdiResize) logRuntimeMessage("GLINT WINDOW: live resize, presenting through GDI");
+      }
       // lp carries client size in PHYSICAL pixels (per-monitor DPI aware).
       self->mWpx = LOWORD(lp);
       self->mHpx = HIWORD(lp);
@@ -1452,6 +1509,10 @@ private:
       self->paint();
       return 0;
 
+    case WM_GLINT_RUN_TASKS:
+      if (self->mOwnRoot) self->mOwnRoot->taskQueue()->drain();
+      return 0;
+
     case WM_ERASEBKGND:
       return 1;
 
@@ -1465,6 +1526,7 @@ private:
 
     case WM_DESTROY:
       ::KillTimer(hwnd, SKUI_ANIM_TIMER);
+      self->mHeartbeatOn = false;
       self->onDestroyed();
       self->destroyRenderer();
       ::PostQuitMessage(0);
@@ -1626,7 +1688,17 @@ private:
         if (!glint_win32_host::shouldScheduleTimerRedraw(
               self->mOwnRoot.get(),
               self->mRedrawRequested.load(std::memory_order_relaxed)))
+        {
+          // Idle: stop waking ~60 times a second until the next paint.
+          if (!glint_win32_host::timerHeartbeatNeeded(
+                self->mOwnRoot.get(),
+                self->mRedrawRequested.load(std::memory_order_relaxed)))
+          {
+            ::KillTimer(hwnd, SKUI_ANIM_TIMER);
+            self->mHeartbeatOn = false;
+          }
           return 0;
+        }
 
         if (telemetryEnabled()) ++self->mTimerWakeCount;
 
