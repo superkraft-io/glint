@@ -51,6 +51,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -831,6 +833,20 @@ inline std::unordered_map<std::string, sk_sp<SkImage>>& glint_img_cache()
 // shared map, and a static mutex gave every translation unit its own lock.
 inline std::mutex gGlintImgCacheMutex;
 
+/** When each cached img was last looked up or stored (glint_trim_image_cache()).
+ *  Guarded by gGlintImgCacheMutex. */
+inline std::unordered_map<std::string, std::chrono::steady_clock::time_point>& glint_img_last_used()
+{
+  static std::unordered_map<std::string, std::chrono::steady_clock::time_point> lastUsed;
+  return lastUsed;
+}
+
+/** Caller holds gGlintImgCacheMutex. */
+inline void glint_img_touch_locked(const std::string& path)
+{
+  glint_img_last_used()[path] = std::chrono::steady_clock::now();
+}
+
 /** Looks `path` up in glint_img_cache(). True when it has an entry (which is
  *  nullptr for an img that failed to load). */
 inline bool glint_img_cache_lookup(const std::string& path, sk_sp<SkImage>& out)
@@ -840,6 +856,7 @@ inline bool glint_img_cache_lookup(const std::string& path, sk_sp<SkImage>& out)
   auto it = cache.find(path);
   if (it == cache.end()) return false;
   out = it->second;
+  glint_img_touch_locked(path);
   return true;
 }
 
@@ -897,6 +914,7 @@ inline sk_sp<SkImage> glint_load_image(
   sk_sp<SkImage> img = data ? SkImages::DeferredFromEncodedData(std::move(data)) : nullptr;
 
   std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+  glint_img_touch_locked(path);
   // A background decode of the same path may have finished meanwhile; keep it.
   return glint_img_cache().emplace(path, img).first->second;
 }
@@ -931,6 +949,7 @@ inline void glint_img_finish_pending(const std::string& path, sk_sp<SkImage> img
   {
     std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
     glint_img_cache()[path] = std::move(img);
+    glint_img_touch_locked(path);
     auto& pending = glint_img_pending();
     auto it = pending.find(path);
     if (it != pending.end())
@@ -1027,7 +1046,7 @@ inline sk_sp<SkImage> glint_load_image_async(
     std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
     auto& cache = glint_img_cache();
     auto it = cache.find(path);
-    if (it != cache.end()) return it->second;
+    if (it != cache.end()) { glint_img_touch_locked(path); return it->second; }
     auto& pending = glint_img_pending();
     auto pit = pending.find(path);
     if (pit != pending.end())
@@ -1046,5 +1065,77 @@ inline sk_sp<SkImage> glint_load_image_async(
   }
   glint_img_decoder::instance().enqueue(path, std::move(data));
   return nullptr;
+}
+
+// ── Img cache trimming ──────────────────────────────────────────────────────
+// glint_img_cache() keeps every img any page loaded: leaving a page destroys
+// its elements but not the decoded imgs (a 2400x1792 photo with mipmaps is
+// ~23 MB, plus its encoded bytes in the resource cache). Elements hold the
+// imgs they draw (background, mask), so an entry only the cache references
+// is no longer shown anywhere. glint_trim_image_cache() keeps the most
+// recently used of those within a budget (quick back-navigation) and drops
+// the rest with their encoded bytes; a later use loads them again.
+
+/** Budget for decoded imgs no element uses: GLINT_IMAGE_CACHE_MB, default 16. */
+inline size_t glint_img_unused_budget_bytes()
+{
+  static const size_t bytes = [] {
+    const char* v = std::getenv("GLINT_IMAGE_CACHE_MB");
+    const long mb = v ? std::strtol(v, nullptr, 10) : -1;
+    return static_cast<size_t>(mb >= 0 ? mb : 16) * 1024 * 1024;
+  }();
+  return bytes;
+}
+
+/** Memory an img keeps alive: decoded pixels (+ mipmaps), or its encoded data
+ *  for one that decodes lazily. */
+inline size_t glint_img_bytes(const SkImage& img)
+{
+  if (img.isLazyGenerated())
+  {
+    sk_sp<SkData> encoded = img.refEncodedData();
+    return encoded ? encoded->size() : 0;
+  }
+  const size_t pixels = img.imageInfo().computeMinByteSize();
+  return img.hasMipmaps() ? pixels + pixels / 3 : pixels;
+}
+
+/** Drops cached imgs no element uses (see above). Imgs used in the last few
+ *  seconds stay: one that finished decoding may not have been drawn yet. */
+inline void glint_trim_image_cache()
+{
+  using clock = std::chrono::steady_clock;
+  struct candidate { std::string path; size_t bytes; clock::time_point used; };
+  std::vector<candidate> unused;
+  std::vector<std::string> evicted;
+  {
+    std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+    const auto now = clock::now();
+    auto& lastUsed = glint_img_last_used();
+    for (const auto& [path, img] : glint_img_cache())
+    {
+      if (!img || !img->unique()) continue;   // failed load, or still shown
+      const auto it = lastUsed.find(path);
+      const clock::time_point used = it != lastUsed.end() ? it->second : clock::time_point{};
+      if (now - used < std::chrono::seconds(5)) continue;
+      unused.push_back({ path, glint_img_bytes(*img), used });
+    }
+    std::sort(unused.begin(), unused.end(), [](const candidate& a, const candidate& b) { return a.used > b.used; });
+    size_t kept = 0;
+    for (const auto& c : unused)
+    {
+      if (kept + c.bytes <= glint_img_unused_budget_bytes()) { kept += c.bytes; continue; }
+      evicted.push_back(c.path);
+    }
+    for (const auto& path : evicted)
+    {
+      glint_img_cache().erase(path);
+      lastUsed.erase(path);
+    }
+  }
+  if (evicted.empty()) return;
+  std::lock_guard<std::mutex> lock(glint_resource_cache_mutex());
+  for (const auto& path : evicted)
+    glint_resource_cache().erase({ path, glint_resource_request::Type::Image });
 }
 

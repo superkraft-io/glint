@@ -2187,6 +2187,7 @@ public:
         else if (_ml.type == glint_mask_layer::URL_IMAGE)
         {
           _mImg = glint_load_image(_ml.urlTarget, _getOnRequest(), this, _getNetworkLog());
+          mMaskImgRef = _mImg;   // shown: keeps it out of glint_trim_image_cache()
         }
 
         // Blend mode for compositing into the accumulation surface (not onto content).
@@ -3128,6 +3129,7 @@ protected:
   mutable float       mBgImgCacheRectR    = 0.f;
   mutable float       mBgImgCacheRectB    = 0.f;
   mutable sk_sp<SkImage>  mBgImgCacheImg;
+  mutable sk_sp<SkImage>  mMaskImgRef;    // the url() mask img last drawn
   mutable sk_sp<SkShader> mBgImgCacheShader;
 
   // ── Border dash-path-effect cache ────────────────────────────────────────

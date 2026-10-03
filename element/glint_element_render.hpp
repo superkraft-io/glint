@@ -1805,6 +1805,7 @@ public:
         else if (_ml.type == glint_mask_layer::URL_IMAGE)
         {
           _mImg = glint_load_image(_ml.urlTarget, _getOnRequest(), this, _getNetworkLog());
+          mMaskImgRef = _mImg;   // shown: keeps it out of glint_trim_image_cache()
         }
 
         SkPaint _mp;

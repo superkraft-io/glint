@@ -182,6 +182,10 @@ protected:
   // Fires a while after the window was minimized or hidden: releases the GPU.
   static constexpr UINT SKUI_GPU_RELEASE_TIMER = 2;
   static constexpr UINT kGpuReleaseDelayMs = 5000;
+  // Fires a while after the window went idle: trims caches again, once what
+  // the last page used is no longer "recently used".
+  static constexpr UINT SKUI_IDLE_TRIM_TIMER = 3;
+  static constexpr UINT kIdleTrimDelayMs = 10000;
   // Posted when another thread queued a task for this window (see initRoot()).
   static constexpr UINT WM_GLINT_RUN_TASKS = WM_USER + 202;
 
@@ -1576,6 +1580,7 @@ private:
     case WM_DESTROY:
       ::KillTimer(hwnd, SKUI_ANIM_TIMER);
       ::KillTimer(hwnd, SKUI_GPU_RELEASE_TIMER);
+      ::KillTimer(hwnd, SKUI_IDLE_TRIM_TIMER);
       self->mHeartbeatOn = false;
       self->onDestroyed();
       self->destroyRenderer();
@@ -1735,6 +1740,13 @@ private:
         self->releaseGpuIfStillAway();
         return 0;
       }
+      if (wp == SKUI_IDLE_TRIM_TIMER)
+      {
+        ::KillTimer(hwnd, SKUI_IDLE_TRIM_TIMER);
+        if (self->mRenderer) self->mRenderer->trimIdleMemory();
+        glint_trim_image_cache();
+        return 0;
+      }
       if (wp == SKUI_ANIM_TIMER)
       {
         // Run tasks posted from other threads (see initRoot()).
@@ -1752,6 +1764,8 @@ private:
             ::KillTimer(hwnd, SKUI_ANIM_TIMER);
             self->mHeartbeatOn = false;
             if (self->mRenderer) self->mRenderer->trimIdleMemory();
+            glint_trim_image_cache();
+            ::SetTimer(hwnd, SKUI_IDLE_TRIM_TIMER, kIdleTrimDelayMs, nullptr);
           }
           return 0;
         }
