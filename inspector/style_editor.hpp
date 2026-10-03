@@ -3889,7 +3889,7 @@ private:
         glint_color init;
         if (mNode.id) {
           // Always read from computedStyle — it is the effective displayed value
-          // (merge of cssStyle_ + inline style), so both CSS-rule rows and inline
+          // (merge of cssStyle_() + inline style), so both CSS-rule rows and inline
           // rows open the picker at the correct current color.
           const glint_style_info info = glint_style_serialize(mNode.computedStyle);
           if (info.count(k)) {

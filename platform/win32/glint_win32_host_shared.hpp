@@ -342,6 +342,20 @@ inline glint_key_press virtualKeyPress(WPARAM wp)
   return keyPress;
 }
 
+// Does the heartbeat timer still have work? When not, the window stops it
+// (an idle window then wakes 0 times per second instead of ~60) and restarts
+// it on the next paint. A focused element with a periodic redraw (a blinking
+// caret) keeps it running between redraws.
+inline bool timerHeartbeatNeeded(glint_document* document, bool redrawRequested)
+{
+  if (redrawRequested)
+    return true;
+  if (document && document->mCanvas.hasActiveAnimationSubtree())
+    return true;
+  glint_element* focused = document ? document->getFocusedNode() : nullptr;
+  return focused && focused->wantsPeriodicRedraw();
+}
+
 inline bool shouldScheduleTimerRedraw(glint_document* document, bool redrawRequested)
 {
   if (redrawRequested)

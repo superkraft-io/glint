@@ -165,7 +165,7 @@ public:
     mScrollParent->element.scrollWidth  = mScrollParent->mScrollWidth;
     mScrollParent->element.scrollHeight = mScrollParent->mScrollHeight;
     mScrollParent->_refreshRootHoverFromPointer();
-    mScrollParent->setDirty(false);
+    mScrollParent->_onScrollOffsetChanged();
   }
 
   void startThumbDrag(float mouseX, float mouseY)

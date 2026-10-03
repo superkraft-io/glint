@@ -50,6 +50,7 @@ public:
       if (!mPopupInBody) return;
       mPopup->innerText = text;
       mPopup->className = "glint_tooltip_popup glint_tooltip_popup--visible";
+      mPopup->mRelayoutOnScroll = true;   // re-anchor to us when an ancestor scrolls
       _positionPopup();
       setDirty(false);
     });
@@ -107,6 +108,7 @@ private:
   {
     if (!mPopupInBody || !mPopup || mPopupLife.expired()) return;
     mPopup->className = "glint_tooltip_popup";
+    mPopup->mRelayoutOnScroll = false;
     setDirty(false);
   }
 

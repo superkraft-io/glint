@@ -44,8 +44,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cwchar>
+#include <future>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -67,10 +70,14 @@ protected:
   HWND              mHWND     = nullptr;
   std::atomic<HWND> mHWNDAtom{ nullptr };
   std::atomic<bool> mRedrawRequested{ false };
+  bool              mHeartbeatOn = false;   // SKUI_ANIM_TIMER running (window thread only)
+  bool              mInSizeMove = false;    // inside the live move / resize loop
+  bool              mGdiResize = false;     // presenting through GDI for this live resize
   uint64_t mPaintCount = 0;
   uint64_t mRedrawRequestCount = 0;
   uint64_t mTimerWakeCount = 0;
   double mPaintDrawMsTotal = 0.0;
+  glint_perf_counters mLastPerfSample;   // reflow phase totals at the last title update
   double mPaintPresentMsTotal = 0.0;
   double mRenderTransformDirectMsTotal = 0.0;
   double mRenderTransformOffscreenMsTotal = 0.0;
@@ -103,6 +110,12 @@ protected:
 
   std::unique_ptr<glint_renderer_backend_win32> mRenderer;
   glint_backend mActiveBackend = glint_backend::CPU;
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+  // D3D12 device + Skia context being created on another thread since the
+  // window thread started (see startGpuSetup()); valid until adopted.
+  std::shared_future<std::shared_ptr<glint_win32_surface::direct3d_device>> mGpuSetup;
+  bool mWaitingForGpu = false;   // showing CPU frames until mGpuSetup is ready
+#endif
 
   // ── Optional Win32 override ───────────────────────────────────────────────
 
@@ -139,6 +152,13 @@ protected:
    *  race-prone PostMessage(WM_SKUI_HIDE_CP). */
   virtual bool showOnCreate() const { return true; }
 
+  /** When true (default), a window that renders with D3D12 creates its GPU
+   *  device on another thread while it builds its document and shows its
+   *  first frames with the CPU renderer, then switches to the GPU. Creating
+   *  the device loads the graphics driver (~250 ms), which would otherwise
+   *  delay the first frame. Override to false to wait for the GPU instead. */
+  virtual bool startsGpuInBackground() const { return true; }
+
   /** Extended window style flags passed to CreateWindowExW (not including
    *  WS_EX_LAYERED which is added automatically when useTransparency()==true).
    *  Default: 0 — a normal top-level window that appears in the taskbar and
@@ -151,11 +171,25 @@ protected:
   // (WM_PAINT is not delivered to WS_EX_LAYERED windows updated via
   // UpdateLayeredWindow, so InvalidateRect would be a no-op).
   static constexpr UINT WM_SKUI_REDRAW  = WM_USER + 200;
+  // Posted when the background GPU setup (startGpuSetup()) has finished.
+  static constexpr UINT WM_GLINT_GPU_READY = WM_USER + 201;
 
   // WM_TIMER id for the ~60 fps animation heartbeat.  Ensures CSS-transition
   // WM_PAINT chains never stall when Windows withholds its low-priority
   // background WM_PAINT (e.g. during a burst of WM_MOUSEMOVE messages).
   static constexpr UINT SKUI_ANIM_TIMER = 1;
+  // Posted when another thread queued a task for this window (see initRoot()).
+  static constexpr UINT WM_GLINT_RUN_TASKS = WM_USER + 202;
+
+  // Starts the heartbeat timer if it is stopped. Window thread only. Called
+  // on every paint: anything that changes what is drawn requests a paint
+  // first, so animations and transitions restart the heartbeat themselves.
+  void ensureHeartbeat()
+  {
+    if (mHeartbeatOn || !mHWND) return;
+    ::SetTimer(mHWND, SKUI_ANIM_TIMER, 16, nullptr);
+    mHeartbeatOn = true;
+  }
 
   // Layered transparency is intentionally top-level-only. Embedded views stay
   // on the normal opaque child-HWND paint path and never use UpdateLayeredWindow.
@@ -172,6 +206,15 @@ protected:
       return glint_backend::CPU;
 
     if (!useGpu())
+      return glint_backend::CPU;
+
+    // GLINT_RENDERER=cpu forces the CPU renderer (diagnostics / comparisons).
+    static const bool forceCpu = [] {
+      char value[16] = {};
+      const DWORD n = ::GetEnvironmentVariableA("GLINT_RENDERER", value, sizeof(value));
+      return n > 0 && _stricmp(value, "cpu") == 0;
+    }();
+    if (forceCpu)
       return glint_backend::CPU;
 
     return glint_resolve_backend(preferredBackend());
@@ -306,6 +349,30 @@ protected:
       appendRuntimeLogLine(message);
   }
 
+  // Startup timeline in the runtime log: ms since the process was created,
+  // for each step up to the first presented frame of the first window.
+  static inline std::atomic<bool> sStartupTraced{ false };
+
+  static double msSinceProcessStart()
+  {
+    FILETIME created{}, exited{}, kernel{}, user{}, now{};
+    ::GetProcessTimes(::GetCurrentProcess(), &created, &exited, &kernel, &user);
+    ::GetSystemTimePreciseAsFileTime(&now);
+    auto ticks = [](const FILETIME& f) {
+      return (static_cast<unsigned long long>(f.dwHighDateTime) << 32) | f.dwLowDateTime;
+    };
+    return static_cast<double>(ticks(now) - ticks(created)) / 10000.0;
+  }
+
+  static void startupMark(const char* step)
+  {
+    if (sStartupTraced.load(std::memory_order_relaxed) || !runtimeLoggingEnabled())
+      return;
+    char message[192] = {};
+    std::snprintf(message, sizeof(message), "GLINT STARTUP: %8.1f ms  %s", msSinceProcessStart(), step);
+    logRuntimeMessage(message);
+  }
+
   void logRequestedBackend() const
   {
     char message[96] = {};
@@ -435,11 +502,78 @@ protected:
 
     logRequestedBackend();
 
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+    if (mGpuSetup.valid())
+    {
+      if (mGpuSetup.wait_for(std::chrono::seconds(0)) != std::future_status::ready
+          && activateRenderer(glint_backend::CPU))
+      {
+        // The GPU is still starting: show the first frames on the CPU and
+        // switch when it is ready (WM_GLINT_GPU_READY).
+        mWaitingForGpu = true;
+        std::thread([setup = mGpuSetup, hwnd = mHWND] {
+          setup.wait();
+          ::PostMessageW(hwnd, WM_GLINT_GPU_READY, 0, 0);
+        }).detach();
+        return;
+      }
+      if (adoptGpuSetup())
+        return;
+      activateFallbackRenderer(requestedBackend());
+      return;
+    }
+#endif
+
     if (activateRenderer(requestedBackend()))
       return;
 
     activateFallbackRenderer(requestedBackend());
   }
+
+  // Starts creating the D3D12 device + Skia context on another thread, before
+  // the window exists (see startsGpuInBackground()).
+  void startGpuSetup()
+  {
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+    if (!usesRendererBackends() || !startsGpuInBackground() || requestedBackend() != glint_backend::D3D12)
+      return;
+    mGpuSetup = std::async(std::launch::async, [] {
+      return std::make_shared<glint_win32_surface::direct3d_device>(glint_win32_surface::createDirect3DDevice());
+    }).share();
+#endif
+  }
+
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+  // Finishes the background GPU setup for this window (waits for it if it is
+  // still running) and makes it the renderer. False keeps the current one.
+  bool adoptGpuSetup()
+  {
+    std::shared_ptr<glint_win32_surface::direct3d_device> setup = mGpuSetup.get();
+    mGpuSetup = {};
+    mWaitingForGpu = false;
+
+    auto renderer = std::make_unique<glint_d3d12_renderer_backend_win32>();
+    if (!setup || !renderer->initializeWithDevice(mHWND, std::move(*setup)) || !renderer->resize(mWpx, mHpx))
+    {
+      const char* diagnostic = renderer->diagnostic();
+      char message[192] = {};
+      std::snprintf(message, sizeof(message), "GLINT WINDOW: D3D12 backend init failed%s%s",
+                    diagnostic ? ": " : "", diagnostic ? diagnostic : "");
+      logRuntimeMessage(message);
+      renderer->shutdown();
+      return false;
+    }
+
+    if (mRenderer)
+      mRenderer->shutdown();
+    mRenderer = std::move(renderer);
+    mActiveBackend = glint_backend::D3D12;
+    logRuntimeMessage("GLINT WINDOW: GrDirectContext created");
+    logRuntimeMessage("GLINT WINDOW: GPU surface created (D3D12)");
+    logActiveBackend();
+    return true;
+  }
+#endif
 
   void destroyRenderer()
   {
@@ -497,6 +631,11 @@ protected:
 
   /** Returns true while the window thread is alive. */
   bool isRunning() const { return mRunning.load(); }
+
+  /** Blocks until the window thread has ended (the window was closed).
+   *  Unlike polling isRunning() in a loop, the caller does not wake up at all
+   *  until then. */
+  void waitUntilClosed() const { mRunning.wait(true); }
 
   /** Spawn the background thread and wait (max 3 s) for the HWND to appear. */
   void startThread()
@@ -716,6 +855,7 @@ private:
       mLastRenderChildrenMsSample = mRenderChildrenMsTotal;
       mLastRenderMaskMsSample = mRenderMaskMsTotal;
       mLastRenderChildSubtreeMsSample = mRenderChildSubtreeMs;
+      mLastPerfSample = glint_perf();
       return;
     }
 
@@ -743,6 +883,14 @@ private:
     const double timerPerSecond = elapsedSeconds > 0.0 ? static_cast<double>(timerDelta) / elapsedSeconds : 0.0;
     const double avgDrawMs = paintDelta > 0 ? drawMsDelta / static_cast<double>(paintDelta) : 0.0;
     const double avgPresentMs = paintDelta > 0 ? presentMsDelta / static_cast<double>(paintDelta) : 0.0;
+    // Reflow breakdown of the "draw" time: style (cascade + merge/tick), layout, paint traversal.
+    const glint_perf_counters& perf = glint_perf();
+    const double perPaint = paintDelta > 0 ? 1.0 / static_cast<double>(paintDelta) : 0.0;
+    const double avgStyleMs  = ((perf.cascadeMs - mLastPerfSample.cascadeMs)
+                              + (perf.tickMs - mLastPerfSample.tickMs)) * perPaint;
+    const double avgLayoutMs = (perf.layoutMs - mLastPerfSample.layoutMs) * perPaint;
+    const double avgTravMs   = (perf.paintMs - mLastPerfSample.paintMs) * perPaint;
+    const unsigned long long layoutPasses = perf.layoutPasses - mLastPerfSample.layoutPasses;
     const std::string topRequesters = formatTopRedrawRequesters(
       mRedrawByType,
       mLastRedrawByTypeSample,
@@ -780,11 +928,15 @@ private:
     std::swprintf(
       title,
       sizeof(title) / sizeof(title[0]),
-      L"%ls | %.1f fps | %.2f ms | draw %.2f | present %.2f | phases %ls | subtrees %ls | paint/s %.1f | req/s %.1f | timer/s %.1f | top %ls | pending %d",
+      L"%ls | %.1f fps | %.2f ms | draw %.2f (style %.2f layout %.2f x%llu paint %.2f) | present %.2f | phases %ls | subtrees %ls | paint/s %.1f | req/s %.1f | timer/s %.1f | top %ls | pending %d",
       windowTitle(),
       static_cast<double>(mOwnRoot->getFPS()),
       static_cast<double>(mOwnRoot->getFrameTimeMs()),
       avgDrawMs,
+      avgStyleMs,
+      avgLayoutMs,
+      layoutPasses,
+      avgTravMs,
       avgPresentMs,
       topRenderPhasesWide,
       topChildSubtreesWide,
@@ -832,6 +984,7 @@ private:
     mLastRenderMaskMsSample = mRenderMaskMsTotal;
     mLastRenderChildSubtreeMsSample = mRenderChildSubtreeMs;
     mLastRedrawByTypeSample = mRedrawByType;
+    mLastPerfSample = perf;
   }
 
 protected:
@@ -937,6 +1090,7 @@ private:
 
     if (showOnCreate())
     {
+      startupMark("showing window");
       ::ShowWindow(mHWND, SW_SHOW);
       ::UpdateWindow(mHWND);
     }
@@ -980,10 +1134,13 @@ private:
     }
 
     // Tasks posted from other threads (popup callbacks, the inspector) run
-    // from the animation timer instead of a repaint per task: no frames are
-    // forced just to run them, and they still run while the window is
-    // minimized (it gets no WM_PAINT then).
-    mOwnRoot->taskQueue()->setWake(nullptr);
+    // from a posted message instead of a repaint per task: no frames are
+    // forced just to run them, they still run while the window is minimized
+    // (it gets no WM_PAINT then), and they don't need the heartbeat timer,
+    // which stops while the window is idle.
+    mOwnRoot->taskQueue()->setWake([this] {
+      if (HWND h = mHWNDAtom.load()) ::PostMessageW(h, WM_GLINT_RUN_TASKS, 0, 0);
+    });
 
     // Stamp the HWND on the root so components (labels, inputs) can open
     // Win32 context menus via TrackPopupMenu even when mpG is nullptr.
@@ -1087,7 +1244,9 @@ private:
   void run()
   {
     mRunning = true;
-    if (!createWindow()) { mRunning = false; return; }
+    startupMark("window thread started");
+    startGpuSetup();
+    if (!createWindow()) { mRunning = false; mRunning.notify_all(); return; }
     // WM_CREATE fires synchronously inside CreateWindowExW above, so
     // initRoot() + buildUI() + onCreated() have already completed by here.
 
@@ -1103,6 +1262,7 @@ private:
     onThreadEnded();
     mHWNDAtom = nullptr;
     mRunning  = false;
+    mRunning.notify_all();   // waitUntilClosed()
     afterRun(); // inspector uses this to delete this
   }
 
@@ -1110,9 +1270,12 @@ private:
   void paint()
   {
     if (!mOwnRoot) return;
+    ensureHeartbeat();
+    mOwnRoot->renderBackend = { glint_backend_name(mActiveBackend), mRenderer && mRenderer->isGpu() };
 
     double drawMs = 0.0;
     double presentMs = 0.0;
+    glint_element::setRenderTimingEnabled(telemetryEnabled());
     if (telemetryEnabled())
       glint_element::resetRenderTimingProfile();
 
@@ -1127,6 +1290,16 @@ private:
     else
     {
       if (!mRenderer) return;
+
+      // Client area collapsed (window dragged to its minimum size): nothing
+      // to draw. Not a renderer failure: beginFrame() would report "not
+      // ready", and falling back to another renderer left the window black
+      // once it was enlarged again.
+      if (mWpx <= 0 || mHpx <= 0)
+      {
+        ::ValidateRect(mHWND, nullptr);
+        return;
+      }
 
       SkCanvas* canvas = mRenderer->beginFrame();
       if (!canvas)
@@ -1183,6 +1356,13 @@ private:
 
       drawMs = std::chrono::duration<double, std::milli>(presentStart - drawStart).count();
       presentMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - presentStart).count();
+      if (!sStartupTraced.load(std::memory_order_relaxed))
+      {
+        char step[96] = {};
+        std::snprintf(step, sizeof(step), "first frame presented (draw %.1f ms, present %.1f ms)", drawMs, presentMs);
+        startupMark(step);
+        sStartupTraced.store(true, std::memory_order_relaxed);
+      }
     }
 
     if (telemetryEnabled())
@@ -1230,10 +1410,15 @@ private:
     {
     // ── Lifecycle ────────────────────────────────────────────────────────────
     case WM_CREATE:
+      startupMark("WM_CREATE");
       self->initRoot();
+      startupMark("document created");
       self->initializeRenderer();
+      startupMark("renderer ready");
       self->buildUI();
+      startupMark("buildUI done");
       self->onCreated();
+      startupMark("onCreated done");
 
       if (self->usesLayeredTransparency()) self->paint();   // layered windows skip WM_PAINT
       // Heartbeat timer — fires every ~16 ms so CSS transitions never stall
@@ -1242,10 +1427,33 @@ private:
       // Without this, a transition that calls InvalidateRect from inside
       // DrawToCanvas may not receive its follow-up WM_PAINT if the queue happens
       // to be momentarily non-empty (e.g. a burst of WM_MOUSEMOVE messages).
-      ::SetTimer(hwnd, SKUI_ANIM_TIMER, 16, nullptr);
+      // It stops itself while the window is idle (see WM_TIMER).
+      self->ensureHeartbeat();
+      return 0;
+
+    // Live resize: from its first size step until it ends, GPU frames reach
+    // the window through GDI (see setPresentThroughGdi()), so the content
+    // keeps up with the edge being dragged. A plain move doesn't switch.
+    case WM_ENTERSIZEMOVE:
+      self->mInSizeMove = true;
+      return 0;
+
+    case WM_EXITSIZEMOVE:
+      self->mInSizeMove = false;
+      if (self->mGdiResize)
+      {
+        self->mGdiResize = false;
+        if (self->mRenderer) self->mRenderer->setPresentThroughGdi(false);
+        glint_win32_host::invalidateWindow(hwnd);
+      }
       return 0;
 
     case WM_SIZE:
+      if (self->mInSizeMove && !self->mGdiResize && self->mRenderer && self->mRenderer->isGpu())
+      {
+        self->mGdiResize = self->mRenderer->setPresentThroughGdi(true);
+        if (self->mGdiResize) logRuntimeMessage("GLINT WINDOW: live resize, presenting through GDI");
+      }
       // lp carries client size in PHYSICAL pixels (per-monitor DPI aware).
       self->mWpx = LOWORD(lp);
       self->mHpx = HIWORD(lp);
@@ -1301,6 +1509,10 @@ private:
       self->paint();
       return 0;
 
+    case WM_GLINT_RUN_TASKS:
+      if (self->mOwnRoot) self->mOwnRoot->taskQueue()->drain();
+      return 0;
+
     case WM_ERASEBKGND:
       return 1;
 
@@ -1314,6 +1526,7 @@ private:
 
     case WM_DESTROY:
       ::KillTimer(hwnd, SKUI_ANIM_TIMER);
+      self->mHeartbeatOn = false;
       self->onDestroyed();
       self->destroyRenderer();
       ::PostQuitMessage(0);
@@ -1441,6 +1654,27 @@ private:
       self->paint();
       return 0;
 
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+    case WM_GLINT_GPU_READY:
+      if (self->mWaitingForGpu)
+      {
+        if (self->adoptGpuSetup())
+        {
+          if (runtimeLoggingEnabled())
+          {
+            char message[96] = {};
+            std::snprintf(message, sizeof(message), "GLINT STARTUP: %8.1f ms  switched to the GPU renderer",
+                          msSinceProcessStart());
+            logRuntimeMessage(message);
+          }
+        }
+        else
+          logRuntimeMessage("GLINT WINDOW: staying on the CPU renderer");
+        self->scheduleWindowRedraw(hwnd);
+      }
+      return 0;
+#endif
+
     // ── Animation heartbeat ──────────────────────────────────────────────────
     // Fires every ~16 ms.  Queues a WM_PAINT (or a direct repaint for layered
     // windows) so CSS transitions keep advancing even if the message queue
@@ -1454,7 +1688,17 @@ private:
         if (!glint_win32_host::shouldScheduleTimerRedraw(
               self->mOwnRoot.get(),
               self->mRedrawRequested.load(std::memory_order_relaxed)))
+        {
+          // Idle: stop waking ~60 times a second until the next paint.
+          if (!glint_win32_host::timerHeartbeatNeeded(
+                self->mOwnRoot.get(),
+                self->mRedrawRequested.load(std::memory_order_relaxed)))
+          {
+            ::KillTimer(hwnd, SKUI_ANIM_TIMER);
+            self->mHeartbeatOn = false;
+          }
           return 0;
+        }
 
         if (telemetryEnabled()) ++self->mTimerWakeCount;
 

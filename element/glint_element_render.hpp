@@ -678,10 +678,14 @@ public:
           canvas->restore();
         }
       }
-      else
+      else if (!glint_img_cache_lookup(bgSrc, bgImg))
       {
-        (void)isSVG;
-        bgImg = glint_load_image(bgSrc, _getOnRequest(), this, _getNetworkLog());
+        // Not decoded yet: decode in the background and draw the element
+        // without its img until then, instead of stalling this frame.
+        glint_owner_poster post = ownerThreadPoster();
+        glint_element* self = const_cast<glint_element*>(static_cast<const glint_element*>(this));
+        bgImg = glint_load_image_async(bgSrc, _getOnRequest(), this, _getNetworkLog(),
+                                       [post, self] { post([self] { self->setPaintOnlyDirty(); }); });
       }
 
       if (bgImg)
@@ -1084,7 +1088,15 @@ public:
     if (computedStyle.display == "none") return;
 
     EnsureFilterPad();
-    const glint_rect _stackBounds = _stackingVisualBounds();
+    // The stacking bounds walk the whole subtree; only the transform /
+    // opacity / blend / isolation layer paths below read them, so skip the
+    // walk when none of those can apply (this check is a superset of theirs).
+    const bool _mayNeedStackBounds = !_skipStacking
+      && ((!computedStyle.transform.empty() && computedStyle.transform != "none")
+          || static_cast<float>(computedStyle.opacity) < 0.9999f
+          || (!computedStyle.mixBlendMode.empty() && computedStyle.mixBlendMode != "normal")
+          || computedStyle.isolation == "isolate");
+    const glint_rect _stackBounds = _mayNeedStackBounds ? _stackingVisualBounds() : mRect;
     const glint_rect _expandedRECT = mRect;
     if (mFilterPad > 0.f) mRect = mPaintRECT;
 
@@ -1400,7 +1412,18 @@ public:
       SkPaint _compPaint;
       _compPaint.setAlphaf(_selfOpacity);
       _compPaint.setBlendMode(_selfBlendMode);
-      canvas->saveLayer(nullptr, &_compPaint);
+      // Size the group layer to what the subtree actually paints instead of
+      // the whole clip (a full-window layer per fading element otherwise).
+      // Only for plain src-over composites; unbounded subtrees keep nullptr.
+      SkRect _layerBounds;
+      const SkRect* _layerBoundsPtr = nullptr;
+      glint_rect _pb;
+      if (sUsePaintBounds && _selfBlendMode == SkBlendMode::kSrcOver && _paintBounds(_pb))
+      {
+        _layerBounds = SkRect::MakeLTRB(_pb.L - 2.f, _pb.T - 2.f, _pb.R + 2.f, _pb.B + 2.f);
+        _layerBoundsPtr = &_layerBounds;
+      }
+      canvas->saveLayer(_layerBoundsPtr, &_compPaint);
       _drawToCanvasImpl(canvas, false, true, _skipSelfFilter);
       canvas->restore();
       if (mFilterPad > 0.f) mRect = _expandedRECT;
@@ -1592,11 +1615,7 @@ public:
         {
           auto* c = child.get();
           if (c == mScrollbarV || c == mScrollbarH || c == mScrollCorner) continue;
-          const auto _childStart = std::chrono::steady_clock::now();
-          c->DrawToCanvas(canvas);
-          _recordChildSubtreeTiming(
-            c,
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
+          _drawChildTimed(c, canvas);
         }
       }
     }
@@ -1614,11 +1633,7 @@ public:
         render_timing_scope _timingScope(render_timing_bucket::children);
         for (auto* child : _negativeChildren)
         {
-          const auto _childStart = std::chrono::steady_clock::now();
-          child->DrawToCanvas(canvas);
-          _recordChildSubtreeTiming(
-            child,
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
+          _drawChildTimed(child, canvas);
         }
       }
 
@@ -1631,38 +1646,22 @@ public:
         render_timing_scope _timingScope(render_timing_bucket::children);
         for (auto* child : _normalChildren)
         {
-          const auto _childStart = std::chrono::steady_clock::now();
-          child->DrawToCanvas(canvas);
-          _recordChildSubtreeTiming(
-            child,
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
+          _drawChildTimed(child, canvas);
         }
 
         for (auto* child : _zeroChildren)
         {
-          const auto _childStart = std::chrono::steady_clock::now();
-          child->DrawToCanvas(canvas);
-          _recordChildSubtreeTiming(
-            child,
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
+          _drawChildTimed(child, canvas);
         }
 
         for (auto* child : _positiveChildren)
         {
-          const auto _childStart = std::chrono::steady_clock::now();
-          child->DrawToCanvas(canvas);
-          _recordChildSubtreeTiming(
-            child,
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
+          _drawChildTimed(child, canvas);
         }
 
         for (auto* child : _overlayChildren)
         {
-          const auto _childStart = std::chrono::steady_clock::now();
-          child->DrawToCanvas(canvas);
-          _recordChildSubtreeTiming(
-            child,
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _childStart).count());
+          _drawChildTimed(child, canvas);
         }
       }
     }

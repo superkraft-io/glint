@@ -52,6 +52,14 @@ struct GlintCssDomElement
   // All class names (split on whitespace)
   virtual std::vector<std::string> classNames() const = 0;
 
+  // Class membership; adapters that can cache their class list override this
+  // (class selectors are the most frequently tested simple selectors).
+  virtual bool hasClass(const std::string& name) const
+  {
+    const auto cls = classNames();
+    return std::find(cls.begin(), cls.end(), name) != cls.end();
+  }
+
   // Attribute value; returns "" if not present, sets 'found' to false if absent
   virtual std::string attribute(const std::string& name, bool& found) const = 0;
 
@@ -70,6 +78,16 @@ struct GlintCssDomElement
   // Previous sibling, for the `+` and `~` combinators; nullptr if none.  The
   // default (no sibling access) makes those combinators never match.
   virtual const GlintCssDomElement* previousSibling() const { return nullptr; }
+
+  // Children and the next sibling, for :has() (which looks down and forward).
+  // The defaults (no access) make :has() never match.
+  virtual size_t                    childCount()          const { return 0; }
+  virtual const GlintCssDomElement* child(size_t /*i*/)   const { return nullptr; }
+  virtual const GlintCssDomElement* nextSibling()         const { return nullptr; }
+
+  // The underlying element: adapters may be created per hop, so two adapters
+  // of one element compare equal through this, not through their address.
+  virtual const void* identity() const { return this; }
 };
 
 // ── Specificity ───────────────────────────────────────────────────────────────
@@ -248,6 +266,12 @@ struct GlintComplexSelector
 
   std::vector<Step> steps; // steps[0].compound = rightmost (subject), steps[1..] = ancestors
 
+  // Relative selector (an argument of :has()): the leftmost compound is
+  // joined by `anchorCombinator` to the element :has() is matched against,
+  // e.g. `> img` (CHILD), `+ .x` (ADJACENT_SIBLING), `img` (DESCENDANT).
+  bool            relative         = false;
+  GlintCombinator anchorCombinator = GlintCombinator::DESCENDANT;
+
   GlintCssSpecificity specificity() const
   {
     GlintCssSpecificity s{};
@@ -294,6 +318,8 @@ inline GlintCssSpecificity GlintSimpleSelector::nestedSpecificity(const GlintCom
   return sel.specificity();
 }
 
+inline bool glintMatchesRelative(const GlintComplexSelector& rel, const GlintCssDomElement& anchor);
+
 // ── GlintSimpleSelector::matches ───────────────────────────────────────────────
 inline bool GlintSimpleSelector::matches(const GlintCssDomElement& el) const
 {
@@ -317,10 +343,7 @@ inline bool GlintSimpleSelector::matches(const GlintCssDomElement& el) const
       return el.id() == name;
 
     case GlintSimpleKind::CLASS:
-    {
-      const auto cls = el.classNames();
-      return std::find(cls.begin(), cls.end(), name) != cls.end();
-    }
+      return el.hasClass(name);
 
     case GlintSimpleKind::ATTRIBUTE:
     {
@@ -390,8 +413,16 @@ inline bool GlintSimpleSelector::matches(const GlintCssDomElement& el) const
         return (A > 0 ? rem >= 0 : rem <= 0) && (rem % A) == 0;
       }
 
-      // :not(), :is(), :has()
-      if (low == "not" || low == "is" || low == "has")
+      // :has(): some element relative to this one matches an argument.
+      if (low == "has")
+      {
+        for (const auto& nested : nestedSelectors)
+          if (nested && glintMatchesRelative(*nested, el)) return true;
+        return false;
+      }
+
+      // :not(), :is()
+      if (low == "not" || low == "is")
       {
         for (const auto& nested : nestedSelectors)
           if (nested->matches(el)) return (low != "not");
@@ -517,4 +548,102 @@ inline bool GlintComplexSelector::matches(const GlintCssDomElement& el) const
     }
   }
   return true;
+}
+
+// ── :has() ───────────────────────────────────────────────────────────────────
+// Does `el`, matched against rel.steps[i], lead through the rest of the
+// relative selector to the element identified by `anchor`? Backtracking: for
+// descendant / `~` combinators every candidate is tried, not just the nearest
+// (the anchor at the end must be reached exactly).
+inline bool glintMatchesRelativeFrom(const GlintComplexSelector& rel, size_t i,
+                                     const GlintCssDomElement& el, const void* anchor)
+{
+  if (!rel.steps[i].compound.matches(el)) return false;
+  const bool last = i + 1 == rel.steps.size();
+  const GlintCombinator comb = last ? rel.anchorCombinator : rel.steps[i + 1].combinator;
+  auto next = [&](const GlintCssDomElement& e) {
+    return last ? e.identity() == anchor : glintMatchesRelativeFrom(rel, i + 1, e, anchor);
+  };
+  switch (comb)
+  {
+    case GlintCombinator::CHILD:
+    {
+      const GlintCssDomElement* p = el.parent();
+      return p && next(*p);
+    }
+    case GlintCombinator::DESCENDANT:
+      for (const GlintCssDomElement* p = el.parent(); p; p = p->parent())
+      {
+        if (next(*p)) return true;
+        if (p->identity() == anchor) return false;   // nothing above the anchor can lead back to it
+      }
+      return false;
+    case GlintCombinator::ADJACENT_SIBLING:
+    {
+      const GlintCssDomElement* s = el.previousSibling();
+      return s && next(*s);
+    }
+    case GlintCombinator::GENERAL_SIBLING:
+      for (const GlintCssDomElement* s = el.previousSibling(); s; s = s->previousSibling())
+      {
+        if (next(*s)) return true;
+        if (s->identity() == anchor) return false;
+      }
+      return false;
+  }
+  return false;
+}
+
+/** Does some element relative to `anchor` match the relative selector `rel`
+ *  (an argument of :has())? Searches only where a match can be: descendants
+ *  for `img` / `> img`, following siblings (and their descendants when `rel`
+ *  goes down) for `+ x` / `~ x`. */
+inline bool glintMatchesRelative(const GlintComplexSelector& rel, const GlintCssDomElement& anchor)
+{
+  if (rel.steps.empty()) return false;
+  const void* id = anchor.identity();
+  auto test = [&](const GlintCssDomElement& e) { return glintMatchesRelativeFrom(rel, 0, e, id); };
+
+  // Does the selector step down anywhere (descendant / child combinators)?
+  bool goesDown = false;
+  for (size_t i = 1; i < rel.steps.size(); ++i)
+    if (rel.steps[i].combinator == GlintCombinator::DESCENDANT
+        || rel.steps[i].combinator == GlintCombinator::CHILD)
+      goesDown = true;
+
+  // Depth-first over the descendants of `e`.
+  auto anyBelow = [&](const GlintCssDomElement& e, auto& self) -> bool {
+    for (size_t k = 0, n = e.childCount(); k < n; ++k)
+    {
+      const GlintCssDomElement* c = e.child(k);
+      if (!c) continue;
+      if (test(*c) || self(*c, self)) return true;
+    }
+    return false;
+  };
+
+  switch (rel.anchorCombinator)
+  {
+    case GlintCombinator::CHILD:
+      if (rel.steps.size() == 1)   // `> x`: only the children
+      {
+        for (size_t k = 0, n = anchor.childCount(); k < n; ++k)
+          if (const GlintCssDomElement* c = anchor.child(k); c && test(*c)) return true;
+        return false;
+      }
+      return anyBelow(anchor, anyBelow);
+    case GlintCombinator::DESCENDANT:
+      return anyBelow(anchor, anyBelow);
+    case GlintCombinator::ADJACENT_SIBLING:
+    case GlintCombinator::GENERAL_SIBLING:
+      for (const GlintCssDomElement* s = anchor.nextSibling(); s; s = s->nextSibling())
+      {
+        if (test(*s)) return true;
+        if (goesDown && anyBelow(*s, anyBelow)) return true;
+        // `+ x` alone reaches only the next sibling.
+        if (rel.anchorCombinator == GlintCombinator::ADJACENT_SIBLING && rel.steps.size() == 1) break;
+      }
+      return false;
+  }
+  return false;
 }

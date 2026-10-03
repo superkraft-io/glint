@@ -71,6 +71,14 @@ public:
    *  switch).  The host should recreate the renderer; a fresh device usually
    *  works, unlike the lost one. */
   virtual bool deviceLost() const { return false; }
+  /** Live resize: while on, frames still render on the GPU but reach the
+   *  window through GDI (read back and drawn into it). Windows shows a GDI
+   *  window's new size and its new content in the same frame, while
+   *  swapchain frames arrive a frame or more after the moved border, so the
+   *  content visibly trailed the edge being dragged. Returns whether the
+   *  renderer presents through GDI now (it needs a DirectComposition
+   *  swapchain, which can be hidden; renderers without one ignore this). */
+  virtual bool setPresentThroughGdi(bool /*on*/) { return false; }
 };
 
 class glint_cpu_renderer_backend_win32 final : public glint_renderer_backend_win32
@@ -120,6 +128,15 @@ public:
 
   SkCanvas* beginFrame() override
   {
+    // Re-create the bitmap if the window has a size again (e.g. this
+    // renderer was resized to 0 x 0 while the window was collapsed).
+    if (mHWND && !mCpuCanvas)
+    {
+      RECT rc = {};
+      ::GetClientRect(mHWND, &rc);
+      if (rc.right > 0 && rc.bottom > 0)
+        resize(rc.right, rc.bottom);
+    }
     if (!mHWND || !mCpuCanvas)
     {
       mDiagnostic = "CPU backend is not ready";
@@ -370,7 +387,33 @@ public:
       mGrContext,
       mFenceValues.data(),
       kBufferCount,
-      mBufferIndex);
+      mBufferIndex,
+      compositionFor(mHWND));
+
+    if (const char* diagnostic = diagnosticForInitResult(mLastInitResult))
+      mDiagnostic = diagnostic;
+    else
+      mDiagnostic.clear();
+
+    return mLastInitResult == glint_win32_surface::direct3d_init_result::success;
+  }
+
+  /** Like initialize(), with the device created beforehand (possibly on
+   *  another thread) by glint_win32_surface::createDirect3DDevice(). */
+  bool initializeWithDevice(HWND hwnd, glint_win32_surface::direct3d_device&& d)
+  {
+    mHWND = hwnd;
+    mLastInitResult = d.result;
+    if (mLastInitResult == glint_win32_surface::direct3d_init_result::success)
+    {
+      mAdapter   = std::move(d.adapter);
+      mDevice    = std::move(d.device);
+      mQueue     = std::move(d.queue);
+      mGrContext = std::move(d.grContext);
+      mLastInitResult = glint_win32_surface::createDirect3DSwapChain(
+        mHWND, d.factory.get(), mDevice.get(), mQueue.get(), mSwapChain, mFence, mFenceEvent,
+        mFenceValues.data(), kBufferCount, mBufferIndex, compositionFor(mHWND));
+    }
 
     if (const char* diagnostic = diagnosticForInitResult(mLastInitResult))
       mDiagnostic = diagnostic;
@@ -390,6 +433,12 @@ public:
 
     mCurrentSurface = nullptr;
     mCanvas = nullptr;
+    mComposition.reset();
+    if (mFrameLatencyWaitable)
+    {
+      ::CloseHandle(mFrameLatencyWaitable);
+      mFrameLatencyWaitable = nullptr;
+    }
     glint_win32_surface::destroyDirect3DResources(
       mFenceEvent,
       mFence,
@@ -404,6 +453,9 @@ public:
     mHWND = nullptr;
     mWidth = 0;
     mHeight = 0;
+    mGdiPresent = false;
+    mGdiSurface.reset();
+    mGdiBitmap.reset();
     mBufferIndex = 0;
     mFenceValues.fill(0);
     mDiagnostic.clear();
@@ -413,6 +465,15 @@ public:
   {
     mWidth = width;
     mHeight = height;
+
+    // Presenting through GDI (live resize): the swapchain is resized once,
+    // when that ends (setPresentThroughGdi(false)).
+    if (mGdiPresent && width > 0 && height > 0)
+    {
+      mCurrentSurface = nullptr;
+      mDiagnostic.clear();
+      return true;
+    }
 
     const bool success = glint_win32_surface::recreateDirect3DSurfaces(
       mWidth,
@@ -431,6 +492,24 @@ public:
     mCurrentSurface = nullptr;
     mDiagnostic = success ? std::string() : std::string("D3D12 swapchain surface creation failed");
     return success;
+  }
+
+  bool setPresentThroughGdi(bool on) override
+  {
+    if (on == mGdiPresent) return mGdiPresent;
+    if (on)
+    {
+      // GDI content can't show over an HWND swapchain, only over a hidden
+      // composition one.
+      if (!mComposition.device) return false;
+      mGdiPresent = true;
+      return true;
+    }
+    mGdiPresent = false;
+    mGdiSurface.reset();
+    mGdiBitmap.reset();
+    resize(mWidth, mHeight);   // the swapchain catches up with the final size
+    return false;
   }
 
   SkCanvas* beginFrame() override
@@ -455,6 +534,30 @@ public:
     }
 
     ::EndPaint(mHWND, &mPaintStruct);
+
+    if (mGdiPresent)
+    {
+      // Live resize: draw into an offscreen GPU surface; present() reads it
+      // back and draws it into the window through GDI.
+      if (!mGdiSurface || mGdiSurface->width() != mWidth || mGdiSurface->height() != mHeight)
+        mGdiSurface = SkSurfaces::RenderTarget(mGrContext.get(), skgpu::Budgeted::kYes,
+                                               SkImageInfo::MakeN32Premul(mWidth, mHeight));
+      if (!mGdiSurface)
+      {
+        mDiagnostic = "D3D12 offscreen surface creation failed";
+        return nullptr;
+      }
+      mCurrentSurface = nullptr;
+      mDiagnostic.clear();
+      return mGdiSurface->getCanvas();
+    }
+
+    // One-frame queue: wait until the compositor took the previous frame, so
+    // this one is drawn for the newest state (window size) and shown next.
+    if (!mFrameLatencyWaitable && mSwapChain)
+      mFrameLatencyWaitable = mSwapChain->GetFrameLatencyWaitableObject();
+    if (mFrameLatencyWaitable)
+      ::WaitForSingleObjectEx(mFrameLatencyWaitable, 100, TRUE);
 
     mCurrentSurface = glint_win32_surface::acquireDirect3DBackbufferSurface(
       mSwapChain,
@@ -487,10 +590,17 @@ public:
 
   void present() override
   {
+    if (mGdiPresent)
+    {
+      presentThroughGdi();
+      return;
+    }
+
     if (!mSwapChain || !mQueue || !mFence)
       return;
 
     const HRESULT presentResult = mSwapChain->Present(1, 0);
+    if (SUCCEEDED(presentResult)) mComposition.show();
     // Signal even when Present failed: beginFrame already advanced this
     // buffer's fence value and the next acquire / resize waits for it, so
     // skipping the signal hangs the window thread.  After device removal
@@ -529,6 +639,38 @@ public:
 
 private:
   static constexpr int kBufferCount = 2;
+
+
+  // Reads the offscreen frame back and draws it into the window through GDI
+  // (setPresentThroughGdi()). Once it is there, the swapchain is hidden.
+  void presentThroughGdi()
+  {
+    if (!mGdiSurface || mWidth <= 0 || mHeight <= 0) return;
+    if (mGdiBitmap.width() != mWidth || mGdiBitmap.height() != mHeight)
+      mGdiBitmap.allocN32Pixels(mWidth, mHeight);
+    if (!mGdiSurface->readPixels(mGdiBitmap, 0, 0)) return;
+    if (HDC dc = ::GetDC(mHWND))
+    {
+      glint_win32_surface::presentBitmapToWindow(dc, mGdiBitmap, mWidth, mHeight);
+      ::ReleaseDC(mHWND, dc);
+    }
+    mComposition.hide();
+  }
+
+  // Top-level windows show the swapchain through DirectComposition, which can
+  // be hidden for presenting through GDI (live resize); child windows
+  // (embedded views) keep an HWND swapchain.
+  // GLINT_D3D_COMPOSITION=0 turns it off (HWND swapchains everywhere).
+  glint_win32_surface::direct3d_composition* compositionFor(HWND hwnd)
+  {
+    static const bool disabled = [] {
+      char value[8] = {};
+      const DWORD n = ::GetEnvironmentVariableA("GLINT_D3D_COMPOSITION", value, sizeof(value));
+      return n > 0 && value[0] == '0';
+    }();
+    if (disabled || (::GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD)) return nullptr;
+    return &mComposition;
+  }
 
   static const char* diagnosticForInitResult(glint_win32_surface::direct3d_init_result result)
   {
@@ -570,8 +712,11 @@ private:
   }
 
   HWND                              mHWND = nullptr;
-  int                               mWidth = 0;
+  int                               mWidth = 0;    // window client size
   int                               mHeight = 0;
+  bool                              mGdiPresent = false;   // setPresentThroughGdi()
+  sk_sp<SkSurface>                  mGdiSurface;           // offscreen frame while presenting through GDI
+  SkBitmap                          mGdiBitmap;            // its read-back pixels
   PAINTSTRUCT                       mPaintStruct = {};
   gr_cp<IDXGIAdapter1>              mAdapter;
   gr_cp<ID3D12Device>               mDevice;
@@ -581,6 +726,8 @@ private:
   HANDLE                            mFenceEvent = nullptr;
   sk_sp<GrDirectContext>            mGrContext;
   std::array<gr_cp<ID3D12Resource>, kBufferCount> mBuffers;
+  glint_win32_surface::direct3d_composition       mComposition;
+  HANDLE                                           mFrameLatencyWaitable = nullptr;
   std::array<sk_sp<SkSurface>, kBufferCount>      mSurfaces;
   std::array<uint64_t, kBufferCount>              mFenceValues = {};
   bool                                            mDeviceLost  = false;

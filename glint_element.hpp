@@ -32,6 +32,8 @@
 #include "i18n/glint_i18n.hpp"
 #include "glint_types.hpp"   // glint_mouse_mod, glint_no_tag, glint_no_val_idx
 #include "utils/glint_debug.hpp"
+#include "utils/glint_perf.hpp"
+#include "glint_style_diff.hpp"
 #include "element/glint_html_element.hpp"  // includes glint_style.hpp transitively
 #include "events/glint_keyboard_event.hpp" // glint_keyboard_event, glint_key_press
 #include "glint_animator.hpp"      // tickTransitions(), glint_ease_eval, lerp helpers
@@ -66,6 +68,7 @@
 #include <functional>
 #include <cctype>
 #include <map>
+#include <typeinfo>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -139,7 +142,7 @@ struct glint_form_value
 
 class glint_element
 {
-  friend class glint_document;  // allowed to read/write cssStyle_ and mHasCssStyle_
+  friend class glint_document;  // allowed to read/write cssStyle_() and mHasCssStyle_
 
 public:
   struct glint_render_timing_profile
@@ -172,6 +175,15 @@ public:
   static void resetRenderTimingProfile()
   {
     sRenderTimingProfile_ = {};
+  }
+
+  /** Turn per-phase / per-subtree paint profiling on or off for this thread.
+   *  Off by default: each sample costs two clock reads, and the per-subtree
+   *  labels build strings for every drawn child. Hosts enable it only while
+   *  telemetry is on. */
+  static void setRenderTimingEnabled(bool enabled)
+  {
+    sRenderTimingEnabled_ = enabled;
   }
 
   static glint_render_timing_profile snapshotRenderTimingProfile()
@@ -228,9 +240,7 @@ public:
   private:
     void _notify()
     {
-      if (!_el) return;
-      if (_el->mApplyCss) _el->mApplyCss(_el);
-      _el->setDirty(false);
+      if (_el) _el->_onClassListChanged();
     }
   } className;
 
@@ -294,9 +304,7 @@ public:
   private:
     void _notifyChange()
     {
-      if (!_el) return;
-      if (_el->mApplyCss) _el->mApplyCss(_el);
-      _el->setDirty(false);
+      if (_el) _el->_onClassListChanged();
     }
   } classList;
 
@@ -330,7 +338,7 @@ public:
     se.cancelable = false;
     dispatchDOMEvent(se);
     _refreshRootHoverFromPointer();
-    setDirty(false);
+    _onScrollOffsetChanged();
   }
 
   void scrollTo(const glint_point& point)
@@ -378,9 +386,29 @@ public:
 
   void setCssStyleLayer(const glint_style& css)
   {
-    cssStyle_ = css;
-    mCssStyleBase = css;
-    mHasCssStyle_ = (glint_style_serialize(css) != glint_style_serialize(glint_style{}));
+    setCssStyleLayer(css, /*hasDecls=*/true);
+  }
+
+  /** hasDecls = false promises `css` is a default-constructed style (the
+   *  cascade matched nothing), which skips the serialize-and-compare. */
+  void setCssStyleLayer(const glint_style& css, bool hasDecls)
+  {
+    static const auto sDefaultSerialized = glint_style_serialize(glint_style{});
+    const bool hasCss = hasDecls && (glint_style_serialize(css) != sDefaultSerialized);
+    // Keep the layer whenever something matched: fields the serializer
+    // doesn't compare still live in it (hasCss only gates the merge base).
+    _setCssLayerShared(hasDecls ? std::make_shared<const glint_style>(css) : nullptr, hasCss);
+  }
+
+  /** Install a (possibly shared) CSS layer. `hasCss` = it differs from the
+   *  default style (gates its use as the merge base); a null layer reads as
+   *  the default style. */
+  void _setCssLayerShared(std::shared_ptr<const glint_style> css, bool hasCss)
+  {
+    mCssLayer_ = std::move(css);
+    mCssStyleBase.assignIfAllocated(cssStyle_());
+    ++mCssLayerGen_;
+    mHasCssStyle_ = hasCss;
   }
 
   // CSS-style shorthand layout aliases — applied to `style` during tree finalization.
@@ -576,6 +604,17 @@ public:
    *  explicit invalidation requests. */
   virtual bool wantsPeriodicRedraw() const { return false; }
 
+  /** Set on a direct child of the body whose layout depends on ancestor scroll
+   *  offsets (e.g. a visible tooltip popup anchored to a scrolled element).
+   *  While any such node exists, scrolling falls back to a full relayout
+   *  instead of the paint-only path. */
+  bool mRelayoutOnScroll = false;
+
+  /** True for elements with no component behavior: Layout(), hover hooks and
+   *  drawing are the stock implementations, so a paint-only restyle can skip
+   *  reflow. Any subclass is conservatively treated as a component. */
+  virtual bool _isPlainElement() const { return typeid(*this) == typeid(glint_element); }
+
   /** Earliest time the next heartbeat-driven redraw should occur.
    *  Default is max() so idle nodes never wake the host timer on their own. */
   virtual std::chrono::steady_clock::time_point nextPeriodicRedrawTime() const
@@ -734,8 +773,18 @@ public:
    * are respected and not overwritten — the builder may pre-stamp them to provide
    * the flex content area (rather than the full panel width/height).
    */
-  void addChild(glint_element* node)
+  void addChild(glint_element* node) { insertBefore(node, nullptr); }
+
+  /**
+   * DOM insertBefore — insert `node` right before the child `ref` (append when
+   * `ref` is null or not a child). `node` must be either new (not yet in any
+   * tree; set up exactly as addChild() does) or already a child of this
+   * element, in which case it is moved (reordered) without being re-created.
+   */
+  void insertBefore(glint_element* node, glint_element* ref)
   {
+    if (!node || node == ref) return;
+    if (node->mParent == this && _moveChildBefore(node, ref)) return;
     node->mpG                    = mpG;
     node->mRoot                  = mRoot;
     node->mRequestRedraw         = mRequestRedraw;
@@ -781,7 +830,7 @@ public:
           {
             mApplyCss(ch.get());
             ch->computedStyle = ch->_mergedStyle();
-            ch->mPrevStyle_   = ch->computedStyle;
+            ch->mPrevStyle_.assignIfAllocated(ch->computedStyle);
           }
           propagate(ch.get());
         }
@@ -795,20 +844,50 @@ public:
     {
       std::unique_lock<std::mutex> lk;
       if (mTreeMutex) lk = std::unique_lock<std::mutex>(*mTreeMutex);
-      mChildren.emplace_back(node);
+      mChildren.emplace(_childPosition(ref), node);
     }
     if (mIsAttachedToTree)
       node->attachSubtree();
-    // Re-cascade the sibling that WAS the last child before this insertion so
-    // :last-child is removed from it now that node is the new last sibling.
-    if (mApplyCss && mChildren.size() >= 2)
-      mApplyCss(mChildren[mChildren.size() - 2].get());
+    // The siblings' positions changed (:last-child moved off the old last
+    // child, :nth-child shifted after `ref`...): the document re-cascades the
+    // ones whose selectors depend on it before the next frame.
+    _onChildListChanged();
     // Tree shape changed — next frame must relayout.
     if (mRoot) _markRootLayoutDirty();
     if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
     if (mRequestRedraw) mRequestRedraw();
     // Notify the inspector (if open) that the tree has changed.
     callRootTreeChanged();
+  }
+
+  /** Iterator to `ref` in mChildren (end() when null / not a child).
+   *  Caller holds the tree mutex. */
+  std::vector<std::unique_ptr<glint_element>>::iterator _childPosition(const glint_element* ref)
+  {
+    if (!ref) return mChildren.end();
+    return std::find_if(mChildren.begin(), mChildren.end(),
+      [ref](const std::unique_ptr<glint_element>& p) { return p.get() == ref; });
+  }
+
+  /** insertBefore() for an existing child: move it in front of `ref`.
+   *  False when `node` is not actually in mChildren. */
+  bool _moveChildBefore(glint_element* node, glint_element* ref)
+  {
+    {
+      std::unique_lock<std::mutex> lk;
+      if (mTreeMutex) lk = std::unique_lock<std::mutex>(*mTreeMutex);
+      auto it = _childPosition(node);
+      if (it == mChildren.end()) return false;
+      std::unique_ptr<glint_element> owned = std::move(*it);
+      mChildren.erase(it);
+      mChildren.insert(_childPosition(ref), std::move(owned));
+    }
+    _onChildListChanged();
+    if (mRoot) _markRootLayoutDirty();
+    if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
+    if (mRequestRedraw) mRequestRedraw();
+    callRootTreeChanged();
+    return true;
   }
 
   /**
@@ -833,6 +912,7 @@ public:
       mScrollCorner         = nullptr;
       element.scrollCornerBox = nullptr;
     }
+    _onChildListChanged();   // :empty now matches
     if (mRoot) _markRootLayoutDirty();
     if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
     if (mRequestRedraw) mRequestRedraw();
@@ -861,6 +941,7 @@ public:
     }
     if (erased)
     {
+      _onChildListChanged();   // later siblings moved up one position
       if (mRoot) _markRootLayoutDirty();
       if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
       if (mRequestRedraw) mRequestRedraw();
@@ -1173,6 +1254,7 @@ public:
     }
 
     std::string line;
+    float lineAdv = 0.f;   // advance of `line` (sum of its tokens' advances)
     int lineByteStart = 0;
     int lineByteEnd = 0;
     bool lineStarted = false;
@@ -1180,8 +1262,15 @@ public:
     auto flushLine = [&]() {
       result.push_back({line, lineStarted ? lineByteStart : lineByteEnd, lineByteEnd});
       line.clear();
+      lineAdv = 0.f;
       lineStarted = false;
     };
+
+    auto measure = [&font](const std::string& s) -> float {
+      GLINT_PERF_TEXT(s.size());
+      return font.measureText(s.c_str(), s.size(), SkTextEncoding::kUTF8);
+    };
+    const float spaceAdv = (wrap && collapseWS) ? measure(" ") : 0.f;
 
     for (const Tok& t : toks)
     {
@@ -1192,25 +1281,27 @@ public:
         continue;
       }
 
-      std::string probe;
-      if (collapseWS)
+      // probe = line + (space) + token. Only wrapping needs its advance, and
+      // that comes from the running line advance (glyph advances add up)
+      // instead of re-measuring the whole line per word (O(words^2)). Near
+      // the wrap threshold the probe is measured exactly so wrap decisions
+      // match a full measure.
+      const bool appendsSpace = collapseWS && !line.empty() && t.isWord;
+      const bool keepsLine    = collapseWS && !line.empty() && !t.isWord;
+      float tokAdv = 0.f, probeAdv = 0.f;
+      if (wrap)
       {
-        if (line.empty()) probe = t.text;
-        else if (t.isWord) probe = line + " " + t.text;
-        else probe = line;
+        tokAdv   = keepsLine ? 0.f : measure(t.text);
+        probeAdv = line.empty() ? tokAdv : lineAdv + (appendsSpace ? spaceAdv : 0.f) + tokAdv;
+        if (!line.empty() && std::fabs(probeAdv - availW) < 0.05f)
+          probeAdv = measure(keepsLine ? line : (appendsSpace ? line + " " + t.text : line + t.text));
       }
-      else
-      {
-        probe = line + t.text;
-      }
-
-      SkRect bounds;
-      const float probeAdv = font.measureText(probe.c_str(), probe.size(), SkTextEncoding::kUTF8, &bounds);
 
       if (wrap && !line.empty() && probeAdv > availW)
       {
         flushLine();
-        line = collapseWS ? t.text : t.text;
+        line = t.text;
+        lineAdv = tokAdv;
         lineByteStart = t.byteOff;
         lineByteEnd = t.byteEnd;
         lineStarted = true;
@@ -1222,7 +1313,13 @@ public:
           lineByteStart = t.byteOff;
           lineStarted = true;
         }
-        line = std::move(probe);
+        if (line.empty())  line = t.text;
+        else if (!keepsLine)
+        {
+          if (appendsSpace) line += ' ';
+          line += t.text;
+        }
+        lineAdv = probeAdv;
         lineByteEnd = t.byteEnd;
       }
     }
@@ -1299,6 +1396,7 @@ public:
       if (!ln.text.empty())
       {
         SkRect bounds;
+        GLINT_PERF_TEXT(ln.text.size());
         lineW = font.measureText(ln.text.c_str(), ln.text.size(), SkTextEncoding::kUTF8, &bounds);
         if (bounds.height() > 0.f)
         {
@@ -1374,6 +1472,9 @@ public:
   virtual float minContentW() const
   {
     if (innerText.empty()) return 0.f;
+    _validateTextMeasureCache();
+    if (mTextMeasure.minContentWValid) return mTextMeasure.minContentW;
+
     const float sz = computedStyle.fontSize.toFloat() > 0.f ? computedStyle.fontSize.toFloat() : 14.f;
     SkFont font = skFont(sz,
                          computedStyle.fontFamily.c_str(),
@@ -1382,7 +1483,12 @@ public:
     float maxW = 0.f;
     for (const auto& ln : _buildWrappedLines(font, 1.f))   // wrap at every opportunity
       if (!ln.text.empty())
+      {
+        GLINT_PERF_TEXT(ln.text.size());
         maxW = std::max(maxW, font.measureText(ln.text.c_str(), ln.text.size(), SkTextEncoding::kUTF8));
+      }
+    mTextMeasure.minContentW      = maxW;
+    mTextMeasure.minContentWValid = true;
     return maxW;
   }
 
@@ -1391,18 +1497,10 @@ public:
     if (innerText.empty()) return 0.f;
     const float sz = computedStyle.fontSize.toFloat() > 0.f ? computedStyle.fontSize.toFloat() : 12.f;
 
-    // Cache hit when text + font axes are unchanged. preferredW() takes no
-    // width argument, so the only key components are text and font.
-    if (   mPrefWValid
-        && mPrefWText       == innerText
-        && mPrefWFontSize   == sz
-        && mPrefWFontWeight == computedStyle.fontWeight
-        && mPrefWFontFamily == computedStyle.fontFamily
-        && mPrefWFontStyle  == computedStyle.fontStyle
-        && mPrefWFontGen    == glint_font_registry::generation().load())
-    {
-      return mPrefWValue;
-    }
+    // preferredW() takes no width argument: the shared text/font key is the
+    // whole cache key.
+    _validateTextMeasureCache();
+    if (mTextMeasure.prefWValid) return mTextMeasure.prefW;
 
     SkFont font = skFont(sz,
                           computedStyle.fontFamily.c_str(),
@@ -1414,19 +1512,14 @@ public:
     {
       if (ln.text.empty()) continue;
       SkRect bounds;
+      GLINT_PERF_TEXT(ln.text.size());
       const float lineAdv = font.measureText(ln.text.c_str(), ln.text.size(), SkTextEncoding::kUTF8, &bounds);
       maxW = std::max(maxW, lineAdv);
     }
     const float result = maxW + 4.f;
 
-    mPrefWValue      = result;
-    mPrefWText       = innerText;
-    mPrefWFontSize   = sz;
-    mPrefWFontWeight = computedStyle.fontWeight;
-    mPrefWFontFamily = computedStyle.fontFamily;
-    mPrefWFontGen    = glint_font_registry::generation().load();
-    mPrefWFontStyle  = computedStyle.fontStyle;
-    mPrefWValid      = true;
+    mTextMeasure.prefW      = result;
+    mTextMeasure.prefWValid = true;
     return result;
   }
   // preferredH(availW): returns the content height for this leaf element.
@@ -1437,19 +1530,17 @@ public:
     if (innerText.empty()) return 0.f;
     const float sz = computedStyle.fontSize.toFloat() > 0.f ? computedStyle.fontSize.toFloat() : 12.f;
 
-    // Cache hit when text + font axes + availW + lineHeight are unchanged.
-    if (   mPrefHValid
-        && mPrefHAvailW     == availW
-        && mPrefHText       == innerText
-        && mPrefHFontSize   == sz
-        && mPrefHFontWeight == computedStyle.fontWeight
-        && mPrefHLineHeight == computedStyle.lineHeight
-        && mPrefHLineHeightPx == computedStyle.lineHeightPx
-        && mPrefHFontFamily == computedStyle.fontFamily
-        && mPrefHFontStyle  == computedStyle.fontStyle
-        && mPrefHFontGen    == glint_font_registry::generation().load())
+    // Cache hit when the shared text/font key, availW and line height match.
+    // Several slots: ancestors at different levels measure the same leaf at
+    // different widths within one layout pass.
+    _validateTextMeasureCache();
+    for (const auto& slot : mTextMeasure.prefH)
     {
-      return mPrefHValue;
+      if (   slot.valid
+          && slot.availW       == availW
+          && slot.lineHeight   == computedStyle.lineHeight
+          && slot.lineHeightPx == computedStyle.lineHeightPx)
+        return slot.value;
     }
 
     SkFont font = skFont(sz,
@@ -1466,17 +1557,13 @@ public:
     const int lines = std::max(1, static_cast<int>(linesVec.size()));
     const float result = static_cast<float>(lines) * lh;
 
-    mPrefHValue      = result;
-    mPrefHAvailW     = availW;
-    mPrefHText       = innerText;
-    mPrefHFontSize   = sz;
-    mPrefHFontWeight = computedStyle.fontWeight;
-    mPrefHLineHeight = computedStyle.lineHeight;
-    mPrefHFontGen    = glint_font_registry::generation().load();
-    mPrefHLineHeightPx = computedStyle.lineHeightPx;
-    mPrefHFontFamily = computedStyle.fontFamily;
-    mPrefHFontStyle  = computedStyle.fontStyle;
-    mPrefHValid      = true;
+    auto& slot = mTextMeasure.prefH[mTextMeasure.nextPrefHSlot];
+    mTextMeasure.nextPrefHSlot = (mTextMeasure.nextPrefHSlot + 1) % _TextMeasureCache::kPrefHSlots;
+    slot.valid        = true;
+    slot.availW       = availW;
+    slot.lineHeight   = computedStyle.lineHeight;
+    slot.lineHeightPx = computedStyle.lineHeightPx;
+    slot.value        = result;
     return result;
   }
 
@@ -1666,7 +1753,7 @@ public:
     // Initialise computedStyle and prev-style snapshot so tickTransitions() sees
     // no spurious changes on the first Draw() call.
     computedStyle = style;
-    mPrevStyle_   = style;
+    mPrevStyle_.assignIfAllocated(style);
 
     // Wire up element.scrollTop / element.scrollLeft reactive setters.
     _initScrollElement();
@@ -1688,12 +1775,12 @@ public:
     // Apply CSS cascade from loaded stylesheets, if available.
     if (mApplyCss) mApplyCss(this);
     // Snapshot the non-pseudo CSS baseline (used for delta in _drawImpl).
-    mCssStyleBase = cssStyle_;
+    mCssStyleBase.assignIfAllocated(cssStyle_());
     // Refresh computedStyle now that CSS has been applied so the Layout() pass
     // (which runs before Draw) sees the correct CSS values for width, height,
     // display, etc. Also sync mPrevStyle_ to avoid spurious transition detection.
     computedStyle = _mergedStyle();
-    mPrevStyle_   = computedStyle;
+    mPrevStyle_.assignIfAllocated(computedStyle);
 
     // If children were added before this node was attached to a document/root,
     // they missed the normal addChild() stamping path that propagates root/CSS
@@ -1715,9 +1802,9 @@ public:
         if (mApplyCss)
         {
           mApplyCss(node);
-          node->mCssStyleBase = node->cssStyle_;
+          node->mCssStyleBase.assignIfAllocated(node->cssStyle_());
           node->computedStyle = node->_mergedStyle();
-          node->mPrevStyle_   = node->computedStyle;
+          node->mPrevStyle_.assignIfAllocated(node->computedStyle);
         }
         for (auto& child : node->mChildren)
           self(self, child.get());
@@ -1741,19 +1828,19 @@ public:
     if (tickSelf) tickTransitions();
 
     // CSS pseudo-class delta: when hovered/active/focused, CSS :hover/:active rules
-    // stored in cssStyle_ may have changed relative to mCssStyleBase (the no-pseudo
+    // stored in cssStyle_() may have changed relative to mCssStyleBase (the no-pseudo
     // snapshot). Apply changed properties on top of computedStyle, following the
     // CSS cascade spec: inline styles (el->style) win over pseudo-class rules unless
     // the pseudo rule carries !important (tracked in mCssImportantProps_).
     // When not in any pseudo-state, refresh the baseline snapshot.
     if (mIsHovered || mIsActive || mIsFocused || mIsFocusWithin)
     {
-      if (mHasCssStyle_)
+      if (mHasCssStyle_ && mCssStyleBase.allocated())
       {
         static const glint_style sDefaultStyle{};
         for (const auto& key : glint_animatable_keys())
         {
-          const std::string cssNow  = glint_style_get_by_name(cssStyle_,     key);
+          const std::string cssNow  = glint_style_get_by_name(cssStyle_(),     key);
           const std::string cssBase = glint_style_get_by_name(mCssStyleBase, key);
           if (cssNow != cssBase)
           {
@@ -1771,7 +1858,7 @@ public:
     }
     else
     {
-      mCssStyleBase = cssStyle_;  // keep baseline in sync while no pseudo-state active
+      mCssStyleBase = cssStyle_();  // keep baseline in sync while no pseudo-state active
     }
 
     if (computedStyle.display == "none") return;
@@ -2185,6 +2272,7 @@ public:
   //
   virtual void Layout(glint_canvas* g)
   {
+    GLINT_PERF_INC(layoutCalls);
     if (mChildren.empty()) return;
 
     const bool scrollY = (computedStyle.overflowY == "scroll" || computedStyle.overflowY == "auto");
@@ -2429,6 +2517,104 @@ public:
     glint_element*  spacer();  // defined in glint_builder.hpp — flex-grow:1 invisible node
   } add{this};
 
+  /** Clock used by transitions and @keyframes. Null = steady_clock::now().
+   *  Tests and benchmarks install a fixed-step clock so animation frames are
+   *  deterministic. Set it on the document thread before the first frame. */
+  static inline std::chrono::steady_clock::time_point (*sAnimationClock)() = nullptr;
+  static std::chrono::steady_clock::time_point _animationNow()
+  {
+    return sAnimationClock ? sAnimationClock() : std::chrono::steady_clock::now();
+  }
+
+  /** Use conservative paint bounds (_paintBounds()) to skip drawing children
+   *  entirely outside the clip and to size opacity group layers. Off = draw
+   *  everything with unbounded layers (reference for verification). */
+  static inline bool sUsePaintBounds = true;
+
+  /** True when this element only paints inside its box (plus shadow and its
+   *  laid-out text): no custom drawing. Builder divs with a draw callback
+   *  override this. */
+  virtual bool _paintsWithinBounds() const { return _isPlainElement(); }
+
+  /**
+   * Conservative bounds of everything this element and its descendants paint,
+   * in the coordinates its parent draws it in. Returns false when they can't
+   * be bounded cheaply (transform, filter, backdrop, fixed position, custom
+   * drawing, uncached text) — such subtrees are never culled. Memoized per
+   * frame: rects only change in layout, which precedes painting.
+   */
+  bool _paintBounds(glint_rect& out) const
+  {
+    if (mPaintBoundsFrame_ == sStyleFrame)
+    {
+      out = mPaintBounds_;
+      return mPaintBoundsValid_;
+    }
+    mPaintBoundsFrame_ = sStyleFrame;
+    mPaintBoundsValid_ = _computePaintBounds(mPaintBounds_);
+    out = mPaintBounds_;
+    return mPaintBoundsValid_;
+  }
+
+  bool _computePaintBounds(glint_rect& b) const
+  {
+    const glint_style& cs = computedStyle;
+    b = GetRECT();
+    if (cs.display == "none") return true;   // paints nothing beyond its (stale) box
+    if (!_paintsWithinBounds()) return false;
+    if (!cs.transform.empty() && cs.transform != "none") return false;
+    if (!cs.filter.empty() && cs.filter != "none") return false;
+    if (!cs.backdropFilter.empty() && cs.backdropFilter != "none") return false;
+    if (cs.position == "fixed") return false;
+
+    auto grow = [&b](float l, float t, float r, float bt) {
+      b.L = std::min(b.L, l); b.T = std::min(b.T, t);
+      b.R = std::max(b.R, r); b.B = std::max(b.B, bt);
+    };
+    if (cs.shadowEnabled || cs.boxShadow.isSet)
+    {
+      const float ext = std::fabs(cs.shadowOffsetX) + std::fabs(cs.shadowOffsetY)
+                      + 3.f * std::fabs(cs.shadowBlur) + std::fabs(cs.shadowSpread) + 2.f;
+      grow(b.L - ext, b.T - ext, b.R + ext, b.B + ext);
+    }
+    if (!innerText.empty())
+    {
+      // Text may overflow the box (no-wrap, long words): use the laid-out
+      // lines, and give up when they're stale.
+      if (mInlineTextRenderLines.empty() || !mTxtCacheValid || mTxtCacheText != innerText)
+        return false;
+      const glint_rect content = getContent();
+      if (mTxtCacheLeft != content.L || mTxtCacheTop != content.T || mTxtCacheWidth != content.W())
+        return false;
+      for (const auto& ln : mInlineTextRenderLines)
+        grow(ln.x - 2.f, std::min(ln.top, ln.inkTop) - 2.f,
+             ln.x + ln.width + 2.f, std::max(ln.top + ln.lineHeight, ln.inkBottom) + 2.f);
+    }
+    // Clipping containers bound their descendants by their own box.
+    if (cs.overflowX != "visible" || cs.overflowY != "visible") return true;
+    for (const auto& c : mChildren)
+    {
+      glint_rect cb;
+      if (!c->_paintBounds(cb)) return false;
+      grow(cb.L, cb.T, cb.R, cb.B);
+    }
+    return true;
+  }
+
+  /** Runtime switch for the per-pass intrinsic-size memo (childPrefW/H).
+   *  Layout results must be identical either way; tools flip it to verify. */
+  static inline bool sLayoutMemoEnabled = true;
+
+  /** Skip style merges whose inputs are unchanged (see _styleInputHash()).
+   *  sVerifyIncrementalStyle re-merges every skipped element and counts
+   *  mismatches in glint_perf().styleVerifyFailures (tools / debugging). */
+  static inline bool sIncrementalStyle       = true;
+  static inline bool sVerifyIncrementalStyle = false;
+
+  /** Skip Layout() of children whose subtree and rect are unchanged
+   *  (see _layoutChild()). Requires sIncrementalStyle. */
+  static inline bool sIncrementalLayout      = true;
+
   /** Tick transitions on this component and all descendants.
    *  Called by glint_document before Layout() so animated width/height values
    *  are available to childPrefH/W during the layout pass.
@@ -2441,10 +2627,12 @@ public:
    *  parent has already queried childPrefH/W with stale computedStyle. */
   virtual void tickTransitionsAll()
   {
+    mUnderComponent = mParent && (!mParent->_isPlainElement() || mParent->mUnderComponent);
     tickTransitions();
     mSkipNextTick_ = true;
     for (auto& ch : mChildren)
       ch->tickTransitionsAll();
+    _updateSubtreeLayoutFlags();
   }
 
   bool _isNonStaticPositioned() const
@@ -2573,7 +2761,7 @@ public:
   }
 
   /** Force-refresh computedStyle for this element from the current `style` and
-   *  cssStyle_ — bypassing the once-per-frame skip flag set by the root
+   *  cssStyle_() — bypassing the once-per-frame skip flag set by the root
    *  tickTransitionsAll() pre-pass. Use this when a component mutates a child's
    *  `style` lazily during its own Layout()/drawContent() override and needs
    *  the change to be visible *this* frame (otherwise tickTransitions() consumes
@@ -2643,20 +2831,48 @@ protected:
   struct render_timing_scope
   {
     render_timing_bucket bucket;
+    bool enabled;
     std::chrono::steady_clock::time_point start;
 
     explicit render_timing_scope(render_timing_bucket timingBucket)
-      : bucket(timingBucket), start(std::chrono::steady_clock::now())
+      : bucket(timingBucket), enabled(sRenderTimingEnabled_)
     {
+      if (enabled) start = std::chrono::steady_clock::now();
     }
 
     ~render_timing_scope()
     {
+      if (!enabled) return;
       const double elapsedMs = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start).count();
       _recordRenderTiming(bucket, elapsedMs);
     }
   };
+
+  /** Draw one child, recording its subtree time when profiling is enabled.
+   *  Children whose painted area lies entirely outside the current clip
+   *  (e.g. rows scrolled out of a scroll container) are skipped. */
+  static void _drawChildTimed(glint_element* child, SkCanvas* canvas)
+  {
+    if (sUsePaintBounds)
+    {
+      glint_rect b;
+      if (child->_paintBounds(b) && canvas->quickReject(SkRect::MakeLTRB(b.L, b.T, b.R, b.B)))
+      {
+        GLINT_PERF_INC(paintCulled);
+        return;
+      }
+    }
+    if (!sRenderTimingEnabled_)
+    {
+      child->DrawToCanvas(canvas);
+      return;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    child->DrawToCanvas(canvas);
+    _recordChildSubtreeTiming(
+      child, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+  }
 
   static void _recordRenderTiming(render_timing_bucket bucket, double elapsedMs)
   {
@@ -2743,6 +2959,22 @@ protected:
   // Defined at the bottom of glint_document.hpp after the full document definition.
   void _refreshRootHoverFromPointer();
 
+  // className / classList changed: re-cascade this element and any element
+  // whose selectors depend on its classes (".open > .item"), then invalidate.
+  // Defined at the bottom of glint_document.hpp.
+  void _onClassListChanged();
+  // Children were inserted, removed or reordered: queue the restyle of the
+  // elements whose position-dependent selectors (:nth-child, `+`, :empty...)
+  // may now match differently. Defined at the bottom of glint_document.hpp.
+  void _onChildListChanged();
+  /** className at this element's last cascade (for class-change diffs). */
+  std::string mCascadedClassName_;
+
+  // Request a redraw after mScrollTop / mScrollLeft changed. Scrolling is
+  // applied at paint time (canvas translate), so only the scrollbar thumbs
+  // need re-positioning — no reflow. Defined at the bottom of glint_document.hpp.
+  void _onScrollOffsetChanged();
+
   // ── Internal: createElement registry ─────────────────────────────────────
   static std::map<std::string, std::function<glint_element*()>>& _elementFactories()
   {
@@ -2751,6 +2983,10 @@ protected:
   }
 
   static inline thread_local glint_render_timing_profile sRenderTimingProfile_;
+  static inline thread_local bool sRenderTimingEnabled_ = false;
+  mutable uint32_t   mPaintBoundsFrame_ = 0;   // sStyleFrame of the memo below
+  mutable bool       mPaintBoundsValid_ = false;
+  mutable glint_rect mPaintBounds_{};
 
   // ── Text-selection private state ──────────────────────────────────────────
   // Active when innerText is non-empty and style.userSelect != "none".
@@ -2790,26 +3026,63 @@ protected:
   // Memoized intrinsic-size results (preferredW / preferredH). Both are called
   // multiple times per Layout() pass per child for flex/block/table layouts;
   // their inputs change far less often than they're queried.
-  mutable bool        mPrefWValid      = false;
-  mutable float       mPrefWValue      = 0.f;
-  mutable std::string mPrefWText;
-  mutable std::string mPrefWFontFamily;
-  mutable std::string mPrefWFontStyle;
-  mutable uint64_t    mPrefWFontGen = 0;    // glint_font_registry::generation()
-  mutable float       mPrefWFontSize   = 0.f;
-  mutable float       mPrefWFontWeight = 0.f;
+  // preferredW / preferredH / minContentW share one key (text + font axes +
+  // white-space + font registry generation); a key change drops all results.
+  struct _TextMeasureCache
+  {
+    static constexpr int kPrefHSlots = 4;
+    struct PrefHSlot
+    {
+      bool  valid        = false;
+      float availW       = 0.f;
+      float lineHeight   = 0.f;
+      float lineHeightPx = 0.f;
+      float value        = 0.f;
+    };
 
-  mutable bool        mPrefHValid      = false;
-  mutable float       mPrefHValue      = 0.f;
-  mutable float       mPrefHAvailW     = 0.f;
-  mutable std::string mPrefHText;
-  mutable std::string mPrefHFontFamily;
-  mutable std::string mPrefHFontStyle;
-  mutable float       mPrefHFontSize   = 0.f;
-  mutable float       mPrefHFontWeight = 0.f;
-  mutable float       mPrefHLineHeight = 0.f;
-  mutable uint64_t    mPrefHFontGen    = 0;   // glint_font_registry::generation()
-  mutable float       mPrefHLineHeightPx = 0.f;
+    bool        keyValid   = false;
+    std::string text;
+    std::string fontFamily;
+    std::string fontStyle;
+    std::string whiteSpace;
+    float       fontSize   = 0.f;   // computedStyle.fontSize as resolved (before defaults)
+    float       fontWeight = 0.f;
+    uint64_t    fontGen    = 0;     // glint_font_registry::generation()
+
+    bool  prefWValid       = false;
+    float prefW            = 0.f;
+    bool  minContentWValid = false;
+    float minContentW      = 0.f;
+    PrefHSlot prefH[kPrefHSlots];
+    int   nextPrefHSlot    = 0;
+  };
+  mutable _TextMeasureCache mTextMeasure;
+
+  void _validateTextMeasureCache() const
+  {
+    auto& c = mTextMeasure;
+    const float    fs  = computedStyle.fontSize.toFloat();
+    const float    fw  = computedStyle.fontWeight;
+    const uint64_t gen = glint_font_registry::generation().load();
+    if (   c.keyValid
+        && c.fontSize   == fs
+        && c.fontWeight == fw
+        && c.fontGen    == gen
+        && c.text       == innerText
+        && c.fontFamily == computedStyle.fontFamily
+        && c.fontStyle  == computedStyle.fontStyle
+        && c.whiteSpace == computedStyle.whiteSpace)
+      return;
+    c = _TextMeasureCache{};
+    c.keyValid   = true;
+    c.text       = innerText;
+    c.fontFamily = computedStyle.fontFamily;
+    c.fontStyle  = computedStyle.fontStyle;
+    c.whiteSpace = computedStyle.whiteSpace;
+    c.fontSize   = fs;
+    c.fontWeight = fw;
+    c.fontGen    = gen;
+  }
 
   // ── Mask cache ───────────────────────────────────────────────────────────
   // Cached output of glint_parse_mask_layers(computedStyle) and the per-layer

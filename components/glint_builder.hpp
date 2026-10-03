@@ -89,6 +89,11 @@ public:
     style = panelStyle;
   }
 
+  // A draw lambda only paints; Layout() and hover hooks stay stock.
+  bool _isPlainElement() const override { return typeid(*this) == typeid(glint_div); }
+  // ...but it may paint anywhere, so only lambda-free divs are cullable.
+  bool _paintsWithinBounds() const override { return _isPlainElement() && !mDraw; }
+
 protected:
   void drawContent(glint_canvas& g) override
   {
@@ -680,8 +685,8 @@ template<typename S>
 inline glint_element* glint_element::ComponentAdd::div(S&& setup, glint_element** out)
 {
   // Skip block-flow cursor injection when the parent is a flex/grid container.
-  const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
-                           _owner->cssStyle_.display == "grid"  ||
+  const bool skipCursor = (_owner->cssStyle_().display == "flex" ||
+                           _owner->cssStyle_().display == "grid"  ||
                            _owner->style.display    == "flex"   ||
                            _owner->style.display    == "grid");
   glint_component_style peek;
@@ -1225,8 +1230,8 @@ template<typename S>
 inline auto glint_element::ComponentAdd::button(S&& setup)
 {
   const float cursorY = mCursorY;
-  const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
-                           _owner->cssStyle_.display == "grid"  ||
+  const bool skipCursor = (_owner->cssStyle_().display == "flex" ||
+                           _owner->cssStyle_().display == "grid"  ||
                            _owner->style.display    == "flex"   ||
                            _owner->style.display    == "grid");
   bool wasAbs = false;
@@ -1244,8 +1249,8 @@ template<typename S>
 inline auto glint_element::ComponentAdd::img(S&& setup)
 {
   const float cursorY = mCursorY;
-  const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
-                           _owner->cssStyle_.display == "grid"  ||
+  const bool skipCursor = (_owner->cssStyle_().display == "flex" ||
+                           _owner->cssStyle_().display == "grid"  ||
                            _owner->style.display    == "flex"   ||
                            _owner->style.display    == "grid");
   bool wasAbs = false;
@@ -1262,8 +1267,8 @@ template<typename S>
 inline auto glint_element::ComponentAdd::input(S&& setup)
 {
   const float cursorY = mCursorY;
-  const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
-                           _owner->cssStyle_.display == "grid"  ||
+  const bool skipCursor = (_owner->cssStyle_().display == "flex" ||
+                           _owner->cssStyle_().display == "grid"  ||
                            _owner->style.display    == "flex"   ||
                            _owner->style.display    == "grid");
   bool wasAbs = false;
@@ -1284,8 +1289,8 @@ inline T* glint_element::ComponentAdd::custom(S&& setup, T** out)
   static_assert(std::is_default_constructible_v<T>,
                 "ComponentAdd::custom requires a default-constructible control; use add.make(...) for bounds-constructed controls");
   const float cursorY = mCursorY;
-  const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
-                           _owner->cssStyle_.display == "grid"  ||
+  const bool skipCursor = (_owner->cssStyle_().display == "flex" ||
+                           _owner->cssStyle_().display == "grid"  ||
                            _owner->style.display    == "flex"   ||
                            _owner->style.display    == "grid");
   bool wasAbs = false;
@@ -1303,8 +1308,8 @@ template<typename S>
 inline auto glint_element::ComponentAdd::colorpicker(S&& setup, glint_colorpicker** out)
 {
   const float cursorY = mCursorY;
-  const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
-                           _owner->cssStyle_.display == "grid"  ||
+  const bool skipCursor = (_owner->cssStyle_().display == "flex" ||
+                           _owner->cssStyle_().display == "grid"  ||
                            _owner->style.display    == "flex"   ||
                            _owner->style.display    == "grid");
   bool wasAbs = false;
@@ -1322,8 +1327,8 @@ template<typename S>
 inline auto glint_element::ComponentAdd::dial(S&& setup, glint_dial** out)
 {
   const float cursorY = mCursorY;
-  const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
-                           _owner->cssStyle_.display == "grid"  ||
+  const bool skipCursor = (_owner->cssStyle_().display == "flex" ||
+                           _owner->cssStyle_().display == "grid"  ||
                            _owner->style.display    == "flex"   ||
                            _owner->style.display    == "grid");
   bool wasAbs = false;
@@ -1341,8 +1346,8 @@ template<typename S>
 inline auto glint_element::ComponentAdd::gradientEditor(S&& setup, glint_gradient_editor** out)
 {
   const float cursorY = mCursorY;
-  const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
-                           _owner->cssStyle_.display == "grid"  ||
+  const bool skipCursor = (_owner->cssStyle_().display == "flex" ||
+                           _owner->cssStyle_().display == "grid"  ||
                            _owner->style.display    == "flex"   ||
                            _owner->style.display    == "grid");
   bool wasAbs = false;
@@ -1366,8 +1371,8 @@ template<typename S>
 inline auto glint_element::ComponentAdd::list(S&& setup)
 {
   const float cursorY = mCursorY;
-  const bool skipCursor = (_owner->cssStyle_.display == "flex" ||
-                           _owner->cssStyle_.display == "grid"  ||
+  const bool skipCursor = (_owner->cssStyle_().display == "flex" ||
+                           _owner->cssStyle_().display == "grid"  ||
                            _owner->style.display    == "flex"   ||
                            _owner->style.display    == "grid");
   bool wasAbs = false;
