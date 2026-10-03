@@ -105,8 +105,7 @@ struct GpuContext
   {
     gr_cp<IDXGIFactory4> factory;
     if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) return false;
-    if (!glint_win32_surface::chooseHardwareAdapter(factory.get(), adapter)) return false;
-    if (FAILED(::D3D12CreateDevice(adapter.get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) return false;
+    if (!glint_win32_surface::chooseHardwareAdapter(factory.get(), adapter, device)) return false;
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)))) return false;
@@ -446,6 +445,101 @@ std::vector<Scenario> makeScenarios()
       if (c.targets.empty()) return;
       const glint_rect r = c.targets[static_cast<size_t>(c.frame * 7) % c.targets.size()]->mRect;
       c.doc.OnMouseOver((r.L + r.R) * 0.5f, (r.T + r.B) * 0.5f, kNoMod);
+    } });
+
+  // 14. Structural selectors under child-list changes: every frame inserts at
+  //     the front / middle / end, removes or reorders list items, so
+  //     :nth-child stripes, :last-child borders, `+` / `~` and :empty move.
+  s.push_back({ "structural", "list of 24 items; insert / remove / reorder one child per frame",
+    ".nthlist{display:flex;flex-direction:column;gap:2px;padding:4px}"
+    "li{padding:2px 6px;font-size:12px;background-color:#202830;border-bottom:1px solid #303030}"
+    "li:nth-child(odd){background-color:#2a3a4a}"
+    "li:nth-child(3n+1){color:#ffcc00}"
+    "li:nth-last-child(2){color:#00ccff}"
+    "li:first-child{padding-top:8px}"
+    "li:last-child{border-bottom:4px solid #ff0000}"
+    "li:only-child{font-size:16px}"
+    "li:nth-of-type(2){margin-left:10px}"
+    "li:not(:first-of-type):last-of-type{padding-bottom:9px}"
+    "li:nth-last-of-type(3){background-color:#504030}"
+    "b{font-size:11px;color:#808080}"
+    "b:first-of-type{color:#ff8080}"
+    "b:only-of-type{font-weight:700}"
+    "li + li{border-top:1px solid #405060}"
+    "b ~ li{padding-left:14px}"
+    "b + li{margin-top:6px}"
+    "li:first-child div{color:#00ff00}"
+    "li:nth-child(even) > div{font-size:13px}"
+    ".emptyhost{display:flex;flex-direction:row;gap:4px;padding:4px}"
+    "p{width:40px;height:16px;background-color:#305030}"
+    "p:empty{height:8px;background-color:#ff00ff}"
+    "p:empty + .after{width:80px}"
+    ".after{width:20px;height:16px;background-color:#303050}",
+    [](glint_element* root) {
+      auto* host = el(root, "emptyhost");
+      auto* p = new glint_element();
+      p->typeNameOverride = "p";
+      host->addChild(p);
+      el(host, "after");
+      auto* list = el(root, "nthlist");
+      for (int i = 0; i < 24; ++i)
+      {
+        auto* li = new glint_element();
+        li->typeNameOverride = (i % 7 == 3) ? "b" : "li";
+        list->addChild(li);
+        el(li, "", words(i, 2));
+      }
+      auto* solo = el(root, "nthlist sololist");
+      auto* only = new glint_element();
+      only->typeNameOverride = "li";
+      solo->addChild(only);
+      el(only, "", "only");
+    },
+    [](Ctx& c) {
+      // targets: [0] the list, [1] the single-item list, [2] the :empty host <p>.
+      std::vector<glint_element*> lists;
+      collect(&c.doc.mCanvas, "nthlist", lists);
+      std::vector<glint_element*> hosts;
+      collect(&c.doc.mCanvas, "emptyhost", hosts);
+      if (lists.size() < 2 || hosts.empty()) return;
+      c.targets = { lists[0], lists[1], hosts[0]->mChildren.front().get() };
+    },
+    [](Ctx& c) {
+      if (c.targets.size() < 3) return;
+      glint_element* list = c.targets[0];
+      auto& kids = list->mChildren;
+      auto make = [&](const char* tag) {
+        auto* e = new glint_element();
+        e->typeNameOverride = tag;
+        return e;
+      };
+      auto withText = [&](glint_element* e) { el(e, "", words(c.frame, 2)); };
+      switch (c.frame % 6)
+      {
+        case 0: { auto* e = make("li"); list->insertBefore(e, kids.empty() ? nullptr : kids.front().get()); withText(e); break; }
+        case 1: { auto* e = make("li"); list->insertBefore(e, kids.size() > 1 ? kids[kids.size() / 2].get() : nullptr); withText(e); break; }
+        case 2: { auto* e = make("li"); list->addChild(e); withText(e); break; }
+        case 3:
+          if (kids.size() > 1) list->removeChild(kids[kids.size() / 3].get());
+          if (kids.size() > 30) list->removeChild(kids.front().get());
+          break;
+        case 4:
+          // Reorder: last to front, and an early item to the end.
+          if (kids.size() > 2)
+          {
+            list->insertBefore(kids.back().get(), kids.front().get());
+            list->insertBefore(kids[1].get(), nullptr);
+          }
+          break;
+        case 5: { auto* e = make("b"); list->insertBefore(e, kids.size() > 2 ? kids[2].get() : nullptr); withText(e); break; }
+      }
+      // :only-child flips on the single-item list, :empty on the host <p>.
+      glint_element* solo = c.targets[1];
+      if (c.frame % 2 == 0) { auto* e = make("li"); solo->addChild(e); withText(e); }
+      else if (solo->mChildren.size() > 1) solo->removeChild(solo->mChildren.back().get());
+      glint_element* p = c.targets[2];
+      if (p->mChildren.empty()) el(p, "", "x");
+      else                      p->clearChildren();
     } });
 
   return s;

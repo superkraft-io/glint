@@ -773,8 +773,18 @@ public:
    * are respected and not overwritten — the builder may pre-stamp them to provide
    * the flex content area (rather than the full panel width/height).
    */
-  void addChild(glint_element* node)
+  void addChild(glint_element* node) { insertBefore(node, nullptr); }
+
+  /**
+   * DOM insertBefore — insert `node` right before the child `ref` (append when
+   * `ref` is null or not a child). `node` must be either new (not yet in any
+   * tree; set up exactly as addChild() does) or already a child of this
+   * element, in which case it is moved (reordered) without being re-created.
+   */
+  void insertBefore(glint_element* node, glint_element* ref)
   {
+    if (!node || node == ref) return;
+    if (node->mParent == this && _moveChildBefore(node, ref)) return;
     node->mpG                    = mpG;
     node->mRoot                  = mRoot;
     node->mRequestRedraw         = mRequestRedraw;
@@ -834,20 +844,50 @@ public:
     {
       std::unique_lock<std::mutex> lk;
       if (mTreeMutex) lk = std::unique_lock<std::mutex>(*mTreeMutex);
-      mChildren.emplace_back(node);
+      mChildren.emplace(_childPosition(ref), node);
     }
     if (mIsAttachedToTree)
       node->attachSubtree();
-    // Re-cascade the sibling that WAS the last child before this insertion so
-    // :last-child is removed from it now that node is the new last sibling.
-    if (mApplyCss && mChildren.size() >= 2)
-      mApplyCss(mChildren[mChildren.size() - 2].get());
+    // The siblings' positions changed (:last-child moved off the old last
+    // child, :nth-child shifted after `ref`...): the document re-cascades the
+    // ones whose selectors depend on it before the next frame.
+    _onChildListChanged();
     // Tree shape changed — next frame must relayout.
     if (mRoot) _markRootLayoutDirty();
     if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
     if (mRequestRedraw) mRequestRedraw();
     // Notify the inspector (if open) that the tree has changed.
     callRootTreeChanged();
+  }
+
+  /** Iterator to `ref` in mChildren (end() when null / not a child).
+   *  Caller holds the tree mutex. */
+  std::vector<std::unique_ptr<glint_element>>::iterator _childPosition(const glint_element* ref)
+  {
+    if (!ref) return mChildren.end();
+    return std::find_if(mChildren.begin(), mChildren.end(),
+      [ref](const std::unique_ptr<glint_element>& p) { return p.get() == ref; });
+  }
+
+  /** insertBefore() for an existing child: move it in front of `ref`.
+   *  False when `node` is not actually in mChildren. */
+  bool _moveChildBefore(glint_element* node, glint_element* ref)
+  {
+    {
+      std::unique_lock<std::mutex> lk;
+      if (mTreeMutex) lk = std::unique_lock<std::mutex>(*mTreeMutex);
+      auto it = _childPosition(node);
+      if (it == mChildren.end()) return false;
+      std::unique_ptr<glint_element> owned = std::move(*it);
+      mChildren.erase(it);
+      mChildren.insert(_childPosition(ref), std::move(owned));
+    }
+    _onChildListChanged();
+    if (mRoot) _markRootLayoutDirty();
+    if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
+    if (mRequestRedraw) mRequestRedraw();
+    callRootTreeChanged();
+    return true;
   }
 
   /**
@@ -872,6 +912,7 @@ public:
       mScrollCorner         = nullptr;
       element.scrollCornerBox = nullptr;
     }
+    _onChildListChanged();   // :empty now matches
     if (mRoot) _markRootLayoutDirty();
     if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
     if (mRequestRedraw) mRequestRedraw();
@@ -900,6 +941,7 @@ public:
     }
     if (erased)
     {
+      _onChildListChanged();   // later siblings moved up one position
       if (mRoot) _markRootLayoutDirty();
       if (mRequestRedrawDetailed) mRequestRedrawDetailed(this);
       if (mRequestRedraw) mRequestRedraw();
@@ -2921,6 +2963,10 @@ protected:
   // whose selectors depend on its classes (".open > .item"), then invalidate.
   // Defined at the bottom of glint_document.hpp.
   void _onClassListChanged();
+  // Children were inserted, removed or reordered: queue the restyle of the
+  // elements whose position-dependent selectors (:nth-child, `+`, :empty...)
+  // may now match differently. Defined at the bottom of glint_document.hpp.
+  void _onChildListChanged();
   /** className at this element's last cascade (for class-change diffs). */
   std::string mCascadedClassName_;
 

@@ -380,6 +380,31 @@ public:
     return mLastInitResult == glint_win32_surface::direct3d_init_result::success;
   }
 
+  /** Like initialize(), with the device created beforehand (possibly on
+   *  another thread) by glint_win32_surface::createDirect3DDevice(). */
+  bool initializeWithDevice(HWND hwnd, glint_win32_surface::direct3d_device&& d)
+  {
+    mHWND = hwnd;
+    mLastInitResult = d.result;
+    if (mLastInitResult == glint_win32_surface::direct3d_init_result::success)
+    {
+      mAdapter   = std::move(d.adapter);
+      mDevice    = std::move(d.device);
+      mQueue     = std::move(d.queue);
+      mGrContext = std::move(d.grContext);
+      mLastInitResult = glint_win32_surface::createDirect3DSwapChain(
+        mHWND, d.factory.get(), mDevice.get(), mQueue.get(), mSwapChain, mFence, mFenceEvent,
+        mFenceValues.data(), kBufferCount, mBufferIndex);
+    }
+
+    if (const char* diagnostic = diagnosticForInitResult(mLastInitResult))
+      mDiagnostic = diagnostic;
+    else
+      mDiagnostic.clear();
+
+    return mLastInitResult == glint_win32_surface::direct3d_init_result::success;
+  }
+
   void shutdown() override
   {
     if (mGrContext)

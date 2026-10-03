@@ -287,10 +287,93 @@ public:
     std::unordered_map<std::string, std::vector<Dependency>> pseudoDeps;  // lower-case name
     std::unordered_map<std::string, std::vector<Dependency>> classDeps;
 
+    // ── Child-list dependencies ────────────────────────────────────────────
+    // Inserting, removing or reordering a parent's children moves the other
+    // children (:nth-child, :last-of-type...), changes their previous siblings
+    // (`+` / `~`) and can flip the parent's :empty. Each entry keeps the
+    // compound matched against the affected element as a loose filter (null:
+    // no filter, e.g. inside a complex :is()). Empty lists: child-list changes
+    // never restyle anything.
+    struct ChildListDependency
+    {
+      const GlintCompoundSelector* compound = nullptr;
+      bool                         subtree  = false;
+    };
+    // Compound matched against a child of the changed parent; subtree: the
+    // subject lies below that child (descendant / child combinator between).
+    std::vector<ChildListDependency> childListDeps;
+    // :empty in a compound matched against the changed parent itself;
+    // subtree: the subject is a following sibling of it (or below one).
+    std::vector<ChildListDependency> emptyDeps;
+
+    bool hasChildListDeps() const { return !childListDeps.empty() || !emptyDeps.empty(); }
+
     void clear()
     {
       rules.clear(); byId.clear(); byClass.clear(); byTag.clear(); universal.clear();
       pseudoDeps.clear(); classDeps.clear();
+      childListDeps.clear(); emptyDeps.clear();
+    }
+
+    static bool isPositionalPseudo(const std::string& lowName)
+    {
+      static const char* kNames[] = { "first-child", "last-child", "only-child", "nth-child",
+                                      "nth-last-child", "first-of-type", "last-of-type",
+                                      "only-of-type", "nth-of-type", "nth-last-of-type" };
+      for (const char* n : kNames)
+        if (lowName == n) return true;
+      return false;
+    }
+
+    static void pushUnique(std::vector<ChildListDependency>& v, const GlintCompoundSelector* c, bool subtree)
+    {
+      if (!v.empty() && v.back().compound == c && v.back().subtree == subtree) return;
+      v.push_back({ c, subtree });
+    }
+
+    /**
+     * Record the child-list features of `compound`, matched against the
+     * element `owner` is (the k-th compound of its selector). `siblingChain`:
+     * every combinator between that compound and the subject is `+` / `~`;
+     * `siblingNext`: the combinator right after it (toward the subject) is.
+     * `owner` null = position unknown (inside a complex :is()): no filter,
+     * whole subtrees.
+     */
+    void addChildListDependencies(const GlintCompoundSelector& compound,
+                                  const GlintCompoundSelector* owner, bool isSubject,
+                                  bool siblingChain, bool siblingNext)
+    {
+      for (const auto& ss : compound.simples)
+      {
+        if (ss.kind == GlintSimpleKind::PSEUDO_CLASS)
+        {
+          const std::string low = lower(ss.name);
+          if (isPositionalPseudo(low))
+            pushUnique(childListDeps, owner, !owner || !siblingChain);
+          else if (low == "empty")
+          {
+            // The parent itself, or the siblings following it. Below it
+            // nothing can change: an empty parent has no descendants, and
+            // children inserted into one are cascaded when they attach.
+            if (owner && isSubject)  pushUnique(emptyDeps, owner, false);
+            else if (!owner || siblingNext) pushUnique(emptyDeps, owner, true);
+          }
+        }
+        for (const auto& nested : ss.nestedSelectors)
+        {
+          if (!nested) continue;
+          // The nested subject compound is matched against the owner's own
+          // element; anything further left (or a sibling combinator) is not.
+          for (size_t j = 0; j < nested->steps.size(); ++j)
+          {
+            const bool here = j == 0 && owner;
+            addChildListDependencies(nested->steps[j].compound, here ? owner : nullptr,
+                                     here && isSubject, here && siblingChain, here && siblingNext);
+            if (j > 0 && isSiblingCombinator(nested->steps[j].combinator))
+              pushUnique(childListDeps, nullptr, true);
+          }
+        }
+      }
     }
 
     void addDependencies(const GlintCompoundSelector& compound, bool siblings,
@@ -352,7 +435,28 @@ public:
           addDependencies(complexSel.steps[k].compound, siblings, adjacent,
                           complexSel.steps[k].compound);
         }
+
+        // Child-list features, compound by compound from the subject leftward.
+        bool siblingChain = true;   // steps[1..k] are all `+` / `~`
+        for (size_t k = 0; k < complexSel.steps.size(); ++k)
+        {
+          const bool siblingNext = k > 0 && isSiblingCombinator(complexSel.steps[k].combinator);
+          if (siblingNext)
+          {
+            // `a + b` / `a ~ b`: compound k-1 is matched against an element
+            // whose previous siblings it searches.
+            pushUnique(childListDeps, &complexSel.steps[k - 1].compound, !siblingChain);
+          }
+          if (k > 0) siblingChain = siblingChain && siblingNext;
+          addChildListDependencies(complexSel.steps[k].compound, &complexSel.steps[k].compound,
+                                   k == 0, siblingChain, siblingNext);
+        }
       }
+    }
+
+    static bool isSiblingCombinator(GlintCombinator c)
+    {
+      return c == GlintCombinator::ADJACENT_SIBLING || c == GlintCombinator::GENERAL_SIBLING;
     }
   };
 

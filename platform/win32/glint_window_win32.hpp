@@ -44,8 +44,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cwchar>
+#include <future>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -104,6 +107,12 @@ protected:
 
   std::unique_ptr<glint_renderer_backend_win32> mRenderer;
   glint_backend mActiveBackend = glint_backend::CPU;
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+  // D3D12 device + Skia context being created on another thread since the
+  // window thread started (see startGpuSetup()); valid until adopted.
+  std::shared_future<std::shared_ptr<glint_win32_surface::direct3d_device>> mGpuSetup;
+  bool mWaitingForGpu = false;   // showing CPU frames until mGpuSetup is ready
+#endif
 
   // ── Optional Win32 override ───────────────────────────────────────────────
 
@@ -140,6 +149,13 @@ protected:
    *  race-prone PostMessage(WM_SKUI_HIDE_CP). */
   virtual bool showOnCreate() const { return true; }
 
+  /** When true (default), a window that renders with D3D12 creates its GPU
+   *  device on another thread while it builds its document and shows its
+   *  first frames with the CPU renderer, then switches to the GPU. Creating
+   *  the device loads the graphics driver (~250 ms), which would otherwise
+   *  delay the first frame. Override to false to wait for the GPU instead. */
+  virtual bool startsGpuInBackground() const { return true; }
+
   /** Extended window style flags passed to CreateWindowExW (not including
    *  WS_EX_LAYERED which is added automatically when useTransparency()==true).
    *  Default: 0 — a normal top-level window that appears in the taskbar and
@@ -152,6 +168,8 @@ protected:
   // (WM_PAINT is not delivered to WS_EX_LAYERED windows updated via
   // UpdateLayeredWindow, so InvalidateRect would be a no-op).
   static constexpr UINT WM_SKUI_REDRAW  = WM_USER + 200;
+  // Posted when the background GPU setup (startGpuSetup()) has finished.
+  static constexpr UINT WM_GLINT_GPU_READY = WM_USER + 201;
 
   // WM_TIMER id for the ~60 fps animation heartbeat.  Ensures CSS-transition
   // WM_PAINT chains never stall when Windows withholds its low-priority
@@ -307,6 +325,30 @@ protected:
       appendRuntimeLogLine(message);
   }
 
+  // Startup timeline in the runtime log: ms since the process was created,
+  // for each step up to the first presented frame of the first window.
+  static inline std::atomic<bool> sStartupTraced{ false };
+
+  static double msSinceProcessStart()
+  {
+    FILETIME created{}, exited{}, kernel{}, user{}, now{};
+    ::GetProcessTimes(::GetCurrentProcess(), &created, &exited, &kernel, &user);
+    ::GetSystemTimePreciseAsFileTime(&now);
+    auto ticks = [](const FILETIME& f) {
+      return (static_cast<unsigned long long>(f.dwHighDateTime) << 32) | f.dwLowDateTime;
+    };
+    return static_cast<double>(ticks(now) - ticks(created)) / 10000.0;
+  }
+
+  static void startupMark(const char* step)
+  {
+    if (sStartupTraced.load(std::memory_order_relaxed) || !runtimeLoggingEnabled())
+      return;
+    char message[192] = {};
+    std::snprintf(message, sizeof(message), "GLINT STARTUP: %8.1f ms  %s", msSinceProcessStart(), step);
+    logRuntimeMessage(message);
+  }
+
   void logRequestedBackend() const
   {
     char message[96] = {};
@@ -436,11 +478,78 @@ protected:
 
     logRequestedBackend();
 
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+    if (mGpuSetup.valid())
+    {
+      if (mGpuSetup.wait_for(std::chrono::seconds(0)) != std::future_status::ready
+          && activateRenderer(glint_backend::CPU))
+      {
+        // The GPU is still starting: show the first frames on the CPU and
+        // switch when it is ready (WM_GLINT_GPU_READY).
+        mWaitingForGpu = true;
+        std::thread([setup = mGpuSetup, hwnd = mHWND] {
+          setup.wait();
+          ::PostMessageW(hwnd, WM_GLINT_GPU_READY, 0, 0);
+        }).detach();
+        return;
+      }
+      if (adoptGpuSetup())
+        return;
+      activateFallbackRenderer(requestedBackend());
+      return;
+    }
+#endif
+
     if (activateRenderer(requestedBackend()))
       return;
 
     activateFallbackRenderer(requestedBackend());
   }
+
+  // Starts creating the D3D12 device + Skia context on another thread, before
+  // the window exists (see startsGpuInBackground()).
+  void startGpuSetup()
+  {
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+    if (!usesRendererBackends() || !startsGpuInBackground() || requestedBackend() != glint_backend::D3D12)
+      return;
+    mGpuSetup = std::async(std::launch::async, [] {
+      return std::make_shared<glint_win32_surface::direct3d_device>(glint_win32_surface::createDirect3DDevice());
+    }).share();
+#endif
+  }
+
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+  // Finishes the background GPU setup for this window (waits for it if it is
+  // still running) and makes it the renderer. False keeps the current one.
+  bool adoptGpuSetup()
+  {
+    std::shared_ptr<glint_win32_surface::direct3d_device> setup = mGpuSetup.get();
+    mGpuSetup = {};
+    mWaitingForGpu = false;
+
+    auto renderer = std::make_unique<glint_d3d12_renderer_backend_win32>();
+    if (!setup || !renderer->initializeWithDevice(mHWND, std::move(*setup)) || !renderer->resize(mWpx, mHpx))
+    {
+      const char* diagnostic = renderer->diagnostic();
+      char message[192] = {};
+      std::snprintf(message, sizeof(message), "GLINT WINDOW: D3D12 backend init failed%s%s",
+                    diagnostic ? ": " : "", diagnostic ? diagnostic : "");
+      logRuntimeMessage(message);
+      renderer->shutdown();
+      return false;
+    }
+
+    if (mRenderer)
+      mRenderer->shutdown();
+    mRenderer = std::move(renderer);
+    mActiveBackend = glint_backend::D3D12;
+    logRuntimeMessage("GLINT WINDOW: GrDirectContext created");
+    logRuntimeMessage("GLINT WINDOW: GPU surface created (D3D12)");
+    logActiveBackend();
+    return true;
+  }
+#endif
 
   void destroyRenderer()
   {
@@ -952,6 +1061,7 @@ private:
 
     if (showOnCreate())
     {
+      startupMark("showing window");
       ::ShowWindow(mHWND, SW_SHOW);
       ::UpdateWindow(mHWND);
     }
@@ -1102,6 +1212,8 @@ private:
   void run()
   {
     mRunning = true;
+    startupMark("window thread started");
+    startGpuSetup();
     if (!createWindow()) { mRunning = false; return; }
     // WM_CREATE fires synchronously inside CreateWindowExW above, so
     // initRoot() + buildUI() + onCreated() have already completed by here.
@@ -1200,6 +1312,13 @@ private:
 
       drawMs = std::chrono::duration<double, std::milli>(presentStart - drawStart).count();
       presentMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - presentStart).count();
+      if (!sStartupTraced.load(std::memory_order_relaxed))
+      {
+        char step[96] = {};
+        std::snprintf(step, sizeof(step), "first frame presented (draw %.1f ms, present %.1f ms)", drawMs, presentMs);
+        startupMark(step);
+        sStartupTraced.store(true, std::memory_order_relaxed);
+      }
     }
 
     if (telemetryEnabled())
@@ -1247,10 +1366,15 @@ private:
     {
     // ── Lifecycle ────────────────────────────────────────────────────────────
     case WM_CREATE:
+      startupMark("WM_CREATE");
       self->initRoot();
+      startupMark("document created");
       self->initializeRenderer();
+      startupMark("renderer ready");
       self->buildUI();
+      startupMark("buildUI done");
       self->onCreated();
+      startupMark("onCreated done");
 
       if (self->usesLayeredTransparency()) self->paint();   // layered windows skip WM_PAINT
       // Heartbeat timer — fires every ~16 ms so CSS transitions never stall
@@ -1457,6 +1581,27 @@ private:
     case WM_SKUI_REDRAW:
       self->paint();
       return 0;
+
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+    case WM_GLINT_GPU_READY:
+      if (self->mWaitingForGpu)
+      {
+        if (self->adoptGpuSetup())
+        {
+          if (runtimeLoggingEnabled())
+          {
+            char message[96] = {};
+            std::snprintf(message, sizeof(message), "GLINT STARTUP: %8.1f ms  switched to the GPU renderer",
+                          msSinceProcessStart());
+            logRuntimeMessage(message);
+          }
+        }
+        else
+          logRuntimeMessage("GLINT WINDOW: staying on the CPU renderer");
+        self->scheduleWindowRedraw(hwnd);
+      }
+      return 0;
+#endif
 
     // ── Animation heartbeat ──────────────────────────────────────────────────
     // Fires every ~16 ms.  Queues a WM_PAINT (or a direct repaint for layered

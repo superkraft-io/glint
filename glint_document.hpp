@@ -1205,6 +1205,9 @@ public:
   static inline bool sVerifyCascadeIndex  = false;
   // Components queued for a local Layout() by _invalidateAfterRestyle().
   std::vector<std::pair<glint_element*, std::weak_ptr<void>>> mPendingLocalLayouts;
+  // Parents whose child list changed since the last frame, when the sheets
+  // have child-list dependencies (see _queueChildListRestyle()).
+  std::vector<std::pair<glint_element*, std::weak_ptr<void>>> mPendingChildListRestyles;
   glint_perf_counters mFrameStatsMark;
   bool                mFrameLayoutRan = false;
   uint64_t            mLayoutFontGen  = 0;   // font registry generation at the last frame
@@ -1515,6 +1518,9 @@ public:
     const uint64_t fontGen = glint_font_registry::generation().load();
     glint_element::sLayoutSkipsDisabled = (fontGen != mLayoutFontGen);
     mLayoutFontGen = fontGen;
+    // Structural restyles from this frame's child-list changes, before the
+    // tick merges styles and layout reads them.
+    _flushChildListRestyles();
     {
       glint_perf_timer t(perf.tickMs);
       mCanvas.tickTransitionsAll();
@@ -3289,6 +3295,88 @@ private:
     }
   }
 
+  /**
+   * `parent`'s children were inserted, removed or reordered. When some rule
+   * depends on child positions or :empty (RuleIndex::childListDeps /
+   * emptyDeps), remember it; the affected elements are re-cascaded once at
+   * the start of the next frame, so building a long list costs one pass.
+   */
+  void _queueChildListRestyle(glint_element* parent)
+  {
+    _ensureCascadeIndex();
+    if (!mCascadeIndex.hasChildListDeps()) return;
+    auto& q = mPendingChildListRestyles;
+    if (!q.empty() && q.back().first == parent && !q.back().second.expired()) return;
+    q.emplace_back(parent, parent->lifeToken());
+  }
+
+  void _flushChildListRestyles()
+  {
+    if (mPendingChildListRestyles.empty()) return;
+    auto pending = std::move(mPendingChildListRestyles);
+    mPendingChildListRestyles.clear();
+    _ensureCascadeIndex();
+    uint8_t flags = glint_restyle_none;
+    std::vector<glint_element*> restyled;
+    std::unordered_set<glint_element*> done;
+    for (const auto& [parent, life] : pending)
+      if (!life.expired() && done.insert(parent).second)
+        flags |= _restyleChildListDependents(parent, restyled);
+    // The child-list change already marked layout dirty; a paint-only
+    // restyle may still need component local layouts.
+    if (flags & glint_restyle_layout) mLayoutDirty = true;
+    else if (flags != glint_restyle_none) _invalidateAfterRestyle(flags, restyled);
+  }
+
+  /** Re-cascade what a child-list change of `parent` can affect: the parent
+   *  (:empty), its following siblings (`:empty + x`), its children (positions,
+   *  previous siblings) and, for rules that look further down, their subtrees. */
+  uint8_t _restyleChildListDependents(glint_element* parent, std::vector<glint_element*>& restyled)
+  {
+    const auto& index = mCascadeIndex;
+    bool self = false, following = false, children = false, subtrees = false;
+    {
+      GlintCssDomAdapter adapter(parent);
+      for (const auto& d : index.emptyDeps)
+      {
+        bool& want = d.subtree ? following : self;
+        if (!want && (!d.compound || _compoundMatchesLoosely(*d.compound, adapter))) want = true;
+      }
+    }
+    if (!index.childListDeps.empty())
+      for (auto& c : parent->mChildren)
+      {
+        GlintCssDomAdapter adapter(c.get());
+        for (const auto& d : index.childListDeps)
+        {
+          bool& want = d.subtree ? subtrees : children;
+          if (!want && (!d.compound || _compoundMatchesLoosely(*d.compound, adapter))) want = true;
+        }
+        if (subtrees) break;   // every child is restyled with its subtree
+      }
+
+    uint8_t flags = glint_restyle_none;
+    auto restyle = [&](glint_element* el, bool withSubtree) {
+      const uint8_t f = _applyCssToElement(el);
+      flags |= f;
+      if (f != glint_restyle_none) restyled.push_back(el);
+      if (withSubtree) flags |= _restyleSubtree(el, &restyled);
+    };
+    if (self) restyle(parent, false);
+    if (children || subtrees)
+      for (auto& c : parent->mChildren) restyle(c.get(), subtrees);
+    if (following && parent->mParent)
+    {
+      bool after = false;
+      for (auto& s : parent->mParent->mChildren)
+      {
+        if (s.get() == parent) { after = true; continue; }
+        if (after) restyle(s.get(), true);
+      }
+    }
+    return flags;
+  }
+
   /** Debug: compare the indexed winners against the reference cascade. */
   void _verifyIndexedCascade(const GlintCssDomAdapter& adapter,
                              const std::vector<const GlintCssStylesheet*>& sheets,
@@ -4259,6 +4347,11 @@ inline void glint_element::_onClassListChanged()
   if (mApplyCss) mApplyCss(this);
   if (mRoot) mRoot->_restyleClassDependents(this, before);
   setDirty(false);
+}
+
+inline void glint_element::_onChildListChanged()
+{
+  if (mRoot) mRoot->_queueChildListRestyle(this);
 }
 
 inline void glint_element::_onScrollOffsetChanged()

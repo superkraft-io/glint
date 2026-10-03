@@ -464,12 +464,18 @@ inline bool waitForDirect3DFence(HANDLE fenceEvent, ID3D12Fence* fence, uint64_t
   return WAIT_OBJECT_0 == ::WaitForSingleObjectEx(fenceEvent, INFINITE, FALSE);
 }
 
-inline bool chooseHardwareAdapter(IDXGIFactory4* factory, gr_cp<IDXGIAdapter1>& adapter)
+// Picks the first hardware adapter that supports D3D12 and creates its
+// device. The device is created in the same call that tests support:
+// creating a throwaway device first (pDevice = nullptr) loaded and set up the
+// driver twice, ~150 ms of extra startup.
+inline bool chooseHardwareAdapter(IDXGIFactory4* factory, gr_cp<IDXGIAdapter1>& adapter,
+                                  gr_cp<ID3D12Device>& device)
 {
   if (!factory)
     return false;
 
   adapter.reset(nullptr);
+  device.reset(nullptr);
 
   for (UINT index = 0;; ++index)
   {
@@ -484,7 +490,7 @@ inline bool chooseHardwareAdapter(IDXGIFactory4* factory, gr_cp<IDXGIAdapter1>& 
     if (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
       continue;
 
-    if (SUCCEEDED(::D3D12CreateDevice(candidate.get(), D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), nullptr)))
+    if (SUCCEEDED(::D3D12CreateDevice(candidate.get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))))
     {
       adapter = std::move(candidate);
       return true;
@@ -494,60 +500,85 @@ inline bool chooseHardwareAdapter(IDXGIFactory4* factory, gr_cp<IDXGIAdapter1>& 
   return false;
 }
 
-inline direct3d_init_result initializeDirect3DContext(
-  HWND hwnd,
-  gr_cp<IDXGIAdapter1>& adapter,
-  gr_cp<ID3D12Device>& device,
-  gr_cp<ID3D12CommandQueue>& queue,
-  gr_cp<IDXGISwapChain3>& swapChain,
-  gr_cp<ID3D12Fence>& fence,
-  HANDLE& fenceEvent,
-  sk_sp<GrDirectContext>& grContext,
-  uint64_t* fenceValues,
-  const int bufferCount,
-  unsigned int& bufferIndex)
+// The window-independent part of the D3D12 setup: DXGI factory, adapter,
+// device, command queue and Skia context. This is the slow part (the driver
+// loads and initialises the device: ~250 ms), and it needs no window, so a
+// host can run it on another thread while it shows its first frames with the
+// CPU renderer (see glint_window_win32). createDirect3DSwapChain() finishes
+// the setup for a window.
+struct direct3d_device
 {
-  if (!hwnd)
-    return direct3d_init_result::missing_window;
+  gr_cp<IDXGIFactory4>      factory;
+  gr_cp<IDXGIAdapter1>      adapter;
+  gr_cp<ID3D12Device>       device;
+  gr_cp<ID3D12CommandQueue> queue;
+  sk_sp<GrDirectContext>    grContext;
+  direct3d_init_result      result = direct3d_init_result::factory_failed;
+};
 
-  gr_cp<IDXGIFactory4> factory;
+inline direct3d_device createDirect3DDevice()
+{
+  direct3d_device d;
   HRESULT factoryResult = E_FAIL;
 #if defined(_DEBUG)
   // The DXGI debug layer comes with the optional "Graphics Tools" Windows
   // feature; without it the debug factory fails with
   // DXGI_ERROR_SDK_COMPONENT_MISSING.  Retry without the flag rather than
   // drop debug builds to the CPU renderer.
-  factoryResult = ::CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(&factory));
+  factoryResult = ::CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(&d.factory));
   if (FAILED(factoryResult))
-    factory.reset(nullptr);
+    d.factory.reset(nullptr);
 #endif
   if (FAILED(factoryResult))
-    factoryResult = ::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
+    factoryResult = ::CreateDXGIFactory2(0, IID_PPV_ARGS(&d.factory));
   if (FAILED(factoryResult))
-    return direct3d_init_result::factory_failed;
+    return d;
 
-  if (!chooseHardwareAdapter(factory.get(), adapter))
-    return direct3d_init_result::adapter_failed;
-
-  if (FAILED(::D3D12CreateDevice(adapter.get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))))
-    return direct3d_init_result::device_failed;
+  if (!chooseHardwareAdapter(d.factory.get(), d.adapter, d.device))
+  {
+    d.result = direct3d_init_result::adapter_failed;
+    return d;
+  }
 
   D3D12_COMMAND_QUEUE_DESC queueDesc = {};
   queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
   queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-  if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue))))
-    return direct3d_init_result::queue_failed;
+  if (FAILED(d.device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&d.queue))))
+  {
+    d.result = direct3d_init_result::queue_failed;
+    return d;
+  }
 
   // Compiled shaders from the binary / disk instead of D3DCompile per shader.
   glint_d3d_shader_cache::install();
 
   GrD3DBackendContext backendContext{};
-  backendContext.fAdapter = adapter;
-  backendContext.fDevice = device;
-  backendContext.fQueue = queue;
-  grContext = GrDirectContext::MakeDirect3D(backendContext);
-  if (!grContext)
-    return direct3d_init_result::context_failed;
+  backendContext.fAdapter = d.adapter;
+  backendContext.fDevice = d.device;
+  backendContext.fQueue = d.queue;
+  // The context may be created on a worker thread: Ganesh's D3D backend has no
+  // thread affinity, it only must not be used from two threads at once.
+  d.grContext = GrDirectContext::MakeDirect3D(backendContext);
+  d.result = d.grContext ? direct3d_init_result::success : direct3d_init_result::context_failed;
+  return d;
+}
+
+// Creates the swapchain, fence and fence event for `hwnd` on a device from
+// createDirect3DDevice().
+inline direct3d_init_result createDirect3DSwapChain(
+  HWND hwnd,
+  IDXGIFactory4* factory,
+  ID3D12Device* device,
+  ID3D12CommandQueue* queue,
+  gr_cp<IDXGISwapChain3>& swapChain,
+  gr_cp<ID3D12Fence>& fence,
+  HANDLE& fenceEvent,
+  uint64_t* fenceValues,
+  const int bufferCount,
+  unsigned int& bufferIndex)
+{
+  if (!hwnd)
+    return direct3d_init_result::missing_window;
 
   RECT windowRect = {};
   ::GetClientRect(hwnd, &windowRect);
@@ -565,7 +596,7 @@ inline direct3d_init_result initializeDirect3DContext(
 
   gr_cp<IDXGISwapChain1> swapChain1;
   if (FAILED(factory->CreateSwapChainForHwnd(
-        queue.get(),
+        queue,
         hwnd,
         &swapChainDesc,
         nullptr,
@@ -592,6 +623,34 @@ inline direct3d_init_result initializeDirect3DContext(
     return direct3d_init_result::fence_event_failed;
 
   return direct3d_init_result::success;
+}
+
+inline direct3d_init_result initializeDirect3DContext(
+  HWND hwnd,
+  gr_cp<IDXGIAdapter1>& adapter,
+  gr_cp<ID3D12Device>& device,
+  gr_cp<ID3D12CommandQueue>& queue,
+  gr_cp<IDXGISwapChain3>& swapChain,
+  gr_cp<ID3D12Fence>& fence,
+  HANDLE& fenceEvent,
+  sk_sp<GrDirectContext>& grContext,
+  uint64_t* fenceValues,
+  const int bufferCount,
+  unsigned int& bufferIndex)
+{
+  if (!hwnd)
+    return direct3d_init_result::missing_window;
+
+  direct3d_device d = createDirect3DDevice();
+  if (d.result != direct3d_init_result::success)
+    return d.result;
+
+  adapter   = std::move(d.adapter);
+  device    = std::move(d.device);
+  queue     = std::move(d.queue);
+  grContext = std::move(d.grContext);
+  return createDirect3DSwapChain(hwnd, d.factory.get(), device.get(), queue.get(), swapChain, fence, fenceEvent,
+                                 fenceValues, bufferCount, bufferIndex);
 }
 
 inline bool recreateDirect3DSurfaces(

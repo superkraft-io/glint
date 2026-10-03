@@ -289,6 +289,15 @@ GLINT WINDOW: active backend = D3D12 (GPU)
 
 If telemetry is enabled, you should also see timing lines.
 
+With Direct3D 12, a window first shows `active backend = CPU (CPU)` and then `active backend = D3D12 (GPU)`. That is intended: creating the GPU device loads the graphics driver (~250 ms), so Glint creates it on another thread and draws the first frames with the CPU renderer meanwhile, which puts the first frame on screen ~4x sooner. Override `startsGpuInBackground()` to return `false` in your window class to wait for the GPU instead.
+
+`GLINT STARTUP:` lines show how long each startup step took, in ms since the process started, up to the first frame:
+
+```text
+GLINT STARTUP:     97.2 ms  first frame presented (draw 13.0 ms, present 0.2 ms)
+GLINT STARTUP:    330.7 ms  switched to the GPU renderer
+```
+
 ### Ship compiled shaders (Direct3D)
 
 The first time a page draws an effect it hasn't drawn before (a blur, a blend mode, a gradient, a custom shader), Skia generates a GPU shader for it and Windows compiles it with `D3DCompile`, which takes 3–10 ms per shader. A page with new effects can pause for 100–200 ms the first time it opens.
