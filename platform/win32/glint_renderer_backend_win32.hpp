@@ -120,6 +120,15 @@ public:
 
   SkCanvas* beginFrame() override
   {
+    // Re-create the bitmap if the window has a size again (e.g. this
+    // renderer was resized to 0 x 0 while the window was collapsed).
+    if (mHWND && !mCpuCanvas)
+    {
+      RECT rc = {};
+      ::GetClientRect(mHWND, &rc);
+      if (rc.right > 0 && rc.bottom > 0)
+        resize(rc.right, rc.bottom);
+    }
     if (!mHWND || !mCpuCanvas)
     {
       mDiagnostic = "CPU backend is not ready";

@@ -554,6 +554,42 @@ private:
     return list;
   }
 
+  // ── Relative selector list (the argument of :has()) ──────────────────────
+  // Each selector may start with a combinator (`> img`, `+ .x`, `~ p`); none
+  // means descendant. Invalid input invalidates the whole list.
+  GlintSelectorList consumeRelativeSelectorList()
+  {
+    mToks.erase(std::remove_if(mToks.begin() + static_cast<std::ptrdiff_t>(std::min(mPos, mToks.size())), mToks.end(),
+                  [](const GlintCssToken& t) { return t.type == GlintCssTokenType::COMMENT; }),
+                mToks.end());
+
+    GlintSelectorList list;
+    skipWhitespace();
+    while (!eof())
+    {
+      const size_t start = mPos;
+      GlintCombinator anchor = GlintCombinator::DESCENDANT;
+      if (current().isDelim('>'))      { consume(); anchor = GlintCombinator::CHILD; }
+      else if (current().isDelim('+')) { consume(); anchor = GlintCombinator::ADJACENT_SIBLING; }
+      else if (current().isDelim('~')) { consume(); anchor = GlintCombinator::GENERAL_SIBLING; }
+      skipWhitespace();
+      auto complex = consumeComplexSelector();
+      skipWhitespace();
+      if (complex.steps.empty() || mPos == start
+          || (!eof() && current().type != GlintCssTokenType::COMMA))
+      {
+        list.selectors.clear();
+        mPos = mToks.size();
+        break;
+      }
+      complex.relative = true;
+      complex.anchorCombinator = anchor;
+      list.selectors.push_back(std::move(complex));
+      if (current().type == GlintCssTokenType::COMMA) { consume(); skipWhitespace(); }
+    }
+    return list;
+  }
+
   // ── Consume a complex selector (compound selectors joined by combinators) ─
   GlintComplexSelector consumeComplexSelector()
   {
@@ -715,11 +751,13 @@ private:
         }
         ss.argument = trim(tokensToString(argToks));
 
-        // For :not(), :is(), :has(), :where() parse nested selector list
+        // For :not(), :is(), :where() parse nested selector list; :has()
+        // takes relative selectors (`> img`, `+ .x`, `img`).
         if (ss.name == "not" || ss.name == "is" || ss.name == "has" || ss.name == "where")
         {
           GlintCssParser nested(argToks);
-          for (auto& sel : nested.consumeSelectorList().selectors)
+          auto list = ss.name == "has" ? nested.consumeRelativeSelectorList() : nested.consumeSelectorList();
+          for (auto& sel : list.selectors)
             ss.nestedSelectors.push_back(std::make_shared<GlintComplexSelector>(std::move(sel)));
         }
       }

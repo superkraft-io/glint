@@ -308,11 +308,63 @@ public:
 
     bool hasChildListDeps() const { return !childListDeps.empty() || !emptyDeps.empty(); }
 
+    // :has(): an element matching `anchor` (the compound holding the :has();
+    // null = position unknown, any element) depends on its descendants /
+    // following siblings. When one of those changes, the anchors above and
+    // before it are re-cascaded. `subject` false: the rule's subject depends
+    // on the anchor too (it is below it, or a following sibling: `siblings`).
+    struct HasDependency
+    {
+      const GlintCompoundSelector* anchor   = nullptr;
+      bool                         subject  = false;
+      bool                         siblings = false;
+    };
+    std::vector<HasDependency>      hasDeps;
+    std::unordered_set<std::string> hasClasses;   // classes used inside :has()
+    std::unordered_set<std::string> hasPseudos;   // state pseudo-classes used inside :has()
+    bool                            hasSiblingRelative = false;   // some :has(+ x) / :has(~ x)
+
     void clear()
     {
       rules.clear(); byId.clear(); byClass.clear(); byTag.clear(); universal.clear();
       pseudoDeps.clear(); classDeps.clear();
       childListDeps.clear(); emptyDeps.clear();
+      hasDeps.clear(); hasClasses.clear(); hasPseudos.clear(); hasSiblingRelative = false;
+    }
+
+    void addHasDependencies(const GlintCompoundSelector& compound, const GlintCompoundSelector* owner,
+                            bool subject, bool siblings)
+    {
+      for (const auto& ss : compound.simples)
+      {
+        if (ss.kind == GlintSimpleKind::PSEUDO_CLASS && lower(ss.name) == "has")
+        {
+          hasDeps.push_back({ owner, subject, siblings });
+          for (const auto& rel : ss.nestedSelectors)
+            if (rel) collectHasFeatures(*rel);
+          continue;
+        }
+        // :has() inside :not() / :is() / :where(): their subject compound is
+        // matched against the owner's element, anything further left is not.
+        for (const auto& nested : ss.nestedSelectors)
+          if (nested)
+            for (size_t j = 0; j < nested->steps.size(); ++j)
+              addHasDependencies(nested->steps[j].compound, j == 0 ? owner : nullptr,
+                                 j == 0 && subject, siblings);
+      }
+    }
+
+    void collectHasFeatures(const GlintComplexSelector& rel)
+    {
+      if (isSiblingCombinator(rel.anchorCombinator)) hasSiblingRelative = true;
+      for (const auto& st : rel.steps)
+        for (const auto& ss : st.compound.simples)
+        {
+          if (ss.kind == GlintSimpleKind::CLASS) hasClasses.insert(ss.name);
+          else if (ss.kind == GlintSimpleKind::PSEUDO_CLASS) hasPseudos.insert(lower(ss.name));
+          for (const auto& nested : ss.nestedSelectors)
+            if (nested) collectHasFeatures(*nested);
+        }
     }
 
     static bool isPositionalPseudo(const std::string& lowName)
@@ -359,9 +411,10 @@ public:
             else if (!owner || siblingNext) pushUnique(emptyDeps, owner, true);
           }
         }
+        const bool isHas = ss.kind == GlintSimpleKind::PSEUDO_CLASS && lower(ss.name) == "has";
         for (const auto& nested : ss.nestedSelectors)
         {
-          if (!nested) continue;
+          if (!nested || isHas) continue;
           // The nested subject compound is matched against the owner's own
           // element; anything further left (or a sibling combinator) is not.
           for (size_t j = 0; j < nested->steps.size(); ++j)
@@ -385,7 +438,9 @@ public:
           pseudoDeps[lower(ss.name)].push_back({ &owner, siblings, adjacentOnly });
         else if (ss.kind == GlintSimpleKind::CLASS)
           classDeps[ss.name].push_back({ &owner, siblings, adjacentOnly });
-        // Features inside :not() / :is() / :where() count for the owner too.
+        // Features inside :not() / :is() / :where() count for the owner too
+        // (not :has(): its arguments match other elements; see hasDeps).
+        if (ss.kind == GlintSimpleKind::PSEUDO_CLASS && lower(ss.name) == "has") continue;
         for (const auto& nested : ss.nestedSelectors)
           if (nested)
             for (const auto& st : nested->steps)
@@ -451,6 +506,10 @@ public:
           addChildListDependencies(complexSel.steps[k].compound, &complexSel.steps[k].compound,
                                    k == 0, siblingChain, siblingNext);
         }
+
+        for (size_t k = 0; k < complexSel.steps.size(); ++k)
+          addHasDependencies(complexSel.steps[k].compound, &complexSel.steps[k].compound, k == 0,
+                             k > 0 && isSiblingCombinator(complexSel.steps[k].combinator));
       }
     }
 

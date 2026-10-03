@@ -38,6 +38,9 @@ struct GlintCssDomAdapter : GlintCssDomElement
   mutable std::shared_ptr<GlintCssDomAdapter> mParentAdapter;
   // Lazily-created adapter for the previous sibling (`+` / `~` combinators).
   mutable std::shared_ptr<GlintCssDomAdapter> mPrevSiblingAdapter;
+  // Lazily-created adapters for the children and the next sibling (:has()).
+  mutable std::vector<std::shared_ptr<GlintCssDomAdapter>> mChildAdapters;
+  mutable std::shared_ptr<GlintCssDomAdapter>              mNextSiblingAdapter;
 
   explicit GlintCssDomAdapter(glint_element* e) : el(e) {}
 
@@ -183,6 +186,46 @@ struct GlintCssDomAdapter : GlintCssDomElement
       mPrevSiblingAdapter->forcePseudoClasses = forcePseudoClasses;
     }
     return mPrevSiblingAdapter.get();
+  }
+
+  size_t childCount() const override
+  {
+    return el ? el->mChildren.size() : 0;
+  }
+
+  const GlintCssDomElement* child(size_t i) const override
+  {
+    if (!el || i >= el->mChildren.size()) return nullptr;
+    if (mChildAdapters.size() != el->mChildren.size()) mChildAdapters.assign(el->mChildren.size(), nullptr);
+    auto& a = mChildAdapters[i];
+    if (!a || a->el != el->mChildren[i].get())
+    {
+      a = std::make_shared<GlintCssDomAdapter>(el->mChildren[i].get());
+      a->forcePseudoClasses = forcePseudoClasses;
+    }
+    return a.get();
+  }
+
+  const GlintCssDomElement* nextSibling() const override
+  {
+    if (!el || !el->mParent) return nullptr;
+    if (!mNextSiblingAdapter)
+    {
+      const auto& kids = el->mParent->mChildren;
+      for (size_t k = 0; k + 1 < kids.size(); ++k)
+        if (kids[k].get() == el)
+        {
+          mNextSiblingAdapter = std::make_shared<GlintCssDomAdapter>(kids[k + 1].get());
+          mNextSiblingAdapter->forcePseudoClasses = forcePseudoClasses;
+          break;
+        }
+    }
+    return mNextSiblingAdapter.get();
+  }
+
+  const void* identity() const override
+  {
+    return el;
   }
 
   // True when the element has no parent (i.e. it is the document root).

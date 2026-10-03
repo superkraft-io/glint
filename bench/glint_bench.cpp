@@ -542,6 +542,94 @@ std::vector<Scenario> makeScenarios()
       else                      p->clearChildren();
     } });
 
+  // 15. :has(): cards restyled by what they contain or what follows them; each
+  //     frame adds / removes a descendant, toggles a class inside a card,
+  //     adds / removes a direct child, hovers, or empties a card.
+  s.push_back({ "has", "30 cards; :has() flips as descendants / siblings change",
+    ".hgrid{display:flex;flex-direction:column;gap:2px;padding:4px}"
+    ".hcard{display:flex;flex-direction:row;gap:4px;padding:4px;min-height:14px;background-color:#202830}"
+    ".hcard:has(img){background-color:#304050}"
+    ".hcard:has(> .badge){padding-left:12px}"
+    ".hcard:has(.sel) .ttl{color:#ffcc00}"
+    ".hcard:has(+ .hcard .sel){border-bottom:3px solid #ff0000}"
+    ".hcard:has(~ .hcard img){margin-left:4px}"
+    ".hcard:not(:has(.ttl)){min-height:30px}"
+    ".hcard:has(.ttl:hover){background-color:#506070}"
+    ".hgrid:has(.sel){padding-top:10px}"
+    ".inner{display:flex;flex-direction:row;padding:2px}"
+    ".ttl{font-size:12px;color:#a0a0a0}"
+    ".badge{width:10px;height:10px;background-color:#00ff00}"
+    "img{width:12px;height:12px;background-color:#ff8800}",
+    [](glint_element* root) {
+      auto* g = el(root, "hgrid");
+      for (int i = 0; i < 30; ++i)
+      {
+        auto* card = el(g, "hcard");
+        el(card, "ttl", words(i, 2));
+        if (i % 3 == 0)
+        {
+          auto* inner = el(card, "inner");
+          el(inner, "ttl", words(i + 1, 1));
+        }
+      }
+    },
+    [](Ctx& c) { collect(&c.doc.mCanvas, "hcard", c.targets); },
+    [](Ctx& c) {
+      if (c.targets.empty()) return;
+      const size_t n = c.targets.size();
+      glint_element* card = c.targets[static_cast<size_t>(c.frame * 7) % n];
+      auto cls = [](glint_element* e) -> const std::string& { return e->className; };
+      auto makeImg = []() {
+        auto* e = new glint_element();
+        e->typeNameOverride = "img";
+        return e;
+      };
+      // Deepest container in the card: images go below .inner when there is one.
+      glint_element* host = card;
+      for (auto& ch : card->mChildren)
+        if (cls(ch.get()) == "inner") host = ch.get();
+      switch (c.frame % 6)
+      {
+        case 0: host->addChild(makeImg()); break;
+        case 1:
+          for (auto& ch : host->mChildren)
+            if (std::string(ch->tagName()) == "img") { host->removeChild(ch.get()); break; }
+          break;
+        case 2:
+          for (auto& ch : host->mChildren)
+            if (cls(ch.get()) == "ttl" || cls(ch.get()) == "ttl sel")
+            {
+              ch->className = cls(ch.get()) == "ttl" ? "ttl sel" : "ttl";
+              break;
+            }
+          break;
+        case 3:
+        {
+          bool removed = false;
+          for (auto& ch : card->mChildren)
+            if (cls(ch.get()) == "badge") { card->removeChild(ch.get()); removed = true; break; }
+          if (!removed) el(c.frame % 12 == 3 ? host : card, "badge");
+          break;
+        }
+        case 4:
+        {
+          glint_element* ttl = nullptr;
+          for (auto& ch : card->mChildren)
+            if (cls(ch.get()) == "ttl" || cls(ch.get()) == "ttl sel") ttl = ch.get();
+          if (ttl)
+          {
+            const glint_rect r = ttl->mRect;
+            c.doc.OnMouseOver((r.L + r.R) * 0.5f, (r.T + r.B) * 0.5f, kNoMod);
+          }
+          break;
+        }
+        case 5:
+          if (card->mChildren.empty()) el(card, "ttl", words(c.frame, 2));
+          else                         card->clearChildren();
+          break;
+      }
+    } });
+
   return s;
 }
 

@@ -1257,6 +1257,16 @@ private:
     {
       if (!mRenderer) return;
 
+      // Client area collapsed (window dragged to its minimum size): nothing
+      // to draw. Not a renderer failure: beginFrame() would report "not
+      // ready", and falling back to another renderer left the window black
+      // once it was enlarged again.
+      if (mWpx <= 0 || mHpx <= 0)
+      {
+        ::ValidateRect(mHWND, nullptr);
+        return;
+      }
+
       SkCanvas* canvas = mRenderer->beginFrame();
       if (!canvas)
       {

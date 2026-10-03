@@ -593,6 +593,10 @@ inline direct3d_init_result createDirect3DSwapChain(
   swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
   swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
   swapChainDesc.SampleDesc.Count = 1;
+  // While a live resize outruns rendering, DWM shows the last frame at its
+  // own size instead of stretching it to the new window size (stretching
+  // made the whole UI wobble when dragging the right / bottom edge).
+  swapChainDesc.Scaling = DXGI_SCALING_NONE;
 
   gr_cp<IDXGISwapChain1> swapChain1;
   if (FAILED(factory->CreateSwapChainForHwnd(

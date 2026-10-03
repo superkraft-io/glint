@@ -1024,9 +1024,12 @@ public:
         n->mIsFocusWithin = false;
         _applyCssToElement(n);
         _restyleDependents(n, _pseudoDeps("focus-within"));
+        _hasStateChanged(n, "focus-within");
       }
       _restyleDependents(mFocusedNode, _pseudoDeps("focus"));
       _restyleDependents(mFocusedNode, _pseudoDeps("focus-visible"));
+      _hasStateChanged(mFocusedNode, "focus");
+      _hasStateChanged(mFocusedNode, "focus-visible");
       mFocusedNode->onFocusLost();
       glint_keyboard_event blur;
       blur.type    = "blur";
@@ -1048,9 +1051,12 @@ public:
         n->mIsFocusWithin = true;
         _applyCssToElement(n);
         _restyleDependents(n, _pseudoDeps("focus-within"));
+        _hasStateChanged(n, "focus-within");
       }
       _restyleDependents(mFocusedNode, _pseudoDeps("focus"));
       _restyleDependents(mFocusedNode, _pseudoDeps("focus-visible"));
+      _hasStateChanged(mFocusedNode, "focus");
+      _hasStateChanged(mFocusedNode, "focus-visible");
       mFocusedNode->onFocusGained();
       glint_keyboard_event focus;
       focus.type    = "focus";
@@ -1208,6 +1214,10 @@ public:
   // Parents whose child list changed since the last frame, when the sheets
   // have child-list dependencies (see _queueChildListRestyle()).
   std::vector<std::pair<glint_element*, std::weak_ptr<void>>> mPendingChildListRestyles;
+  // Elements whose change may flip a :has() above / before them (see
+  // _queueHasCheck()); `childList`: their children changed.
+  struct _PendingHasCheck { glint_element* el; std::weak_ptr<void> life; bool childList; };
+  std::vector<_PendingHasCheck> mPendingHasChecks;
   glint_perf_counters mFrameStatsMark;
   bool                mFrameLayoutRan = false;
   uint64_t            mLayoutFontGen  = 0;   // font registry generation at the last frame
@@ -1521,6 +1531,7 @@ public:
     // Structural restyles from this frame's child-list changes, before the
     // tick merges styles and layout reads them.
     _flushChildListRestyles();
+    _flushHasRestyles();
     {
       glint_perf_timer t(perf.tickMs);
       mCanvas.tickTransitionsAll();
@@ -2162,6 +2173,7 @@ public:
         if (f != glint_restyle_none) restyled.push_back(node);
         // `.card:hover .title` etc.: elements whose match depends on this one.
         restyleFlags |= _restyleDependents(node, hoverDeps, &restyled);
+        _hasStateChanged(node, "hover");
       };
 
       // Clear :hover on nodes leaving the chain.
@@ -2290,6 +2302,7 @@ public:
         node->mIsHovered = false;
         _applyCssToElement(node);
         _restyleDependents(node, hoverDeps);
+        _hasStateChanged(node, "hover");
       }
 
       // Pass 2: dispatch events.
@@ -3036,6 +3049,7 @@ private:
     {
       _applyCssToElement(n);
       _restyleDependents(n, activeDeps);
+      _hasStateChanged(n, "active");
     }
   }
 
@@ -3276,7 +3290,7 @@ private:
   void _restyleClassDependents(glint_element* el, const std::string& before)
   {
     _ensureCascadeIndex();
-    if (mCascadeIndex.classDeps.empty()) return;
+    if (mCascadeIndex.classDeps.empty() && mCascadeIndex.hasClasses.empty()) return;
     auto tokens = [](const std::string& s) {
       std::vector<std::string> out;
       std::istringstream ss(s);
@@ -3293,6 +3307,113 @@ private:
       const auto it = mCascadeIndex.classDeps.find(cls);
       if (it != mCascadeIndex.classDeps.end()) _restyleDependents(el, &it->second);
     }
+    for (const auto& cls : changed)
+      if (mCascadeIndex.hasClasses.count(cls)) { _queueHasCheck(el, false); break; }
+  }
+
+  /**
+   * :has(): `el` changed in a way a :has() argument can see (a class or state
+   * used inside one, or its child list: `childList`). The elements whose
+   * :has() may have flipped are its ancestors and, for :has(+ x) / :has(~ x),
+   * the earlier siblings of it and of its ancestors; they are re-cascaded once
+   * at the start of the next frame (_flushHasRestyles()).
+   */
+  void _queueHasCheck(glint_element* el, bool childList)
+  {
+    _ensureCascadeIndex();
+    if (!el || mCascadeIndex.hasDeps.empty()) return;
+    mPendingHasChecks.push_back({ el, el->lifeToken(), childList });
+  }
+
+  /** A state pseudo-class (hover, focus, ...) of `el` changed. */
+  void _hasStateChanged(glint_element* el, const char* pseudo)
+  {
+    _ensureCascadeIndex();
+    if (!mCascadeIndex.hasDeps.empty() && mCascadeIndex.hasPseudos.count(pseudo))
+      _queueHasCheck(el, false);
+  }
+
+  /** Like _compoundMatchesLoosely(), but classes count: the anchors checked
+   *  here are not the element whose classes changed. */
+  static bool _compoundMatchesIgnoringStates(const GlintCompoundSelector& compound,
+                                             const GlintCssDomElement& el)
+  {
+    for (const auto& ss : compound.simples)
+    {
+      if (ss.kind == GlintSimpleKind::PSEUDO_CLASS || ss.kind == GlintSimpleKind::PSEUDO_ELEMENT)
+        continue;
+      if (!ss.matches(el)) return false;
+    }
+    return true;
+  }
+
+  void _flushHasRestyles()
+  {
+    if (mPendingHasChecks.empty()) return;
+    auto pending = std::move(mPendingHasChecks);
+    mPendingHasChecks.clear();
+    _ensureCascadeIndex();
+    const auto& index = mCascadeIndex;
+    if (index.hasDeps.empty()) return;
+
+    std::vector<glint_element*> anchors;
+    std::unordered_set<glint_element*> seen;
+    auto addAnchor = [&](glint_element* a) {
+      if (a && seen.insert(a).second) anchors.push_back(a);
+    };
+    for (const auto& p : pending)
+    {
+      if (p.life.expired()) continue;
+      if (p.childList)
+      {
+        addAnchor(p.el);   // its descendants changed
+        if (index.hasSiblingRelative)
+          for (auto& c : p.el->mChildren) addAnchor(c.get());   // their following siblings changed
+      }
+      for (glint_element* x = p.el; x; x = x->mParent)
+      {
+        addAnchor(x->mParent);
+        if (index.hasSiblingRelative && x->mParent)
+          for (auto& s : x->mParent->mChildren)
+          {
+            if (s.get() == x) break;
+            addAnchor(s.get());
+          }
+      }
+    }
+
+    uint8_t flags = glint_restyle_none;
+    std::vector<glint_element*> restyled;
+    auto restyle = [&](glint_element* e, bool withSubtree) {
+      const uint8_t f = _applyCssToElement(e);
+      flags |= f;
+      if (f != glint_restyle_none) restyled.push_back(e);
+      if (withSubtree) flags |= _restyleSubtree(e, &restyled);
+    };
+    for (glint_element* a : anchors)
+    {
+      GlintCssDomAdapter adapter(a);
+      bool self = false, below = false, following = false;
+      for (const auto& d : index.hasDeps)
+      {
+        if (d.anchor && !_compoundMatchesIgnoringStates(*d.anchor, adapter)) continue;
+        self = true;
+        if (!d.subject) (d.siblings ? following : below) = true;
+      }
+      if (!self) continue;
+      restyle(a, below);
+      if (following && a->mParent)
+      {
+        bool after = false;
+        for (auto& s : a->mParent->mChildren)
+        {
+          if (s.get() == a) { after = true; continue; }
+          if (after) restyle(s.get(), true);
+        }
+      }
+    }
+    if (flags & glint_restyle_layout) mLayoutDirty = true;
+    else if (flags != glint_restyle_none) _invalidateAfterRestyle(flags, restyled);
   }
 
   /**
@@ -3303,6 +3424,7 @@ private:
    */
   void _queueChildListRestyle(glint_element* parent)
   {
+    _queueHasCheck(parent, true);
     _ensureCascadeIndex();
     if (!mCascadeIndex.hasChildListDeps()) return;
     auto& q = mPendingChildListRestyles;
