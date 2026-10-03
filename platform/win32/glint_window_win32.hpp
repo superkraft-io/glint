@@ -73,6 +73,7 @@ protected:
   bool              mHeartbeatOn = false;   // SKUI_ANIM_TIMER running (window thread only)
   bool              mInSizeMove = false;    // inside the live move / resize loop
   bool              mGdiResize = false;     // presenting through GDI for this live resize
+  bool              mGpuReleased = false;   // GPU renderer released while minimized / hidden
   uint64_t mPaintCount = 0;
   uint64_t mRedrawRequestCount = 0;
   uint64_t mTimerWakeCount = 0;
@@ -178,6 +179,9 @@ protected:
   // WM_PAINT chains never stall when Windows withholds its low-priority
   // background WM_PAINT (e.g. during a burst of WM_MOUSEMOVE messages).
   static constexpr UINT SKUI_ANIM_TIMER = 1;
+  // Fires a while after the window was minimized or hidden: releases the GPU.
+  static constexpr UINT SKUI_GPU_RELEASE_TIMER = 2;
+  static constexpr UINT kGpuReleaseDelayMs = 5000;
   // Posted when another thread queued a task for this window (see initRoot()).
   static constexpr UINT WM_GLINT_RUN_TASKS = WM_USER + 202;
 
@@ -189,6 +193,42 @@ protected:
     if (mHeartbeatOn || !mHWND) return;
     ::SetTimer(mHWND, SKUI_ANIM_TIMER, 16, nullptr);
     mHeartbeatOn = true;
+  }
+
+  // ── GPU release while minimized / hidden ─────────────────────────────────
+  // A window that stays minimized or hidden for kGpuReleaseDelayMs gives up
+  // its GPU renderer: the driver's per-device memory (~85 MB with D3D12) and
+  // Skia's GPU resources go back to the system. Restoring it draws the first
+  // frames on the CPU while the GPU is set up again in the background (as at
+  // startup), so it shows instantly.
+  void scheduleGpuRelease()
+  {
+    if (mHWND && mRenderer && mRenderer->isGpu())
+      ::SetTimer(mHWND, SKUI_GPU_RELEASE_TIMER, kGpuReleaseDelayMs, nullptr);
+  }
+
+  void releaseGpuIfStillAway()
+  {
+    ::KillTimer(mHWND, SKUI_GPU_RELEASE_TIMER);
+    const bool away = ::IsIconic(mHWND) || !::IsWindowVisible(mHWND);
+    if (!away || !mRenderer || !mRenderer->isGpu() || mGdiResize) return;
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+    if (mWaitingForGpu) return;
+#endif
+    destroyRenderer();
+    mGpuReleased = true;
+    logRuntimeMessage("GLINT WINDOW: released the GPU renderer while the window is away");
+  }
+
+  // Back from minimized / hidden: renderer again, GPU set up in the background.
+  void reacquireGpuIfReleased()
+  {
+    ::KillTimer(mHWND, SKUI_GPU_RELEASE_TIMER);
+    if (!mGpuReleased) return;
+    mGpuReleased = false;
+    startGpuSetup();
+    if (!mRenderer) initializeRenderer();
+    glint_win32_host::invalidateWindow(mHWND);
   }
 
   // Layered transparency is intentionally top-level-only. Embedded views stay
@@ -1448,7 +1488,16 @@ private:
       }
       return 0;
 
+    case WM_SHOWWINDOW:
+      if (wp) self->reacquireGpuIfReleased();
+      else    self->scheduleGpuRelease();
+      return ::DefWindowProcW(hwnd, msg, wp, lp);
+
     case WM_SIZE:
+      if (wp == SIZE_MINIMIZED)
+        self->scheduleGpuRelease();
+      else if (self->mGpuReleased)
+        self->reacquireGpuIfReleased();
       if (self->mInSizeMove && !self->mGdiResize && self->mRenderer && self->mRenderer->isGpu())
       {
         self->mGdiResize = self->mRenderer->setPresentThroughGdi(true);
@@ -1526,6 +1575,7 @@ private:
 
     case WM_DESTROY:
       ::KillTimer(hwnd, SKUI_ANIM_TIMER);
+      ::KillTimer(hwnd, SKUI_GPU_RELEASE_TIMER);
       self->mHeartbeatOn = false;
       self->onDestroyed();
       self->destroyRenderer();
@@ -1680,6 +1730,11 @@ private:
     // windows) so CSS transitions keep advancing even if the message queue
     // is briefly non-empty and Windows withholds its background WM_PAINT.
     case WM_TIMER:
+      if (wp == SKUI_GPU_RELEASE_TIMER)
+      {
+        self->releaseGpuIfStillAway();
+        return 0;
+      }
       if (wp == SKUI_ANIM_TIMER)
       {
         // Run tasks posted from other threads (see initRoot()).
