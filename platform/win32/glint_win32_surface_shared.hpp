@@ -35,6 +35,7 @@
 #include <dxgi1_4.h>
 #include <dcomp.h>
 #include "glint_d3d_shader_cache.hpp"
+#include "glint_d3d_memory_allocator.hpp"
 #endif
 
 namespace glint_win32_surface
@@ -501,6 +502,21 @@ inline bool chooseHardwareAdapter(IDXGIFactory4* factory, gr_cp<IDXGIAdapter1>& 
   return false;
 }
 
+// Budget of Skia's GPU resource cache (textures, layers, buffers kept for
+// reuse), per window. Skia's default is 256 MB, and a context fills it while
+// pages are browsed and never shrinks it: a window grew from ~170 MB to
+// ~420 MB private memory. GLINT_GPU_CACHE_MB overrides the budget.
+inline size_t gpuResourceCacheBytes()
+{
+  static const size_t bytes = [] {
+    char value[16] = {};
+    const DWORD n = ::GetEnvironmentVariableA("GLINT_GPU_CACHE_MB", value, sizeof(value));
+    const long mb = n > 0 ? std::strtol(value, nullptr, 10) : 0;
+    return static_cast<size_t>(mb > 0 ? mb : 64) * 1024 * 1024;
+  }();
+  return bytes;
+}
+
 // The window-independent part of the D3D12 setup: DXGI factory, adapter,
 // device, command queue and Skia context. This is the slow part (the driver
 // loads and initialises the device: ~250 ms), and it needs no window, so a
@@ -557,10 +573,21 @@ inline direct3d_device createDirect3DDevice()
   backendContext.fAdapter = d.adapter;
   backendContext.fDevice = d.device;
   backendContext.fQueue = d.queue;
+  // Exact-size GPU allocations instead of Skia's default block allocator
+  // (see glint_d3d_memory_allocator.hpp). GLINT_D3D_SKIA_ALLOCATOR=1 keeps
+  // Skia's own.
+  {
+    char value[8] = {};
+    const DWORD n = ::GetEnvironmentVariableA("GLINT_D3D_SKIA_ALLOCATOR", value, sizeof(value));
+    if (!(n > 0 && value[0] == '1'))
+      backendContext.fMemoryAllocator = sk_make_sp<glint_d3d_memory_allocator>(d.device.get());
+  }
   // The context may be created on a worker thread: Ganesh's D3D backend has no
   // thread affinity, it only must not be used from two threads at once.
   d.grContext = GrDirectContext::MakeDirect3D(backendContext);
   d.result = d.grContext ? direct3d_init_result::success : direct3d_init_result::context_failed;
+  if (d.grContext)
+    d.grContext->setResourceCacheLimit(gpuResourceCacheBytes());
   return d;
 }
 

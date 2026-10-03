@@ -1696,6 +1696,7 @@ private:
           {
             ::KillTimer(hwnd, SKUI_ANIM_TIMER);
             self->mHeartbeatOn = false;
+            if (self->mRenderer) self->mRenderer->trimIdleMemory();
           }
           return 0;
         }

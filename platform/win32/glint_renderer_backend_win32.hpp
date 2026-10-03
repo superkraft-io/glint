@@ -79,6 +79,8 @@ public:
    *  renderer presents through GDI now (it needs a DirectComposition
    *  swapchain, which can be hidden; renderers without one ignore this). */
   virtual bool setPresentThroughGdi(bool /*on*/) { return false; }
+  /** The window went idle: release GPU resources unused for a while. */
+  virtual void trimIdleMemory() {}
 };
 
 class glint_cpu_renderer_backend_win32 final : public glint_renderer_backend_win32
@@ -621,6 +623,13 @@ public:
   }
 
   bool deviceLost() const override { return mDeviceLost; }
+
+  void trimIdleMemory() override
+  {
+    // Cached textures / layers not used in the last few seconds: pages left
+    // behind keep nothing alive in the cache.
+    if (mGrContext) mGrContext->performDeferredCleanup(std::chrono::seconds(3));
+  }
 
   glint_backend backend() const override
   {
