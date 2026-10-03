@@ -474,12 +474,19 @@ std::vector<Scenario> makeScenarios()
     "p{width:40px;height:16px;background-color:#305030}"
     "p:empty{height:8px;background-color:#ff00ff}"
     "p:empty + .after{width:80px}"
-    ".after{width:20px;height:16px;background-color:#303050}",
+    ".after{width:20px;height:16px;background-color:#303050}"
+    ".textp:empty{background-color:#00ffff}",
     [](glint_element* root) {
       auto* host = el(root, "emptyhost");
       auto* p = new glint_element();
       p->typeNameOverride = "p";
       host->addChild(p);
+      el(host, "after");
+      // :empty through innerText alone (no children).
+      auto* tp = new glint_element();
+      tp->typeNameOverride = "p";
+      tp->className = "textp";
+      host->addChild(tp);
       el(host, "after");
       auto* list = el(root, "nthlist");
       for (int i = 0; i < 24; ++i)
@@ -540,6 +547,13 @@ std::vector<Scenario> makeScenarios()
       glint_element* p = c.targets[2];
       if (p->mChildren.empty()) el(p, "", "x");
       else                      p->clearChildren();
+      // The text-only <p> (third child of the host).
+      if (p->mParent && p->mParent->mChildren.size() > 2)
+      {
+        glint_element* tp = p->mParent->mChildren[2].get();
+        tp->innerText = tp->innerText.empty() ? "t" : "";
+        tp->setDirty(false);
+      }
     } });
 
   // 15. :has(): cards restyled by what they contain or what follows them; each

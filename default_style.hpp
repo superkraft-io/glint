@@ -702,8 +702,10 @@ date-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 100%;
-  height: 100%;
+  /* Standalone: sized like a text input. Inside <input> the more specific
+     "input > date-input" rule fills the wrapper instead. */
+  width: auto;
+  height: 36px;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;
@@ -760,8 +762,10 @@ month-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 100%;
-  height: 100%;
+  /* Standalone: sized like a text input. Inside <input> the more specific
+     "input > month-input" rule fills the wrapper instead. */
+  width: auto;
+  height: 36px;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;
@@ -820,8 +824,10 @@ week-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 100%;
-  height: 100%;
+  /* Standalone: sized like a text input. Inside <input> the more specific
+     "input > week-input" rule fills the wrapper instead. */
+  width: auto;
+  height: 36px;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;
@@ -893,8 +899,10 @@ time-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 100%;
-  height: 100%;
+  /* Standalone: sized like a text input. Inside <input> the more specific
+     "input > time-input" rule fills the wrapper instead. */
+  width: auto;
+  height: 36px;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;
@@ -953,8 +961,10 @@ datetime-local-input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  width: 100%;
-  height: 100%;
+  /* Standalone: sized like a text input. Inside <input> the more specific
+     "input > datetime-local-input" rule fills the wrapper instead. */
+  width: auto;
+  height: 36px;
   background-color: #202020;
   border: 1px solid #414141;
   border-radius: 6px;
