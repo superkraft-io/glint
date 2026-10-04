@@ -94,6 +94,9 @@ private:
   // were freed before the GPU-side lazy decode, we'd get a use-after-free
   // (crash inside SkPngCodec / memcpy).  This member extends the lifetime.
   sk_sp<SkData> _bitmapData;
+  // The decoded level of src last drawn (DrawContentToCanvas); holding it
+  // keeps it out of glint_trim_image_cache() while shown.
+  sk_sp<SkImage> mSizedImg;
 
 public:
 
@@ -111,6 +114,7 @@ public:
     _svgImg     = glint_svg{ nullptr };
     bitmap      = glint_bitmap{};
     _bitmapData = nullptr;  // release retained SkData
+    mSizedImg   = nullptr;
     _loaded     = false;    // trigger lazy reload on next drawContent
     setDirty(false);
   }
@@ -421,13 +425,38 @@ protected:
     const float bmpH    = static_cast<float>(bitmap.FH());
     if (bmpW <= 0.f || bmpH <= 0.f) return;
 
-    const float physW   = static_cast<float>(img->width());
-    const float physH   = static_cast<float>(img->height());
-
     Fit     fit    = parseFit(computedStyle.objectFit);
     EAlign  alignH = EAlign::Center;
     EVAlign alignV = EVAlign::Middle;
     parsePosition(computedStyle.objectPosition, alignH, alignV);
+
+    // An img loaded from src (one frame) is decoded at the size it is drawn
+    // at, in the background, like background images: `bitmap` only holds
+    // the undecoded file (its size is the intrinsic size). Nothing is drawn
+    // until the first level is decoded.
+    if (!src.empty() && _bitmapData && numFrames == 1 && img->isLazyGenerated())
+    {
+      float drawnW = content.W(), drawnH = content.H();   // Fill
+      if (fit == Fit::Contain || fit == Fit::Cover)
+      {
+        const float scale = fit == Fit::Contain ? std::min(content.W() / bmpW, content.H() / bmpH)
+                                                : std::max(content.W() / bmpW, content.H() / bmpH);
+        drawnW = bmpW * scale;
+        drawnH = bmpH * scale;
+      }
+      else if (fit == Fit::None)
+      {
+        drawnW = bmpW;
+        drawnH = bmpH;
+      }
+      const float ds = glint_device_scale(canvas);
+      mSizedImg = glint_load_image_for_size(src, _getOnRequest(), this, _getNetworkLog(), img->dimensions(),
+                                            drawnW * ds, drawnH * ds, _repaintWhenImageReady());
+      if (!mSizedImg) return;
+      img = mSizedImg;
+    }
+    const float physW = static_cast<float>(img->width());
+    const float physH = static_cast<float>(img->height());
 
     SkSamplingOptions sampling(SkFilterMode::kLinear, SkMipmapMode::kLinear);
 

@@ -690,39 +690,16 @@ inline SkBlendMode glint_mask_blend_mode(const std::string& composite, bool isFi
  * applying mask-size and mask-position.  Used by drawImageRect (avoids the
  * kDecal half-pixel fringe produced by shader sampling at texel-row boundaries).
  */
-inline SkRect glint_mask_image_dst_rect(sk_sp<SkImage> img,
+inline SkRect glint_mask_image_dst_rect(SkISize intrinsic,
                                         const glint_rect& bounds,
                                         const glint_mask_layer& layer)
 {
-  if (!img) return SkRect::MakeEmpty();
+  float scaleX = 1.f, scaleY = 1.f;
+  if (!glint_mask_image_scale(intrinsic, bounds, layer, scaleX, scaleY)) return SkRect::MakeEmpty();
 
   const float bW = bounds.W(), bH = bounds.H();
-  const float iW = static_cast<float>(img->width());
-  const float iH = static_cast<float>(img->height());
-  if (iW <= 0.f || iH <= 0.f || bW <= 0.f || bH <= 0.f) return SkRect::MakeEmpty();
-
-  float scaleX = 1.f, scaleY = 1.f;
-  const std::string& sz = layer.size;
-  if (sz == "cover") {
-    const float scl = std::max(bW / iW, bH / iH); scaleX = scaleY = scl;
-  } else if (sz == "contain") {
-    const float scl = std::min(bW / iW, bH / iH); scaleX = scaleY = scl;
-  } else if (sz != "auto") {
-    std::istringstream ss(sz);
-    std::string sw, sh;
-    if (ss >> sw) {
-      float fW = bW, fH = bH;
-      try { fW = sw.back()=='%' ? std::stof(sw)*bW/100.f : std::stof(sw); } catch(...) {}
-      if (ss >> sh) {
-        try { fH = sh.back()=='%' ? std::stof(sh)*bH/100.f : std::stof(sh); } catch(...) {}
-      }
-      scaleX = iW > 0.f ? fW / iW : 1.f;
-      scaleY = iH > 0.f ? fH / iH : 1.f;
-    }
-  }
-
-  const float scaledW = iW * scaleX;
-  const float scaledH = iH * scaleY;
+  const float scaledW = static_cast<float>(intrinsic.width()) * scaleX;
+  const float scaledH = static_cast<float>(intrinsic.height()) * scaleY;
   float fx = 0.f, fy = 0.f;
   glint_mask_resolve_position(layer.position, fx, fy);
   const float tx = bounds.L + fx * (bW - scaledW);
@@ -1315,6 +1292,35 @@ inline sk_sp<SkImage> glint_load_image_async(
   }
   glint_img_decoder::instance().enqueue(key, std::move(data), level, intrinsic);
   return nullptr;
+}
+
+/** Device pixels per local unit on `canvas` (DPR, scale transforms); 1 when
+ *  it can't be told (perspective). */
+inline float glint_device_scale(const SkCanvas* canvas)
+{
+  const float scale = canvas ? canvas->getTotalMatrix().getMaxScale() : 1.f;
+  return std::isfinite(scale) && scale > 0.f ? scale : 1.f;
+}
+
+/** The img to draw `path` with where it covers needW x needH device pixels
+ *  (glint_img_level_for()). When that level isn't decoded yet it is decoded
+ *  in the background (`onReady` is called once it is), and the nearest
+ *  decoded level is returned meanwhile, or nullptr when there is none.
+ *  `intrinsic` is the img's intrinsic size (glint_img_intrinsic_size()). */
+inline sk_sp<SkImage> glint_load_image_for_size(
+    const std::string& path,
+    const std::function<void(glint_resource_request&)>* onRequest,
+    const glint_element* source,
+    glint_network_log* netLog,
+    SkISize intrinsic,
+    float needW, float needH,
+    std::function<void()> onReady)
+{
+  const int level = glint_img_level_for(intrinsic, needW, needH);
+  sk_sp<SkImage> img;
+  if (glint_img_lookup_level(path, level, img)) return img;
+  img = glint_load_image_async(path, onRequest, source, netLog, std::move(onReady), level, intrinsic);
+  return img ? img : glint_img_nearest_level(path, level);
 }
 
 // ── Img cache trimming ──────────────────────────────────────────────────────

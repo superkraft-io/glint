@@ -2150,6 +2150,7 @@ public:
         const glint_rect _maskOriginBox = _maskBoxRect(_ml.origin);
         sk_sp<SkShader> _mShader;
         sk_sp<SkImage>  _mImg;
+        SkISize         _mIntrinsic = SkISize::MakeEmpty();   // URL_IMAGE: the img's own size
 
         if (_ml.type == glint_mask_layer::GRADIENT)
         {
@@ -2188,7 +2189,12 @@ public:
         }
         else if (_ml.type == glint_mask_layer::URL_IMAGE)
         {
-          _mImg = glint_load_image(_ml.urlTarget, _getOnRequest(), this, _getNetworkLog());
+          // Decoded at the size it is drawn at (see glint_element_render.hpp).
+          _mIntrinsic = glint_img_intrinsic_size(_ml.urlTarget, _getOnRequest(), this, _getNetworkLog());
+          const SkRect _need = glint_mask_image_dst_rect(_mIntrinsic, _maskOriginBox, _ml);
+          const float _ds = glint_device_scale(_rootCanvas);
+          _mImg = glint_load_image_for_size(_ml.urlTarget, _getOnRequest(), this, _getNetworkLog(), _mIntrinsic,
+                                            _need.width() * _ds, _need.height() * _ds, _repaintWhenImageReady());
           mMaskImgRef = _mImg;   // shown: keeps it out of glint_trim_image_cache()
         }
 
@@ -2207,7 +2213,8 @@ public:
           // the source rect boundary — eliminates the half-pixel alpha fringe at img edges.
           const SkRect _srcR = SkRect::MakeWH(static_cast<float>(_mImg->width()),
                                               static_cast<float>(_mImg->height()));
-          const SkRect _dstR = glint_mask_image_dst_rect(_mImg, _maskOriginBox, _ml);
+          const SkRect _dstR = glint_mask_image_dst_rect(_mIntrinsic.isEmpty() ? _mImg->dimensions() : _mIntrinsic,
+                                                         _maskOriginBox, _ml);
           _rootCanvas->drawImageRect(_mImg, _srcR, _dstR,
                                      SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kLinear),
                                      &_mp,
@@ -2934,6 +2941,15 @@ protected:
   // Returns a pointer to mRoot->networkLog (or nullptr when mRoot is null).
   // Defined at the bottom of glint_document.hpp after the full document definition.
   glint_network_log* _getNetworkLog() const;
+
+  // Callback for glint_load_image_async() / glint_load_image_for_size():
+  // repaints this element, on its document's thread, once the img decoded.
+  std::function<void()> _repaintWhenImageReady() const
+  {
+    glint_owner_poster post = ownerThreadPoster();
+    glint_element* self = const_cast<glint_element*>(this);
+    return [post, self] { post([self] { self->setPaintOnlyDirty(); }); };
+  }
 
   // Find a DOM element by its string `id` (element.id).  Walks up to mRoot
   // and does a DFS search.  Returns nullptr when not found or mRoot is null.

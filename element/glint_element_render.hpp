@@ -686,32 +686,19 @@ public:
       bgLayer.size     = s.backgroundSize;
       bgLayer.position = s.backgroundPosition;
       bgLayer.repeat   = s.backgroundRepeat;
+      // Not decoded yet: it decodes in the background and the element is
+      // drawn without it (or with another level of it, e.g. while a window
+      // grows) until then, instead of stalling this frame.
       SkISize bgIntrinsic = SkISize::MakeEmpty();
-      int bgLevel = 0;
       if (!isSVG)
       {
         bgIntrinsic = glint_img_intrinsic_size(bgSrc, _getOnRequest(), this, _getNetworkLog());
         float scaleX = 1.f, scaleY = 1.f;
-        if (glint_mask_image_scale(bgIntrinsic, rect, bgLayer, scaleX, scaleY))
-        {
-          const float deviceScale = canvas->getTotalMatrix().getMaxScale();
-          const float ds = std::isfinite(deviceScale) && deviceScale > 0.f ? deviceScale : 1.f;
-          bgLevel = glint_img_level_for(bgIntrinsic, bgIntrinsic.width() * scaleX * ds,
-                                        bgIntrinsic.height() * scaleY * ds);
-        }
-      }
-
-      if (!isSVG && !glint_img_lookup_level(bgSrc, bgLevel, bgImg))
-      {
-        // Not decoded yet: decode in the background and draw the element
-        // without its img until then (or with another level of it, e.g.
-        // while a window grows), instead of stalling this frame.
-        glint_owner_poster post = ownerThreadPoster();
-        glint_element* self = const_cast<glint_element*>(static_cast<const glint_element*>(this));
-        bgImg = glint_load_image_async(bgSrc, _getOnRequest(), this, _getNetworkLog(),
-                                       [post, self] { post([self] { self->setPaintOnlyDirty(); }); },
-                                       bgLevel, bgIntrinsic);
-        if (!bgImg) bgImg = glint_img_nearest_level(bgSrc, bgLevel);
+        glint_mask_image_scale(bgIntrinsic, rect, bgLayer, scaleX, scaleY);
+        const float ds = glint_device_scale(canvas);
+        bgImg = glint_load_image_for_size(bgSrc, _getOnRequest(), this, _getNetworkLog(), bgIntrinsic,
+                                          bgIntrinsic.width() * scaleX * ds, bgIntrinsic.height() * scaleY * ds,
+                                          _repaintWhenImageReady());
       }
 
       if (bgImg)
@@ -1796,6 +1783,7 @@ public:
         const glint_rect _maskOriginBox = _maskBoxRect(_ml.origin);
         sk_sp<SkShader> _mShader;
         sk_sp<SkImage>  _mImg;
+        SkISize         _mIntrinsic = SkISize::MakeEmpty();   // URL_IMAGE: the img's own size
 
         if (_ml.type == glint_mask_layer::GRADIENT)
         {
@@ -1841,7 +1829,13 @@ public:
         }
         else if (_ml.type == glint_mask_layer::URL_IMAGE)
         {
-          _mImg = glint_load_image(_ml.urlTarget, _getOnRequest(), this, _getNetworkLog());
+          // Decoded at the size it is drawn at, in the background (the
+          // element is masked out until then), like background images.
+          _mIntrinsic = glint_img_intrinsic_size(_ml.urlTarget, _getOnRequest(), this, _getNetworkLog());
+          const SkRect _need = glint_mask_image_dst_rect(_mIntrinsic, _maskOriginBox, _ml);
+          const float _ds = glint_device_scale(canvas);
+          _mImg = glint_load_image_for_size(_ml.urlTarget, _getOnRequest(), this, _getNetworkLog(), _mIntrinsic,
+                                            _need.width() * _ds, _need.height() * _ds, _repaintWhenImageReady());
           mMaskImgRef = _mImg;   // shown: keeps it out of glint_trim_image_cache()
         }
 
@@ -1857,7 +1851,8 @@ public:
         {
           const SkRect _srcR = SkRect::MakeWH(static_cast<float>(_mImg->width()),
                                               static_cast<float>(_mImg->height()));
-          const SkRect _dstR = glint_mask_image_dst_rect(_mImg, _maskOriginBox, _ml);
+          const SkRect _dstR = glint_mask_image_dst_rect(_mIntrinsic.isEmpty() ? _mImg->dimensions() : _mIntrinsic,
+                                                         _maskOriginBox, _ml);
           canvas->drawImageRect(_mImg, _srcR, _dstR,
                                 SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kLinear),
                                 &_mp,
