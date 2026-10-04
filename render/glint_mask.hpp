@@ -35,6 +35,7 @@
 
 #include "glint_resource_request.hpp"
 #include "../utils/glint_network_log.hpp"
+#include "include/core/SkBitmap.h"
 #include "include/core/SkData.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkStream.h"
@@ -514,23 +515,19 @@ inline sk_sp<SkShader> glint_mask_image_shader_precise(sk_sp<SkImage> img,
 }
 
 /**
- * Build an SkShader from a decoded SkImage, applying mask-size, mask-position,
- * and mask-repeat to fit the img onto the given bounds rect.
- *
- * imgW / imgH : intrinsic img dimensions in pixels.
+ * Scale from an img's intrinsic pixels to CSS px for mask-size /
+ * background-size on the given bounds. False when nothing would show.
  */
-inline sk_sp<SkShader> glint_mask_image_shader(sk_sp<SkImage> img,
-                                               const glint_rect& bounds,
-                                               const glint_mask_layer& layer)
+inline bool glint_mask_image_scale(SkISize intrinsic,
+                                   const glint_rect& bounds,
+                                   const glint_mask_layer& layer,
+                                   float& scaleX, float& scaleY)
 {
-  if (!img) return nullptr;
-
   const float bW = bounds.W(), bH = bounds.H();
-  const float iW = static_cast<float>(img->width());
-  const float iH = static_cast<float>(img->height());
-  if (iW <= 0.f || iH <= 0.f || bW <= 0.f || bH <= 0.f) return nullptr;
-
-  float scaleX = 1.f, scaleY = 1.f;
+  const float iW = static_cast<float>(intrinsic.width());
+  const float iH = static_cast<float>(intrinsic.height());
+  scaleX = scaleY = 1.f;
+  if (iW <= 0.f || iH <= 0.f || bW <= 0.f || bH <= 0.f) return false;
 
   // ── mask-size ──────────────────────────────────────────────────────────────
   const std::string& sz = layer.size;
@@ -570,6 +567,30 @@ inline sk_sp<SkShader> glint_mask_image_shader(sk_sp<SkImage> img,
       scaleY = (iH > 0.f) ? fH / iH : 1.f;
     }
   }
+  return true;
+}
+
+/**
+ * Build an SkShader from a decoded SkImage, applying mask-size, mask-position,
+ * and mask-repeat to fit the img onto the given bounds rect.
+ *
+ * intrinsic : the img's intrinsic size, which sizing is based on. The decoded
+ *             `img` may be smaller (glint_img_level_dims()); empty means
+ *             img's own size.
+ */
+inline sk_sp<SkShader> glint_mask_image_shader(sk_sp<SkImage> img,
+                                               const glint_rect& bounds,
+                                               const glint_mask_layer& layer,
+                                               SkISize intrinsic = {})
+{
+  if (!img) return nullptr;
+  if (intrinsic.isEmpty()) intrinsic = img->dimensions();
+
+  const float bW = bounds.W(), bH = bounds.H();
+  const float iW = static_cast<float>(intrinsic.width());
+  const float iH = static_cast<float>(intrinsic.height());
+  float scaleX = 1.f, scaleY = 1.f;
+  if (!glint_mask_image_scale(intrinsic, bounds, layer, scaleX, scaleY)) return nullptr;
 
   const float scaledW = iW * scaleX;
   const float scaledH = iH * scaleY;
@@ -589,7 +610,9 @@ inline sk_sp<SkShader> glint_mask_image_shader(sk_sp<SkImage> img,
   if (rep == "repeat-y") { tmX = SkTileMode::kDecal;  tmY = SkTileMode::kRepeat; }
 
   // ── Build local matrix: img → canvas coords ──────────────────────────────
-  SkMatrix lm = SkMatrix::Scale(scaleX, scaleY);
+  // (decoded pixels → intrinsic pixels → CSS px)
+  SkMatrix lm = SkMatrix::Scale(scaleX * iW / static_cast<float>(img->width()),
+                                scaleY * iH / static_cast<float>(img->height()));
   lm.postTranslate(tx, ty);
 
   // SkImage::makeShader() expects the forward local matrix that maps img space
@@ -600,7 +623,7 @@ inline sk_sp<SkShader> glint_mask_image_shader(sk_sp<SkImage> img,
   if (!lm.isFinite()) {
     // Fallback: stretch to fill.
     SkMatrix fill;
-    fill.setRectToRect(SkRect::MakeWH(iW, iH),
+    fill.setRectToRect(SkRect::MakeWH(static_cast<float>(img->width()), static_cast<float>(img->height())),
                        SkRect::MakeLTRB(bounds.L, bounds.T, bounds.R, bounds.B),
                        SkMatrix::kFill_ScaleToFit);
     if (!fill.isFinite()) return nullptr;
@@ -860,6 +883,109 @@ inline bool glint_img_cache_lookup(const std::string& path, sk_sp<SkImage>& out)
   return true;
 }
 
+// ── Size levels ─────────────────────────────────────────────────────────────
+// A large img is rarely drawn at its full size (a 2400x1792 photo filling a
+// card is ~22 MB decoded with mipmaps, ~22 MB again on the GPU). Draw paths
+// that know their size ask for a "level": the img decoded at its size halved
+// `level` times (level 0 = full size), the smallest one still at least as
+// large as what is drawn in device pixels, so it is never upscaled. Levels
+// are cached under their own key; level 0 under the plain path.
+
+constexpr int kGlintImgMaxLevel = 8;
+
+/** Size of `intrinsic` halved `level` times (as its mipmap level). */
+inline SkISize glint_img_level_dims(SkISize intrinsic, int level)
+{
+  return { std::max(1, intrinsic.width() >> level), std::max(1, intrinsic.height() >> level) };
+}
+
+/** The smallest level of an img of size `intrinsic` that is still at least
+ *  needW x needH device pixels. */
+inline int glint_img_level_for(SkISize intrinsic, float needW, float needH)
+{
+  if (intrinsic.isEmpty() || !(needW > 0.f) || !(needH > 0.f)) return 0;
+  int level = 0;
+  while (level < kGlintImgMaxLevel)
+  {
+    const SkISize next = glint_img_level_dims(intrinsic, level + 1);
+    if (next == glint_img_level_dims(intrinsic, level)) break;
+    if (static_cast<float>(next.width()) < needW || static_cast<float>(next.height()) < needH) break;
+    ++level;
+  }
+  return level;
+}
+
+/** glint_img_cache() key of an img level. */
+inline std::string glint_img_level_key(const std::string& path, int level)
+{
+  return level == 0 ? path : path + "\n@" + std::to_string(level);
+}
+
+/** The path a glint_img_level_key() was made from. */
+inline std::string glint_img_key_path(const std::string& key)
+{
+  const size_t at = key.rfind("\n@");
+  return at == std::string::npos ? key : key.substr(0, at);
+}
+
+/** A decoded level of `path` other than `level`, the nearest one, finer
+ *  first; nullptr when none is cached. Drawn while `level` decodes. */
+inline sk_sp<SkImage> glint_img_nearest_level(const std::string& path, int level)
+{
+  std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+  auto& cache = glint_img_cache();
+  for (int d = 1; d <= kGlintImgMaxLevel; ++d)
+    for (const int l : { level - d, level + d })
+    {
+      if (l < 0 || l > kGlintImgMaxLevel) continue;
+      auto it = cache.find(glint_img_level_key(path, l));
+      if (it != cache.end() && it->second && !it->second->isLazyGenerated()) return it->second;
+    }
+  return nullptr;
+}
+
+/** The img to draw for `level` of `path`: that level, or the one just finer
+ *  when that is decoded (at most twice the size, and it saves holding both,
+ *  e.g. when one element shows the img at full size and another at half).
+ *  False when neither is cached; `out` is nullptr for an img that failed. */
+inline bool glint_img_lookup_level(const std::string& path, int level, sk_sp<SkImage>& out)
+{
+  std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+  auto& cache = glint_img_cache();
+  const std::string key = glint_img_level_key(path, level);
+  auto it = cache.find(key);
+  if (it != cache.end()) { out = it->second; glint_img_touch_locked(key); return true; }
+  if (level == 0) return false;
+  const std::string finerKey = glint_img_level_key(path, level - 1);
+  it = cache.find(finerKey);
+  if (it == cache.end() || !it->second || it->second->isLazyGenerated()) return false;
+  out = it->second;
+  glint_img_touch_locked(finerKey);
+  return true;
+}
+
+/** The nearest decoded level of `path` finer than `level` that has mipmaps
+ *  (a source to scale `level` from); nullptr when none is cached. */
+inline sk_sp<SkImage> glint_img_finer_level(const std::string& path, int level)
+{
+  std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+  auto& cache = glint_img_cache();
+  for (int l = level - 1; l >= 0; --l)
+  {
+    auto it = cache.find(glint_img_level_key(path, l));
+    if (it != cache.end() && it->second && it->second->hasMipmaps()) return it->second;
+  }
+  return nullptr;
+}
+
+/** Intrinsic sizes read from img headers, by path (empty: not decodable).
+ *  Guarded by gGlintImgCacheMutex. */
+inline std::unordered_map<std::string, SkISize>& glint_img_intrinsic()
+{
+  static std::unordered_map<std::string, SkISize> sizes;
+  return sizes;
+}
+
 /** Fetches the encoded bytes of an img: resource cache, then the onRequest
  *  handler, then disk. Records the request in the network log. nullptr when
  *  the img is missing. Runs on the calling thread. */
@@ -919,6 +1045,30 @@ inline sk_sp<SkImage> glint_load_image(
   return glint_img_cache().emplace(path, img).first->second;
 }
 
+/** The intrinsic size of the img at `path`, read from its header (fetching
+ *  its bytes like glint_load_image(), without decoding). Cached; empty when
+ *  the img is missing or not decodable. */
+inline SkISize glint_img_intrinsic_size(
+    const std::string& path,
+    const std::function<void(glint_resource_request&)>* onRequest,
+    const glint_element* source,
+    glint_network_log* netLog)
+{
+  {
+    std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+    auto& sizes = glint_img_intrinsic();
+    auto it = sizes.find(path);
+    if (it != sizes.end()) return it->second;
+  }
+  SkISize size = SkISize::MakeEmpty();
+  if (sk_sp<SkData> data = glint_fetch_image_bytes(path, onRequest, source, netLog))
+    if (sk_sp<SkImage> header = SkImages::DeferredFromEncodedData(std::move(data)))
+      size = header->dimensions();   // EXIF orientation applied, as when decoded
+  std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+  glint_img_intrinsic()[path] = size;
+  return size;
+}
+
 // ── Background img decode ───────────────────────────────────────────────────
 // Decoding a large PNG / JPEG and building its mipmaps takes 50-150 ms (a
 // 2400x1792 PNG: ~100 ms). Done lazily inside the first frame that draws the
@@ -941,15 +1091,18 @@ inline std::unordered_map<std::string, std::vector<std::function<void()>>>& glin
   return pending;
 }
 
-/** Stores the result for `path` and runs (outside the lock) everything that
- *  waited for it. */
-inline void glint_img_finish_pending(const std::string& path, sk_sp<SkImage> img)
+/** Stores the result for `path` (unless `store` is false) and runs (outside
+ *  the lock) everything that waited for it. */
+inline void glint_img_finish_pending(const std::string& path, sk_sp<SkImage> img, bool store = true)
 {
   std::vector<std::function<void()>> waiters;
   {
     std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
-    glint_img_cache()[path] = std::move(img);
-    glint_img_touch_locked(path);
+    if (store)
+    {
+      glint_img_cache()[path] = std::move(img);
+      glint_img_touch_locked(path);
+    }
     auto& pending = glint_img_pending();
     auto it = pending.find(path);
     if (it != pending.end())
@@ -971,23 +1124,52 @@ public:
     return decoder;
   }
 
-  void enqueue(std::string path, sk_sp<SkData> data)
+  /** Decodes `data` at `level` of `intrinsic` (glint_img_level_dims()) and
+   *  stores the result under `key`. */
+  void enqueue(std::string key, sk_sp<SkData> data, int level = 0, SkISize intrinsic = {})
   {
     {
       std::lock_guard<std::mutex> lk(mMutex);
       if (!mThread.joinable()) mThread = std::thread([this] { run(); });
-      mJobs.push_back({ std::move(path), std::move(data) });
+      mJobs.push_back({ std::move(key), std::move(data), level, intrinsic });
     }
     mCv.notify_one();
   }
 
-  /** Full decode into a raster img with mipmaps; nullptr when undecodable. */
-  static sk_sp<SkImage> decode(sk_sp<SkData> data)
+  /** Full decode into a raster img with mipmaps, halved `level` times;
+   *  nullptr when undecodable. */
+  static sk_sp<SkImage> decode(sk_sp<SkData> data, int level = 0)
   {
     sk_sp<SkImage> img = SkImages::DeferredFromEncodedData(std::move(data));
     if (!img) return nullptr;
     sk_sp<SkImage> raster = img->makeRasterImage(nullptr);
     if (!raster) return img;
+    sk_sp<SkImage> mipped = raster->withDefaultMipmaps();
+    if (level > 0 && mipped)
+      if (sk_sp<SkImage> scaled = downscale(mipped, glint_img_level_dims(raster->dimensions(), level)))
+        return scaled;
+    return mipped ? mipped : raster;
+  }
+
+  /** `src` (a raster img with mipmaps) resized to `dims`, with mipmaps;
+   *  nullptr on failure. Sampling src's mipmaps makes this a box filter at
+   *  exact halvings. (Drawn through a canvas: SkImage::scalePixels() drops
+   *  src's mipmaps and builds them again in Skia's global cache, where they
+   *  stay.) */
+  static sk_sp<SkImage> downscale(const sk_sp<SkImage>& src, SkISize dims)
+  {
+    SkBitmap scaled;
+    if (!scaled.tryAllocPixels(src->imageInfo().makeDimensions(dims))) return nullptr;
+    {
+      SkCanvas canvas(scaled);
+      SkPaint copy;
+      copy.setBlendMode(SkBlendMode::kSrc);
+      canvas.drawImageRect(src, SkRect::Make(dims), SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kLinear),
+                           &copy);
+    }
+    scaled.setImmutable();
+    sk_sp<SkImage> raster = scaled.asImage();
+    if (!raster) return nullptr;
     sk_sp<SkImage> mipped = raster->withDefaultMipmaps();
     return mipped ? mipped : raster;
   }
@@ -1003,7 +1185,7 @@ public:
   }
 
 private:
-  struct job { std::string path; sk_sp<SkData> data; };
+  struct job { std::string key; sk_sp<SkData> data; int level = 0; SkISize intrinsic; };
 
   void run()
   {
@@ -1014,11 +1196,61 @@ private:
         std::unique_lock<std::mutex> lk(mMutex);
         mCv.wait(lk, [this] { return mStop || !mJobs.empty(); });
         if (mStop) return;
-        next = std::move(mJobs.front());
-        mJobs.pop_front();
+        // The finest queued level of the front job's img goes first: the
+        // coarser ones are then scaled from it instead of decoded again.
+        auto pick = mJobs.begin();
+        const std::string path = glint_img_key_path(pick->key);
+        for (auto it = mJobs.begin(); it != mJobs.end(); ++it)
+          if (it->level < pick->level && glint_img_key_path(it->key) == path) pick = it;
+        next = std::move(*pick);
+        mJobs.erase(pick);
       }
-      glint_img_finish_pending(next.path, decode(std::move(next.data)));
+      const std::string path = glint_img_key_path(next.key);
+      if (finishIfFinerCached(next, path)) continue;
+
+      sk_sp<SkImage> img;
+      if (next.level > 0 && !next.intrinsic.isEmpty())
+        if (sk_sp<SkImage> finer = glint_img_finer_level(path, next.level))
+          img = downscale(finer, glint_img_level_dims(next.intrinsic, next.level));
+      if (img)
+      {
+        glint_img_finish_pending(next.key, std::move(img));
+        continue;
+      }
+
+      // Decode the file at full size; this job's level and every other level
+      // of the same img queued meanwhile (a page asks for several in its
+      // first frame) are made from it rather than decoding the file again.
+      const sk_sp<SkImage> full = decode(std::move(next.data));
+      std::vector<job> same;
+      {
+        std::lock_guard<std::mutex> lk(mMutex);
+        for (auto it = mJobs.begin(); it != mJobs.end();)
+          if (glint_img_key_path(it->key) == path) { same.push_back(std::move(*it)); it = mJobs.erase(it); }
+          else ++it;
+      }
+      same.insert(same.begin(), std::move(next));
+      std::stable_sort(same.begin(), same.end(), [](const job& a, const job& b) { return a.level < b.level; });
+      for (job& j : same)
+      {
+        if (finishIfFinerCached(j, path)) continue;
+        sk_sp<SkImage> level = full;
+        if (full && j.level > 0 && !full->isLazyGenerated())
+          if (sk_sp<SkImage> scaled = downscale(full, glint_img_level_dims(full->dimensions(), j.level)))
+            level = std::move(scaled);
+        glint_img_finish_pending(j.key, std::move(level));
+      }
     }
+  }
+
+  /** When the level just finer than `j`'s is decoded, it is drawn instead
+   *  (glint_img_lookup_level()): wakes `j`'s waiters without storing. */
+  static bool finishIfFinerCached(const job& j, const std::string& path)
+  {
+    sk_sp<SkImage> drawn;
+    if (j.level == 0 || !glint_img_lookup_level(path, j.level, drawn) || !drawn) return false;
+    glint_img_finish_pending(j.key, nullptr, /*store=*/false);
+    return true;
   }
 
   std::mutex              mMutex;
@@ -1031,39 +1263,57 @@ private:
 /** Like glint_load_image(), but never decodes on the calling thread: returns
  *  nullptr while the img is decoded in the background, and `onReady` is
  *  called (from the decode thread) once it is in the cache. Use it where the
- *  element can be drawn without the img for a frame or two. */
+ *  element can be drawn without the img for a frame or two. `level` > 0
+ *  decodes it at a reduced size (glint_img_level_for()); pass its
+ *  `intrinsic` size (glint_img_intrinsic_size()) so a level can be scaled
+ *  from a finer one already decoded instead of decoding the file again. */
 inline sk_sp<SkImage> glint_load_image_async(
     const std::string& path,
     const std::function<void(glint_resource_request&)>* onRequest,
     const glint_element* source,
     glint_network_log* netLog,
-    std::function<void()> onReady)
+    std::function<void()> onReady,
+    int level = 0,
+    SkISize intrinsic = {})
 {
-  if (!gGlintAsyncImageDecode.load(std::memory_order_relaxed))
+  const std::string key = glint_img_level_key(path, level);
+  const bool async = gGlintAsyncImageDecode.load(std::memory_order_relaxed);
+  if (!async && level == 0)
     return glint_load_image(path, onRequest, source, netLog);
 
   {
     std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
     auto& cache = glint_img_cache();
-    auto it = cache.find(path);
-    if (it != cache.end()) { glint_img_touch_locked(path); return it->second; }
-    auto& pending = glint_img_pending();
-    auto pit = pending.find(path);
-    if (pit != pending.end())
+    auto it = cache.find(key);
+    if (it != cache.end()) { glint_img_touch_locked(key); return it->second; }
+    if (async)
     {
-      pit->second.push_back(std::move(onReady));
-      return nullptr;
+      auto& pending = glint_img_pending();
+      auto pit = pending.find(key);
+      if (pit != pending.end())
+      {
+        pit->second.push_back(std::move(onReady));
+        return nullptr;
+      }
+      pending[key].push_back(std::move(onReady));
     }
-    pending[path].push_back(std::move(onReady));
   }
 
   sk_sp<SkData> data = glint_fetch_image_bytes(path, onRequest, source, netLog);
+  if (!async)
+  {
+    // Synchronous, at the requested size.
+    sk_sp<SkImage> img = data ? glint_img_decoder::decode(std::move(data), level) : nullptr;
+    std::lock_guard<std::mutex> lock(gGlintImgCacheMutex);
+    glint_img_touch_locked(key);
+    return glint_img_cache().emplace(key, img).first->second;
+  }
   if (!data)
   {
-    glint_img_finish_pending(path, nullptr);
+    glint_img_finish_pending(key, nullptr);
     return nullptr;
   }
-  glint_img_decoder::instance().enqueue(path, std::move(data));
+  glint_img_decoder::instance().enqueue(key, std::move(data), level, intrinsic);
   return nullptr;
 }
 
@@ -1127,11 +1377,24 @@ inline void glint_trim_image_cache()
       if (kept + c.bytes <= glint_img_unused_budget_bytes()) { kept += c.bytes; continue; }
       evicted.push_back(c.path);
     }
-    for (const auto& path : evicted)
+    for (const auto& key : evicted)
     {
-      glint_img_cache().erase(path);
-      lastUsed.erase(path);
+      glint_img_cache().erase(key);
+      lastUsed.erase(key);
     }
+    // Encoded bytes go with an img's last cached level (another level may
+    // still be shown, and its bytes decode the next level it needs).
+    std::vector<std::string> paths;
+    for (const auto& key : evicted) paths.push_back(glint_img_key_path(key));
+    std::sort(paths.begin(), paths.end());
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+    for (const auto& [key, img] : glint_img_cache())
+    {
+      const auto it = std::lower_bound(paths.begin(), paths.end(), glint_img_key_path(key));
+      if (it != paths.end() && *it == glint_img_key_path(key)) paths.erase(it);
+    }
+    for (const auto& path : paths) glint_img_intrinsic().erase(path);
+    evicted.swap(paths);
   }
   if (evicted.empty()) return;
   std::lock_guard<std::mutex> lock(glint_resource_cache_mutex());

@@ -678,14 +678,40 @@ public:
           canvas->restore();
         }
       }
-      else if (!glint_img_cache_lookup(bgSrc, bgImg))
+      // The img level for the size it is drawn at in device pixels (one tile
+      // for repeated ones): a photo filling a small card decodes and uploads
+      // at a fraction of its size. Sizing uses the intrinsic size.
+      glint_mask_layer bgLayer;
+      bgLayer.type     = glint_mask_layer::URL_IMAGE;
+      bgLayer.size     = s.backgroundSize;
+      bgLayer.position = s.backgroundPosition;
+      bgLayer.repeat   = s.backgroundRepeat;
+      SkISize bgIntrinsic = SkISize::MakeEmpty();
+      int bgLevel = 0;
+      if (!isSVG)
+      {
+        bgIntrinsic = glint_img_intrinsic_size(bgSrc, _getOnRequest(), this, _getNetworkLog());
+        float scaleX = 1.f, scaleY = 1.f;
+        if (glint_mask_image_scale(bgIntrinsic, rect, bgLayer, scaleX, scaleY))
+        {
+          const float deviceScale = canvas->getTotalMatrix().getMaxScale();
+          const float ds = std::isfinite(deviceScale) && deviceScale > 0.f ? deviceScale : 1.f;
+          bgLevel = glint_img_level_for(bgIntrinsic, bgIntrinsic.width() * scaleX * ds,
+                                        bgIntrinsic.height() * scaleY * ds);
+        }
+      }
+
+      if (!isSVG && !glint_img_lookup_level(bgSrc, bgLevel, bgImg))
       {
         // Not decoded yet: decode in the background and draw the element
-        // without its img until then, instead of stalling this frame.
+        // without its img until then (or with another level of it, e.g.
+        // while a window grows), instead of stalling this frame.
         glint_owner_poster post = ownerThreadPoster();
         glint_element* self = const_cast<glint_element*>(static_cast<const glint_element*>(this));
         bgImg = glint_load_image_async(bgSrc, _getOnRequest(), this, _getNetworkLog(),
-                                       [post, self] { post([self] { self->setPaintOnlyDirty(); }); });
+                                       [post, self] { post([self] { self->setPaintOnlyDirty(); }); },
+                                       bgLevel, bgIntrinsic);
+        if (!bgImg) bgImg = glint_img_nearest_level(bgSrc, bgLevel);
       }
 
       if (bgImg)
@@ -715,14 +741,7 @@ public:
         }
         else
         {
-          // Synthesise a glint_mask_layer so we can reuse glint_mask_image_shader.
-          glint_mask_layer bgLayer;
-          bgLayer.type     = glint_mask_layer::URL_IMAGE;
-          bgLayer.size     = s.backgroundSize;
-          bgLayer.position = s.backgroundPosition;
-          bgLayer.repeat   = s.backgroundRepeat;
-
-          shader = glint_mask_image_shader(bgImg, rect, bgLayer);
+          shader = glint_mask_image_shader(bgImg, rect, bgLayer, bgIntrinsic);
 
           mBgImgCacheImg       = bgImg;
           mBgImgCacheShader    = shader;
