@@ -1161,11 +1161,26 @@ public:
         render_timing_scope _timingScope(render_timing_bucket::backdrop);
         SkPaint _compPaint;
         _compPaint.setAlphaf(_selfOpacity);
+        // The layer starts as a copy of the backdrop so the element's
+        // backdrop-filter has pixels to filter. An identity backdrop filter
+        // does that like kInitWithPrevious would, but makes Skia copy just the
+        // layer's area instead of the whole target surface. The layer then
+        // spans the clip (Skia ignores the bounds hint once prior content is
+        // filtered), so clip it to the element's stacking bounds plus the
+        // distance the backdrop-filter samples beyond them (it reads this
+        // layer). Backdrop shaders may sample anywhere: no clip for them.
         const SkRect _stackRect = skRect(_stackBounds);
-        SkCanvas::SaveLayerRec _backdropOpacityRec(&_stackRect, &_compPaint, nullptr,
-            SkCanvas::kInitWithPrevious_SaveLayerFlag);
+        canvas->save();
+        if (!_hasBackdropShadersDTC)
+        {
+          const float _reach = glint_filter::ComputeExpansion(_bdParsedDTC.css) + 1.f;
+          canvas->clipRect(SkRect::Make(_stackRect.makeOutset(_reach, _reach).roundOut()));
+        }
+        static const sk_sp<SkImageFilter> sIdentityBackdrop = SkImageFilters::Offset(0.f, 0.f, nullptr);
+        SkCanvas::SaveLayerRec _backdropOpacityRec(&_stackRect, &_compPaint, sIdentityBackdrop.get(), 0);
         canvas->saveLayer(_backdropOpacityRec);
         _drawToCanvasImpl(canvas, false, true, _skipSelfFilter);
+        canvas->restore();
         canvas->restore();
         if (mFilterPad > 0.f) mRect = _expandedRECT;
         return;
@@ -1187,11 +1202,8 @@ public:
 
         if (_needsBlendLayer && !_needsIsolationLayer)
         {
+          // Same as the untransformed mix-blend-mode path below.
           canvas->clipRRect(_makeSkRRect(_cpr, computedStyle), SkClipOp::kIntersect, true);
-          const SkRect _blendRect = skRect(_cpr);
-          SkCanvas::SaveLayerRec _blendBackdropRec(&_blendRect, nullptr,
-              SkCanvas::kInitWithPrevious_SaveLayerFlag);
-          canvas->saveLayer(_blendBackdropRec);
 
           SkPaint _blendPaint;
           _blendPaint.setAlphaf(_selfOpacity);
@@ -1200,7 +1212,6 @@ public:
             _blendPaint.setImageFilter(std::move(_directFilter));
           canvas->saveLayer(nullptr, &_blendPaint);
           _drawToCanvasImpl(canvas, false, true, true);
-          canvas->restore();
           canvas->restore();
           canvas->restore();
           if (mFilterPad > 0.f) mRect = _expandedRECT;
@@ -1380,17 +1391,15 @@ public:
       }
 
       // ── Opacity / blend-mode / isolation only (no transform) ─────────────────
-      // Pure mix-blend-mode needs the current backdrop pixels from the element's
-      // actual clipped viewport region. Use an outer layer initialised from the
-      // current canvas, then flatten the subtree through an inner blend layer.
+      // Pure mix-blend-mode: flatten the subtree into a layer clipped to the
+      // element and blend it onto what is already drawn when it is restored;
+      // Skia reads just the pixels under the element for that. (No layer
+      // initialised from the backdrop: Skia snapshots the whole target surface
+      // for one, a window-sized GPU copy per blended element per frame.)
       if (_needsBlendLayer && !_needsIsolationLayer)
       {
         canvas->save();
         canvas->clipRRect(_makeSkRRect(_cpr, computedStyle), SkClipOp::kIntersect, true);
-        const SkRect _blendRect = skRect(_cpr);
-        SkCanvas::SaveLayerRec _blendBackdropRec(&_blendRect, nullptr,
-            SkCanvas::kInitWithPrevious_SaveLayerFlag);
-        canvas->saveLayer(_blendBackdropRec);
 
         SkPaint _blendPaint;
         _blendPaint.setAlphaf(_selfOpacity);
@@ -1405,7 +1414,6 @@ public:
         _drawToCanvasImpl(canvas, false, true, true);
         canvas->restore();
         canvas->restore();
-        canvas->restore();
         return;
       }
 
@@ -1414,11 +1422,13 @@ public:
       _compPaint.setBlendMode(_selfBlendMode);
       // Size the group layer to what the subtree actually paints instead of
       // the whole clip (a full-window layer per fading element otherwise).
-      // Only for plain src-over composites; unbounded subtrees keep nullptr.
+      // Every CSS blend mode leaves the backdrop unchanged where the layer is
+      // transparent, so this holds for mix-blend-mode groups too. Unbounded
+      // subtrees keep nullptr.
       SkRect _layerBounds;
       const SkRect* _layerBoundsPtr = nullptr;
       glint_rect _pb;
-      if (sUsePaintBounds && _selfBlendMode == SkBlendMode::kSrcOver && _paintBounds(_pb))
+      if (sUsePaintBounds && _paintBounds(_pb))
       {
         _layerBounds = SkRect::MakeLTRB(_pb.L - 2.f, _pb.T - 2.f, _pb.R + 2.f, _pb.B + 2.f);
         _layerBoundsPtr = &_layerBounds;

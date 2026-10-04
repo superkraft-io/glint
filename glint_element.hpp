@@ -1961,9 +1961,9 @@ public:
       }
 
       // ── Opacity / blend-mode / isolation only (no transform) ─────────────
-      // Pure mix-blend-mode needs the current backdrop pixels from the element's
-      // actual clipped viewport region. Use an outer layer initialised from the
-      // current canvas, then flatten the subtree through an inner blend layer.
+      // Pure mix-blend-mode: flatten the subtree into a layer clipped to the
+      // element and blend it onto what is already drawn when it is restored
+      // (see the same path in glint_element_render.hpp).
       if (_needsBlendLayer && !_needsIsolationLayer)
       {
         _rootCanvas->save();
@@ -1978,17 +1978,12 @@ public:
         {
           _rootCanvas->clipRect(SkRect::MakeLTRB(_tpr.L, _tpr.T, _tpr.R, _tpr.B));
         }
-        const SkRect _blendRect = SkRect::MakeLTRB(_tpr.L, _tpr.T, _tpr.R, _tpr.B);
-        SkCanvas::SaveLayerRec _blendBackdropRec(&_blendRect, nullptr,
-            SkCanvas::kInitWithPrevious_SaveLayerFlag);
-        _rootCanvas->saveLayer(_blendBackdropRec);
 
         SkPaint _blendPaint;
         _blendPaint.setAlphaf(_selfOpacity);
         _blendPaint.setBlendMode(_selfBlendMode);
         _rootCanvas->saveLayer(nullptr, &_blendPaint);
         _drawToCanvasImpl(_rootCanvas, false, true);
-        _rootCanvas->restore();
         _rootCanvas->restore();
         _rootCanvas->restore();
         return;
