@@ -32,6 +32,8 @@
  *   move X Y          mouse moves to X Y
  *   click X Y         left click at X Y
  *   scroll X Y DY     mouse wheel at X Y, DY px (positive = down)
+ *   frames N          redraw everything N times (default 60): average CPU
+ *                     draw time and whole frame time, in the report
  *   trim              what a window does when it goes idle: frees unused
  *                     GPU resources and imgs
  *   sleep MS
@@ -56,6 +58,7 @@
 #include "include/core/SkImage.h"
 #include "include/core/SkStream.h"
 #include "include/core/SkSurface.h"
+#include "include/codec/SkCodec.h"
 #include "include/encode/SkPngEncoder.h"
 
 #include "glint_win32_surface_shared.hpp"
@@ -367,6 +370,25 @@ private:
       doc->OnMouseWheel(num(1, 0.f), num(2, 0.f), 0.f, num(3, 0.f), glint_mouse_mod{});
       return true;
     }
+    if (cmd == "frames")
+    {
+      // Redraws the whole document N times: average CPU time drawing it and
+      // whole frame time (including waiting for the GPU).
+      const int n = std::max(1, static_cast<int>(num(1, 60.f)));
+      double drawMs = 0.0;
+      const auto started = std::chrono::steady_clock::now();
+      for (int i = 0; i < n; ++i)
+      {
+        double ms = 0.0;
+        frame(nullptr, &ms);
+        drawMs += ms;
+      }
+      const double totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+      char buf[160];
+      std::snprintf(buf, sizeof(buf), "draw_ms=%.3f frame_ms=%.3f (average of %d)", drawMs / n, totalMs / n, n);
+      result = buf;
+      return true;
+    }
     if (cmd == "trim")
     {
       mRenderer.trimIdle();
@@ -388,14 +410,17 @@ private:
     return true;
   }
 
-  /** Draws a frame; reads it back into `pixels` when given. */
-  bool frame(SkBitmap* pixels)
+  /** Draws a frame; reads it back into `pixels` when given. `drawMs`: CPU
+   *  time spent drawing the document. */
+  bool frame(SkBitmap* pixels, double* drawMs = nullptr)
   {
     int w = 0, h = 0; float dpr = 1.f;
     mHost.headlessSize(w, h, dpr);
     SkCanvas* canvas = mRenderer.begin(static_cast<int>(std::lround(w * dpr)), static_cast<int>(std::lround(h * dpr)));
     if (!canvas) return false;
+    const auto drawStart = std::chrono::steady_clock::now();
     mHost.headlessDraw(*canvas, mRenderer.name(), mRenderer.isGpu());
+    if (drawMs) *drawMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawStart).count();
     mRenderer.end();
     advanceVirtualTime(std::chrono::milliseconds(16));
     return !pixels || mRenderer.readPixels(*pixels);
@@ -494,12 +519,15 @@ private:
     return stream.isValid() && bitmap.peekPixels(&pixmap) && SkPngEncoder::Encode(&stream, pixmap, {});
   }
 
+  /** Decodes straight into `out` (an SkImage would keep the decoded pixels
+   *  in Skia's global cache, which `mem` then counts). */
   static bool readPng(const std::filesystem::path& file, SkBitmap& out)
   {
     sk_sp<SkData> data = SkData::MakeFromFileName(file.string().c_str());
-    sk_sp<SkImage> img = data ? SkImages::DeferredFromEncodedData(std::move(data)) : nullptr;
-    return img && out.tryAllocPixels(SkImageInfo::MakeN32Premul(img->width(), img->height()))
-           && img->readPixels(nullptr, out.pixmap(), 0, 0);
+    std::unique_ptr<SkCodec> codec = data ? SkCodec::MakeFromData(std::move(data)) : nullptr;
+    if (!codec) return false;
+    const SkImageInfo info = SkImageInfo::MakeN32Premul(codec->dimensions());
+    return out.tryAllocPixels(info) && codec->getPixels(out.pixmap()) == SkCodec::kSuccess;
   }
 
   void line(int number, const std::string& text)
