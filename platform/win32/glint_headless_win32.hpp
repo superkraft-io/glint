@@ -152,6 +152,7 @@ inline size_t decodedImageBytes()
 class offscreen_renderer
 {
 public:
+
   /** Direct3D 12 unless `cpu` (or the GPU fails): then a raster surface. */
   void init(bool cpu)
   {
@@ -179,10 +180,12 @@ public:
     if (!mSurface || w != mW || h != mH)
     {
       mSurface.reset();
-      const SkImageInfo info = SkImageInfo::MakeN32Premul(w, h);
+      // GPU: RGBA like a window's swapchain, so the same pipelines are used
+      // (a captured shader pack then holds what windows need).
       if (GrDirectContext* ctx = context())
-        mSurface = SkSurfaces::RenderTarget(ctx, skgpu::Budgeted::kNo, info);
-      if (!mSurface) mSurface = SkSurfaces::Raster(info);
+        mSurface = SkSurfaces::RenderTarget(ctx, skgpu::Budgeted::kNo,
+                                            SkImageInfo::Make(w, h, kRGBA_8888_SkColorType, kPremul_SkAlphaType));
+      if (!mSurface) mSurface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(w, h));
       mW = w; mH = h;
     }
     return mSurface ? mSurface->getCanvas() : nullptr;
@@ -306,9 +309,13 @@ public:
       if (args.empty()) continue;
       if (args[0] == "exit") break;
       std::string result;
+      const auto started = std::chrono::steady_clock::now();
       const bool ok = execute(args, result);
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
       if (!ok) ++mErrors;
-      line(number, text + (result.empty() ? "" : "  -> " + result) + (ok ? "" : "  [error]"));
+      char took[32];
+      std::snprintf(took, sizeof(took), "  [%.1f ms]", ms);
+      line(number, text + (result.empty() ? "" : "  -> " + result) + (ok ? "" : "  [error]") + took);
     }
     return finish();
   }
@@ -334,9 +341,14 @@ private:
     if (cmd == "wait")
     {
       const auto started = std::chrono::steady_clock::now();
-      const bool settled = settle(static_cast<int>(num(1, 10000.f)), result);
+      frame_times times;
+      const bool settled = settle(static_cast<int>(num(1, 10000.f)), result, &times);
       const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
-      result = (settled ? "settled in " : "timed out after ") + std::to_string(ms) + " ms" + (result.empty() ? "" : " (" + result + ")");
+      char buf[200];
+      std::snprintf(buf, sizeof(buf), "; %d frames, first %.1f ms (style %.1f, layout %.1f, paint %.1f, gpu %.1f), slowest %.1f ms",
+                    times.count, times.firstMs, times.styleMs, times.layoutMs, times.paintMs, times.gpuMs, times.slowestMs);
+      result = (settled ? "settled in " : "timed out after ") + std::to_string(ms) + " ms" + buf
+             + (result.empty() ? "" : " (" + result + ")");
       return settled;
     }
     if (cmd == "shot" && a.size() >= 2) return shot(a[1], result);
@@ -412,7 +424,7 @@ private:
 
   /** Draws a frame; reads it back into `pixels` when given. `drawMs`: CPU
    *  time spent drawing the document. */
-  bool frame(SkBitmap* pixels, double* drawMs = nullptr)
+  bool frame(SkBitmap* pixels, double* drawMs = nullptr, double* gpuMs = nullptr)
   {
     int w = 0, h = 0; float dpr = 1.f;
     mHost.headlessSize(w, h, dpr);
@@ -421,7 +433,9 @@ private:
     const auto drawStart = std::chrono::steady_clock::now();
     mHost.headlessDraw(*canvas, mRenderer.name(), mRenderer.isGpu());
     if (drawMs) *drawMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawStart).count();
+    const auto endStart = std::chrono::steady_clock::now();
     mRenderer.end();
+    if (gpuMs) *gpuMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - endStart).count();
     advanceVirtualTime(std::chrono::milliseconds(16));
     return !pixels || mRenderer.readPixels(*pixels);
   }
@@ -429,7 +443,16 @@ private:
   /** Draws frames until nothing is left to do, or `timeoutMs`. Something
    *  that redraws forever (a looping animation, a spinner) stops the wait
    *  after kMaxBusyFrames: that counts as settled (noted in `note`). */
-  bool settle(int timeoutMs, std::string& note)
+  struct frame_times
+  {
+    int count = 0;
+    double firstMs = 0.0, slowestMs = 0.0;
+    // The first frame's phases: style (cascade + transitions), layout, paint
+    // traversal, and the GPU (flush + wait: pipeline creation, uploads).
+    double styleMs = 0.0, layoutMs = 0.0, paintMs = 0.0, gpuMs = 0.0;
+  };
+
+  bool settle(int timeoutMs, std::string& note, frame_times* times = nullptr)
   {
     static constexpr int kMaxBusyFrames = 120;
     glint_document* doc = mHost.headlessDocument();
@@ -442,7 +465,26 @@ private:
       const bool animating = doc->mCanvas.hasActiveAnimationSubtree();
       const bool redraw = mHost.headlessTakeRedrawRequest() || doc->mLayoutDirty || first || animating;
       first = false;
-      if (redraw) frame(nullptr);
+      if (redraw)
+      {
+        const auto frameStart = std::chrono::steady_clock::now();
+        double gpuMs = 0.0;
+        frame(nullptr, nullptr, &gpuMs);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frameStart).count();
+        if (times)
+        {
+          if (times->count++ == 0)
+          {
+            const glint_frame_stats& st = doc->lastFrameStats();
+            times->firstMs  = ms;
+            times->styleMs  = st.cascadeMs + st.tickMs;
+            times->layoutMs = st.layoutMs;
+            times->paintMs  = st.paintMs;
+            times->gpuMs    = gpuMs;
+          }
+          times->slowestMs = std::max(times->slowestMs, ms);
+        }
+      }
       const size_t decoding = pendingImageDecodes();
       if (redraw && decoding == 0 && ++busyFrames >= kMaxBusyFrames)
       {
@@ -539,6 +581,14 @@ private:
 
   bool finish()
   {
+#if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
+    if (mRenderer.isGpu())
+    {
+      const auto& sc = glint_d3d_shader_cache::counters();
+      line(0, "shader cache: programs " + std::to_string(sc.programHits.load()) + " cached / "
+              + std::to_string(sc.programMisses.load()) + " generated");
+    }
+#endif
     line(0, mErrors == 0 ? "result ok" : "result failed (" + std::to_string(mErrors) + " errors)");
     mReport.close();
     return mErrors == 0;

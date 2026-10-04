@@ -676,7 +676,11 @@ inline direct3d_device createDirect3DDevice()
   }
   // The context may be created on a worker thread: Ganesh's D3D backend has no
   // thread affinity, it only must not be used from two threads at once.
-  d.grContext = GrDirectContext::MakeDirect3D(backendContext);
+  // Generated HLSL per Skia program from the shader cache instead of
+  // translating SkSL on the first frame that needs it (see programCache()).
+  GrContextOptions contextOptions;
+  contextOptions.fPersistentCache = &glint_d3d_shader_cache::programCache();
+  d.grContext = GrDirectContext::MakeDirect3D(backendContext, contextOptions);
   d.result = d.grContext ? direct3d_init_result::success : direct3d_init_result::context_failed;
   if (d.grContext)
     d.grContext->setResourceCacheLimit(gpuResourceCacheBytes());

@@ -44,6 +44,10 @@
 #include <windows.h>
 #include <d3dcompiler.h>
 
+#include "include/core/SkData.h"
+#include "include/core/SkMilestone.h"
+#include "include/gpu/ganesh/GrContextOptions.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -55,6 +59,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -80,6 +85,8 @@ public:
     std::atomic<uint32_t> memoryHits{ 0 };
     std::atomic<uint32_t> embeddedHits{ 0 };
     std::atomic<uint32_t> diskHits{ 0 };
+    std::atomic<uint32_t> programHits{ 0 };    // programCache() loads answered
+    std::atomic<uint32_t> programMisses{ 0 };  // ... and not: Skia generated the HLSL
   };
 
   static stats& counters()
@@ -105,6 +112,7 @@ public:
       if (!patchImport(self, "d3dcompiler_47.dll", "D3DCompile", reinterpret_cast<void*>(&cachedCompile), &original))
         return;
       state().realCompile = reinterpret_cast<d3d_compile_fn>(original);
+      state().installed = true;
 
       if (HRSRC res = ::FindResourceW(self, L"GLINT_D3D_SHADERS", MAKEINTRESOURCEW(10) /* RT_RCDATA */))
         if (HGLOBAL mem = ::LoadResource(self, res))
@@ -121,6 +129,82 @@ public:
             state().captured.emplace(e.key, std::vector<unsigned char>(e.data, e.data + e.size));
       }
     });
+  }
+
+  /**
+   * Skia's persistent cache (GrContextOptions::fPersistentCache) for the
+   * HLSL its D3D backend generates per program. Without it Skia translates
+   * every new program from SkSL to HLSL on the render thread (~1-2 ms each,
+   * most of the first frame of a page with new effects); with it the stored
+   * HLSL goes straight to D3DCompile, which the shader cache answers. Stored
+   * like compiled shaders: memory, the shader pack, the disk cache (.prog
+   * files), captured into the pack. Keys include SK_MILESTONE, so HLSL from
+   * another Skia version is never used. Off with GLINT_D3D_SHADER_CACHE=0.
+   */
+  class program_cache final : public GrContextOptions::PersistentCache
+  {
+  public:
+    sk_sp<SkData> load(const SkData& key) override
+    {
+      state_t& st = state();
+      if (!st.installed) return nullptr;
+      const uint64_t k = programKey(key);
+      {
+        std::lock_guard<std::mutex> lock(st.mutex);
+        if (auto it = st.memory.find(k); it != st.memory.end())
+        {
+          ++counters().programHits;
+          return SkData::MakeWithCopy(it->second.data(), it->second.size());
+        }
+        if (auto it = st.embedded.find(k); it != st.embedded.end())
+        {
+          ++counters().programHits;
+          captureLocked(k, it->second.data, it->second.size);
+          return SkData::MakeWithoutCopy(it->second.data, it->second.size);
+        }
+      }
+      std::vector<unsigned char> bytes;
+      if (!diskDir().empty())
+      {
+        std::ifstream in(programFile(k), std::ios::binary);
+        if (in) bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+      }
+      if (bytes.empty())
+      {
+        ++counters().programMisses;
+        return nullptr;
+      }
+      ++counters().programHits;
+      sk_sp<SkData> data = SkData::MakeWithCopy(bytes.data(), bytes.size());
+      std::lock_guard<std::mutex> lock(st.mutex);
+      captureLocked(k, bytes.data(), bytes.size());
+      st.memory.emplace(k, std::move(bytes));
+      return data;
+    }
+
+    void store(const SkData& key, const SkData& data, const SkString& /*description*/) override
+    {
+      state_t& st = state();
+      if (!st.installed) return;
+      const uint64_t k = programKey(key);
+      const auto* bytes = static_cast<const unsigned char*>(data.data());
+      // Written in the background: this runs inside the frame that needed
+      // the program, and a file write costs ~1 ms.
+      if (!diskDir().empty())
+        std::thread([file = programFile(k), copy = std::vector<unsigned char>(bytes, bytes + data.size())] {
+          writeFileAtomic(file, copy.data(), copy.size());
+        }).detach();
+      std::lock_guard<std::mutex> lock(st.mutex);
+      captureLocked(k, bytes, data.size());
+      st.memory.emplace(k, std::vector<unsigned char>(bytes, bytes + data.size()));
+    }
+  };
+
+  /** The program cache to pass as GrContextOptions::fPersistentCache. */
+  static program_cache& programCache()
+  {
+    static program_cache cache;
+    return cache;
   }
 
   /** Makes compiled shaders shipped in the binary available. `entries[i].data`
@@ -212,6 +296,7 @@ private:
   {
     std::mutex                                                  mutex;
     d3d_compile_fn                                              realCompile = nullptr;
+    bool                                                        installed = false;
     std::unordered_map<uint64_t, std::vector<unsigned char>>    memory;
     std::unordered_map<uint64_t, glint_embedded_d3d_shader>     embedded;
     std::filesystem::path                                       capturePath;
@@ -222,6 +307,30 @@ private:
   {
     static state_t s;
     return s;
+  }
+
+  /** Key of a Skia program: FNV-1a 64 over a tag with Skia's milestone and
+   *  the program key (distinct from keyFor() keys, which share the maps). */
+  static uint64_t programKey(const SkData& key)
+  {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](const void* p, size_t n) {
+      const auto* b = static_cast<const unsigned char*>(p);
+      for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+    };
+    const char tag[] = "glint-skia-program";
+    const int milestone = SK_MILESTONE;
+    mix(tag, sizeof tag);
+    mix(&milestone, sizeof milestone);
+    mix(key.data(), key.size());
+    return h;
+  }
+
+  static std::filesystem::path programFile(uint64_t key)
+  {
+    char name[32];
+    std::snprintf(name, sizeof name, "%016llx.prog", static_cast<unsigned long long>(key));
+    return diskDir() / name;
   }
 
   static std::filesystem::path diskFile(uint64_t key)
