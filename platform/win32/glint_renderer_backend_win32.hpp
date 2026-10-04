@@ -377,27 +377,14 @@ class glint_d3d12_renderer_backend_win32 final : public glint_renderer_backend_w
 public:
   bool initialize(HWND hwnd) override
   {
-    mHWND = hwnd;
-    mLastInitResult = glint_win32_surface::initializeDirect3DContext(
-      mHWND,
-      mAdapter,
-      mDevice,
-      mQueue,
-      mSwapChain,
-      mFence,
-      mFenceEvent,
-      mGrContext,
-      mFenceValues.data(),
-      kBufferCount,
-      mBufferIndex,
-      compositionFor(mHWND));
-
-    if (const char* diagnostic = diagnosticForInitResult(mLastInitResult))
-      mDiagnostic = diagnostic;
-    else
-      mDiagnostic.clear();
-
-    return mLastInitResult == glint_win32_surface::direct3d_init_result::success;
+    if (!hwnd)
+    {
+      mHWND = hwnd;
+      mLastInitResult = glint_win32_surface::direct3d_init_result::missing_window;
+      mDiagnostic = diagnosticForInitResult(mLastInitResult);
+      return false;
+    }
+    return initializeWithDevice(hwnd, glint_win32_surface::createDirect3DDevice());
   }
 
   /** Like initialize(), with the device created beforehand (possibly on
@@ -412,6 +399,7 @@ public:
       mDevice    = std::move(d.device);
       mQueue     = std::move(d.queue);
       mGrContext = std::move(d.grContext);
+      mCacheBudget.attach(std::move(d.allocator));
       mLastInitResult = glint_win32_surface::createDirect3DSwapChain(
         mHWND, d.factory.get(), mDevice.get(), mQueue.get(), mSwapChain, mFence, mFenceEvent,
         mFenceValues.data(), kBufferCount, mBufferIndex, compositionFor(mHWND));
@@ -588,6 +576,7 @@ public:
     GrFlushInfo flushInfo = {};
     mGrContext->flush(mCurrentSurface, SkSurfaces::BackendSurfaceAccess::kPresent, flushInfo);
     mGrContext->submit();
+    mCacheBudget.afterFrame(*mGrContext);
   }
 
   void present() override
@@ -628,7 +617,9 @@ public:
   {
     // Cached textures / layers not used in the last few seconds: pages left
     // behind keep nothing alive in the cache.
-    if (mGrContext) mGrContext->performDeferredCleanup(std::chrono::seconds(3));
+    if (!mGrContext) return;
+    mGrContext->performDeferredCleanup(std::chrono::seconds(3));
+    mCacheBudget.afterIdleCleanup(*mGrContext);
   }
 
   glint_backend backend() const override
@@ -734,6 +725,7 @@ private:
   gr_cp<ID3D12Fence>                mFence;
   HANDLE                            mFenceEvent = nullptr;
   sk_sp<GrDirectContext>            mGrContext;
+  glint_win32_surface::gpu_cache_budget           mCacheBudget;
   std::array<gr_cp<ID3D12Resource>, kBufferCount> mBuffers;
   glint_win32_surface::direct3d_composition       mComposition;
   HANDLE                                           mFrameLatencyWaitable = nullptr;

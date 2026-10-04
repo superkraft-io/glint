@@ -23,6 +23,9 @@
 
 #include "include/gpu/ganesh/d3d/GrD3DTypes.h"
 
+#include <atomic>
+#include <cstdint>
+
 class glint_d3d_memory_allocator final : public GrD3DMemoryAllocator
 {
 public:
@@ -48,8 +51,13 @@ public:
     if (FAILED(mDevice->CreatePlacedResource(heap.get(), 0, desc, initialState, clearValue, IID_PPV_ARGS(&resource))))
       return {};
     if (allocation) *allocation = sk_sp<GrD3DAlloc>(new heap_alloc(std::move(heap)));
+    mCreatedBytes.fetch_add(info.SizeInBytes, std::memory_order_relaxed);
     return resource;
   }
+
+  /** Total bytes of all resources created so far (never decreases); the
+   *  difference across a frame is what that frame had to allocate. */
+  uint64_t createdBytes() const { return mCreatedBytes.load(std::memory_order_relaxed); }
 
   gr_cp<ID3D12Resource> createAliasingResource(sk_sp<GrD3DAlloc>& allocation, uint64_t localOffset,
                                                const D3D12_RESOURCE_DESC* desc,
@@ -84,5 +92,6 @@ private:
     return D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
   }
 
-  gr_cp<ID3D12Device> mDevice;
+  gr_cp<ID3D12Device>   mDevice;
+  std::atomic<uint64_t> mCreatedBytes{ 0 };
 };

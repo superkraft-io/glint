@@ -11,6 +11,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 
+#include <algorithm>
 #include <chrono>
 
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU
@@ -517,6 +518,93 @@ inline size_t gpuResourceCacheBytes()
   return bytes;
 }
 
+// Ceiling for gpu_cache_budget's growth (Skia's own default budget).
+// GLINT_GPU_CACHE_MAX_MB overrides it.
+inline size_t gpuResourceCacheMaxBytes()
+{
+  static const size_t bytes = [] {
+    char value[16] = {};
+    const DWORD n = ::GetEnvironmentVariableA("GLINT_GPU_CACHE_MAX_MB", value, sizeof(value));
+    const long mb = n > 0 ? std::strtol(value, nullptr, 10) : 0;
+    return std::max(static_cast<size_t>(mb > 0 ? mb : 256) * 1024 * 1024, gpuResourceCacheBytes());
+  }();
+  return bytes;
+}
+
+// Keeps a context's GPU cache budget large enough for what a frame draws.
+//
+// Skia evicts cached resources at the end of a flush until the cache fits its
+// budget. When one frame needs more than the budget (a maximized 5K window on
+// an image-heavy page), that evicts textures the frame just used, so every
+// frame uploads and creates them again: GPU time per frame, and private memory
+// swinging by 100-250 MB as the driver holds the freed heaps.
+//
+// afterFrame() detects that from the allocator: consecutive frames that each
+// create resources that do not fit the budget. A single such frame is normal (a
+// new page evicting what earlier pages left behind), so it takes two in a row.
+// The budget then grows by twice what the frame created, up to
+// gpuResourceCacheMaxBytes(). afterIdleCleanup() lowers it again to what is
+// still cached after the idle cleanup, but not below gpuResourceCacheBytes()
+// and not within 5 s of growing: a window goes "idle" after every burst of
+// frames, and what a frame needs on top of what stays cached is only seen
+// while it draws.
+class gpu_cache_budget
+{
+public:
+  void attach(sk_sp<glint_d3d_memory_allocator> allocator)
+  {
+    mAllocator    = std::move(allocator);
+    mLastCreated  = mAllocator ? mAllocator->createdBytes() : 0;
+    mChurnFrames  = 0;
+  }
+
+  void afterFrame(GrDirectContext& context)
+  {
+    if (!mAllocator) return;
+    const uint64_t total   = mAllocator->createdBytes();
+    const uint64_t created = total - mLastCreated;
+    mLastCreated = total;
+
+    size_t used = 0;
+    context.getResourceCacheUsage(nullptr, &used);
+    const size_t limit = context.getResourceCacheLimit();
+    // What the frame created did not all fit next to what stays cached, so
+    // something was evicted. (Usage alone can sit well below the budget after
+    // a few large textures were evicted.)
+    const bool churned = created >= kMinChurnBytes && used + created > limit;
+    mChurnFrames = churned ? mChurnFrames + 1 : 0;
+    if (mChurnFrames < 2 || limit >= gpuResourceCacheMaxBytes()) return;
+
+    mChurnFrames = 0;
+    mLastGrow    = std::chrono::steady_clock::now();
+    context.setResourceCacheLimit(std::min(roundUp(limit + 2 * created), gpuResourceCacheMaxBytes()));
+  }
+
+  void afterIdleCleanup(GrDirectContext& context)
+  {
+    if (std::chrono::steady_clock::now() - mLastGrow < kHoldAfterGrow) return;
+    size_t used = 0;
+    context.getResourceCacheUsage(nullptr, &used);
+    const size_t target = std::max(gpuResourceCacheBytes(), roundUp(used));
+    if (target < context.getResourceCacheLimit())
+      context.setResourceCacheLimit(target);
+  }
+
+private:
+  static constexpr uint64_t kMinChurnBytes = 1024 * 1024;
+  static constexpr std::chrono::seconds kHoldAfterGrow{ 5 };
+  static size_t roundUp(uint64_t bytes)
+  {
+    constexpr uint64_t step = 16 * 1024 * 1024;
+    return static_cast<size_t>((bytes + step - 1) / step * step);
+  }
+
+  sk_sp<glint_d3d_memory_allocator> mAllocator;
+  uint64_t                          mLastCreated = 0;
+  int                               mChurnFrames = 0;
+  std::chrono::steady_clock::time_point mLastGrow;
+};
+
 // The window-independent part of the D3D12 setup: DXGI factory, adapter,
 // device, command queue and Skia context. This is the slow part (the driver
 // loads and initialises the device: ~250 ms), and it needs no window, so a
@@ -530,6 +618,7 @@ struct direct3d_device
   gr_cp<ID3D12Device>       device;
   gr_cp<ID3D12CommandQueue> queue;
   sk_sp<GrDirectContext>    grContext;
+  sk_sp<glint_d3d_memory_allocator> allocator;  // null with GLINT_D3D_SKIA_ALLOCATOR=1
   direct3d_init_result      result = direct3d_init_result::factory_failed;
 };
 
@@ -580,7 +669,10 @@ inline direct3d_device createDirect3DDevice()
     char value[8] = {};
     const DWORD n = ::GetEnvironmentVariableA("GLINT_D3D_SKIA_ALLOCATOR", value, sizeof(value));
     if (!(n > 0 && value[0] == '1'))
-      backendContext.fMemoryAllocator = sk_make_sp<glint_d3d_memory_allocator>(d.device.get());
+    {
+      d.allocator = sk_make_sp<glint_d3d_memory_allocator>(d.device.get());
+      backendContext.fMemoryAllocator = d.allocator;
+    }
   }
   // The context may be created on a worker thread: Ganesh's D3D backend has no
   // thread affinity, it only must not be used from two threads at once.
@@ -733,35 +825,6 @@ inline direct3d_init_result createDirect3DSwapChain(
     return direct3d_init_result::fence_event_failed;
 
   return direct3d_init_result::success;
-}
-
-inline direct3d_init_result initializeDirect3DContext(
-  HWND hwnd,
-  gr_cp<IDXGIAdapter1>& adapter,
-  gr_cp<ID3D12Device>& device,
-  gr_cp<ID3D12CommandQueue>& queue,
-  gr_cp<IDXGISwapChain3>& swapChain,
-  gr_cp<ID3D12Fence>& fence,
-  HANDLE& fenceEvent,
-  sk_sp<GrDirectContext>& grContext,
-  uint64_t* fenceValues,
-  const int bufferCount,
-  unsigned int& bufferIndex,
-  direct3d_composition* composition = nullptr)
-{
-  if (!hwnd)
-    return direct3d_init_result::missing_window;
-
-  direct3d_device d = createDirect3DDevice();
-  if (d.result != direct3d_init_result::success)
-    return d.result;
-
-  adapter   = std::move(d.adapter);
-  device    = std::move(d.device);
-  queue     = std::move(d.queue);
-  grContext = std::move(d.grContext);
-  return createDirect3DSwapChain(hwnd, d.factory.get(), device.get(), queue.get(), swapChain, fence, fenceEvent,
-                                 fenceValues, bufferCount, bufferIndex, composition);
 }
 
 inline bool recreateDirect3DSurfaces(
