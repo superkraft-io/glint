@@ -78,7 +78,7 @@ protected:
   {
     if (mCompiled) return;
     mCompiled  = true;
-    mStartTime = std::chrono::steady_clock::now();
+    mStartTime = _animationNow();
     auto result = SkRuntimeEffect::MakeForShader(SkString(sksl()));
     if (result.effect) mEffect = std::move(result.effect);
     else glint_report_sksl_error(result.errorText);
@@ -105,7 +105,7 @@ public:
     if (mAnimated)
     {
       using namespace std::chrono;
-      mTime = duration<float>(steady_clock::now() - mStartTime).count();
+      mTime = duration<float>(_animationNow() - mStartTime).count();
     }
 
     const float dpr = (mRoot && mRoot->devicePixelRatio > 0.f) ? mRoot->devicePixelRatio : 1.f;

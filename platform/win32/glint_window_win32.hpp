@@ -38,6 +38,7 @@
 #include "glint_renderer_backend_win32.hpp"
 #include "glint_win32_host_shared.hpp"
 #include "glint_win32_surface_shared.hpp"
+#include "glint_headless_win32.hpp"
 
 #include <chrono>
 #include <algorithm>
@@ -63,7 +64,7 @@ struct glint_insp_bridge {
   static void openAndEnableInspect(glint_document*);
 };
 
-class glint_window_win32 : public glint_window_base
+class glint_window_win32 : public glint_window_base, private glint_headless::host
 {
 protected:
   // ── Win32 state ───────────────────────────────────────────────────────────
@@ -152,6 +153,10 @@ protected:
    *  when the window is created with a dummy anchor rect and then hidden via a
    *  race-prone PostMessage(WM_SKUI_HIDE_CP). */
   virtual bool showOnCreate() const { return true; }
+  /** A headless-mode script command the window does not know (see
+   *  glint_headless_win32.hpp), e.g. "page Masks". Return false with
+   *  `error` set when unknown or failed. */
+  virtual bool onHeadlessCommand(const std::vector<std::string>& /*args*/, std::string& /*error*/) { return false; }
 
   /** When true (default), a window that renders with D3D12 creates its GPU
    *  device on another thread while it builds its document and shows its
@@ -188,13 +193,15 @@ protected:
   static constexpr UINT kIdleTrimDelayMs = 10000;
   // Posted when another thread queued a task for this window (see initRoot()).
   static constexpr UINT WM_GLINT_RUN_TASKS = WM_USER + 202;
+  // Headless mode: runs the script once the window is created.
+  static constexpr UINT WM_GLINT_HEADLESS_RUN = WM_USER + 203;
 
   // Starts the heartbeat timer if it is stopped. Window thread only. Called
   // on every paint: anything that changes what is drawn requests a paint
   // first, so animations and transitions restart the heartbeat themselves.
   void ensureHeartbeat()
   {
-    if (mHeartbeatOn || !mHWND) return;
+    if (mHeartbeatOn || !mHWND || glint_headless::enabled()) return;   // headless: the script draws
     ::SetTimer(mHWND, SKUI_ANIM_TIMER, 16, nullptr);
     mHeartbeatOn = true;
   }
@@ -538,6 +545,7 @@ protected:
 
   void initializeRenderer()
   {
+    if (glint_headless::enabled()) return;   // draws offscreen (runHeadless())
     if (!usesRendererBackends())
     {
       recreateCpuSurface();
@@ -578,6 +586,7 @@ protected:
   // the window exists (see startsGpuInBackground()).
   void startGpuSetup()
   {
+    if (glint_headless::enabled()) return;
 #if defined(GLINT_RENDER_GPU) && GLINT_RENDER_GPU && defined(GLINT_ENABLE_D3D12) && GLINT_ENABLE_D3D12 && defined(SK_DIRECT3D)
     if (!usesRendererBackends() || !startsGpuInBackground() || requestedBackend() != glint_backend::D3D12)
       return;
@@ -1132,7 +1141,7 @@ private:
     );
     if (!mHWND) return false;
 
-    if (showOnCreate())
+    if (showOnCreate() && !glint_headless::enabled())
     {
       startupMark("showing window");
       ::ShowWindow(mHWND, SW_SHOW);
@@ -1310,6 +1319,50 @@ private:
     afterRun(); // inspector uses this to delete this
   }
 
+  // ── Headless mode (glint_headless_win32.hpp) ──────────────────────────────
+  // The window stays hidden and has no renderer; the script draws the
+  // document offscreen. Runs on the window thread, then closes the window.
+  void runHeadless()
+  {
+    if (mOwnRoot) mOwnRoot->setStylesheetHotReloadEnabled(false);   // it redraws every frame
+    glint_headless::runner(*this, glint_headless::settings()).run();
+    ::PostMessageW(mHWND, WM_CLOSE, 0, 0);
+  }
+
+  glint_document* headlessDocument() override { return mOwnRoot.get(); }
+
+  void headlessResize(int w, int h, float dpr) override
+  {
+    mDpr = dpr > 0.f ? dpr : 1.f;
+    mW   = std::max(1, w);
+    mH   = std::max(1, h);
+    mWpx = static_cast<int>(std::lround(mW * mDpr));
+    mHpx = static_cast<int>(std::lround(mH * mDpr));
+    if (mOwnRoot) mOwnRoot->devicePixelRatio = mDpr;
+    updateRootBounds();
+  }
+
+  void headlessSize(int& w, int& h, float& dpr) const override { w = mW; h = mH; dpr = mDpr; }
+
+  void headlessDraw(SkCanvas& canvas, const char* backendName, bool gpu) override
+  {
+    if (!mOwnRoot) return;
+    mOwnRoot->renderBackend = { backendName, gpu };
+    mRedrawRequested.store(false, std::memory_order_relaxed);
+    canvas.clear(clearColor());
+    canvas.save();
+    if (mDpr != 1.f) canvas.scale(mDpr, mDpr);
+    mOwnRoot->DrawToCanvas(canvas);
+    canvas.restore();
+  }
+
+  bool headlessTakeRedrawRequest() override { return mRedrawRequested.exchange(false, std::memory_order_relaxed); }
+
+  bool headlessCommand(const std::vector<std::string>& args, std::string& error) override
+  {
+    return onHeadlessCommand(args, error);
+  }
+
   // ── Rendering ─────────────────────────────────────────────────────────────
   void paint()
   {
@@ -1473,6 +1526,7 @@ private:
       // to be momentarily non-empty (e.g. a burst of WM_MOUSEMOVE messages).
       // It stops itself while the window is idle (see WM_TIMER).
       self->ensureHeartbeat();
+      if (glint_headless::enabled() && glint_headless::claimScript()) ::PostMessageW(hwnd, WM_GLINT_HEADLESS_RUN, 0, 0);
       return 0;
 
     // Live resize: from its first size step until it ends, GPU frames reach
@@ -1559,7 +1613,12 @@ private:
     }
 
     case WM_PAINT:
+      if (glint_headless::enabled()) { ::ValidateRect(hwnd, nullptr); return 0; }
       self->paint();
+      return 0;
+
+    case WM_GLINT_HEADLESS_RUN:
+      self->runHeadless();
       return 0;
 
     case WM_GLINT_RUN_TASKS:

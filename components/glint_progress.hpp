@@ -89,7 +89,7 @@ public:
     if (value >= 0.f) return;   // determinate — nothing extra to do
 
     // Advance time and request another frame so the animation keeps running.
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = _animationNow();
     if (mAnimStart.time_since_epoch().count() == 0)
       mAnimStart = now;
 

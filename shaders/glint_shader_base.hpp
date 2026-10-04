@@ -36,6 +36,7 @@
 #include "../render/glint_filter.hpp"
 #include "../glint_style.hpp"
 #include "../glint_graphics.hpp"      // glint_rect, glint_color
+#include "../utils/glint_animation_clock.hpp"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
 #include "include/effects/SkImageFilters.h"
@@ -195,7 +196,7 @@ inline void glint_shader_base::compile()
 {
   if (mCompiled) return;
   mCompiled  = true;
-  mStartTime = std::chrono::steady_clock::now();
+  mStartTime = glint_animation_now();
   auto result = SkRuntimeEffect::MakeForShader(SkString(sksl()));
   if (result.effect)
   {
@@ -210,7 +211,7 @@ inline void glint_shader_base::compile()
 inline float glint_shader_base::_currentTime()
 {
   if (!animated) return 0.f;
-  auto now = std::chrono::steady_clock::now();
+  auto now = glint_animation_now();
   mTime = std::chrono::duration<float>(now - mStartTime).count();
   return mTime;
 }

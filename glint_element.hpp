@@ -33,6 +33,7 @@
 #include "glint_types.hpp"   // glint_mouse_mod, glint_no_tag, glint_no_val_idx
 #include "utils/glint_debug.hpp"
 #include "utils/glint_perf.hpp"
+#include "utils/glint_animation_clock.hpp"
 #include "glint_style_diff.hpp"
 #include "element/glint_html_element.hpp"  // includes glint_style.hpp transitively
 #include "events/glint_keyboard_event.hpp" // glint_keyboard_event, glint_key_press
@@ -2533,7 +2534,7 @@ public:
   static inline std::chrono::steady_clock::time_point (*sAnimationClock)() = nullptr;
   static std::chrono::steady_clock::time_point _animationNow()
   {
-    return sAnimationClock ? sAnimationClock() : std::chrono::steady_clock::now();
+    return sAnimationClock ? sAnimationClock() : glint_animation_now();
   }
 
   /** Use conservative paint bounds (_paintBounds()) to skip drawing children
