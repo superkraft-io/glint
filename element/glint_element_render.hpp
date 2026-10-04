@@ -1465,8 +1465,16 @@ public:
     // The mask is applied after the element content is drawn. This preserves the
     // previously stable standalone composition order while the mask+filter
     // semantics are investigated further.
+    // The layer is sized to what the element paints: unbounded, it spans the
+    // whole clip (the window), and the mask's layer below with it.
     if (_hasMask)
-      canvas->saveLayer(nullptr, nullptr);
+    {
+      SkRect _maskLayerBounds;
+      glint_rect _pb;
+      const bool _bounded = sUsePaintBounds && _paintBounds(_pb);
+      if (_bounded) _maskLayerBounds = SkRect::MakeLTRB(_pb.L - 2.f, _pb.T - 2.f, _pb.R + 2.f, _pb.B + 2.f);
+      canvas->saveLayer(_bounded ? &_maskLayerBounds : nullptr, nullptr);
+    }
 
     float _simpleBlurSigma = 0.f;
     const bool _isSimpleBlurOnly = _hasFilterDTC && glint_filter::ParseSingleBlur(_fParsedDTC.css, &_simpleBlurSigma);

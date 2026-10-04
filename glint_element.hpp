@@ -2022,7 +2022,14 @@ public:
     if (_hasBackdropFilter) glint_filter::BeginBackdropLayer(g, GetPaintRECT(), computedStyle, _bdParsed.css);
 
     if (_hasMask && _rootCanvas)
-      _rootCanvas->saveLayer(nullptr, nullptr);
+    {
+      // Sized to what the element paints (see glint_element_render.hpp).
+      SkRect _maskLayerBounds;
+      glint_rect _pb;
+      const bool _bounded = sUsePaintBounds && _paintBounds(_pb);
+      if (_bounded) _maskLayerBounds = SkRect::MakeLTRB(_pb.L - 2.f, _pb.T - 2.f, _pb.R + 2.f, _pb.B + 2.f);
+      _rootCanvas->saveLayer(_bounded ? &_maskLayerBounds : nullptr, nullptr);
+    }
 
     const bool _hasFilter = !_fParsed.css.empty();
     if (_hasFilter) glint_filter::BeginLayer(g, mRect, _fParsed.css);
