@@ -50,6 +50,7 @@ sk_sp<SkTypeface> getTypeface(const char* fontID);
 #include "include/core/SkTypeface.h"
 #include "include/core/SkColorFilter.h"
 #include "modules/svg/include/SkSVGDOM.h"
+#include "render/glint_svg_draw_cache.hpp"
 
 #if defined(SK_BUILD_FOR_WIN)
 #include "include/ports/SkTypeface_win.h"
@@ -746,41 +747,37 @@ public:
 		DrawFittedBitmap(bitmap, dest);
 	}
 
+	/** `state`: the caller's glint_svg_draw_state for this SVG (one per drawn
+	 *  SVG, kept across frames) so a stable one is drawn from a cached bitmap;
+	 *  without it, only the recorded picture is reused. */
 	void DrawSVG(const glint_svg& svg, const glint_rect& dest, const void* /*unused*/ = nullptr,
-							 const glint_color* /*stroke*/ = nullptr, const glint_color* fill = nullptr)
+							 const glint_color* /*stroke*/ = nullptr, const glint_color* fill = nullptr,
+							 glint_svg_draw_state* state = nullptr)
 	{
 		if (auto* canvas = static_cast<SkCanvas*>(mDrawContext))
 		{
 			auto dom = svg.dom();
 			if (!dom) return;
-			canvas->save();
-			canvas->translate(dest.L, dest.T);
 			// Use the stable load-time size stored in glint_svg::mSize (W()/H()).
 			// Reading dom->containerSize() here is wrong because setContainerSize()
 			// mutates the shared cached DOM — making srcW/srcH stale after the first draw.
 			const float srcW = svg.W() > 0.f ? svg.W() : std::max(1.f, dest.W());
 			const float srcH = svg.H() > 0.f ? svg.H() : std::max(1.f, dest.H());
-			dom->setContainerSize(SkSize::Make(dest.W(), dest.H()));
-			canvas->scale(dest.W() / srcW, dest.H() / srcH);
+			SkMatrix local = SkMatrix::Translate(dest.L, dest.T);
+			local.preScale(dest.W() / srcW, dest.H() / srcH);
+			// Fill tint: the SVG drawn in a layer colorized via SrcIn, which
+			// replaces every drawn pixel's color with `fill` while keeping the
+			// alpha shape — equivalent to CSS `color` on an SVG <img>.
+			SkPaint layerPaint;
 			if (fill)
-			{
-				// Apply fill tint: render SVG into a layer then colorize via SrcIn.
-				// This replaces every drawn pixel's color with `fill` while keeping
-				// the original alpha shape — equivalent to CSS `color` on an SVG <img>.
-				SkPaint layerPaint;
 				layerPaint.setColorFilter(
 					SkColorFilters::Blend(
 						SkColorSetARGB(fill->A, fill->R, fill->G, fill->B),
 						SkBlendMode::kSrcIn));
-				canvas->saveLayer(nullptr, &layerPaint);
-				dom->render(canvas);
-				canvas->restore();
-			}
-			else
-			{
-				dom->render(canvas);
-			}
-			canvas->restore();
+			glint_svg_draw_state oneOff;
+			glint_draw_svg(canvas, *dom, SkSize::Make(dest.W(), dest.H()),
+			               SkRect::MakeWH(std::max(dest.W(), srcW), std::max(dest.H(), srcH)), local,
+			               fill ? &layerPaint : nullptr, state ? *state : oneOff);
 		}
 	}
 

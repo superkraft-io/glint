@@ -658,23 +658,17 @@ public:
           const float offY = fy * (rH - tileH);
 
           // ── Draw (respects border-radius clip) ────────────────────────
+          // Element top-left + position offset, SVG coords scaled to the
+          // tile size; through the SVG draw cache (glint_svg_draw_cache.hpp).
           canvas->save();
           canvas->clipRRect(_makeSkRRect(rect, s), SkClipOp::kIntersect, true);
-          // Move to element top-left, apply position offset, then scale SVG coords to tile size.
-          canvas->translate(rect.L + offX, rect.T + offY);
-          canvas->scale(tileW / svgW, tileH / svgH);
-          // background-blend-mode: wrap SVG render in a blend saveLayer when non-normal.
-          if (_bgBlend != SkBlendMode::kSrcOver)
-          {
-            SkPaint _svgBP; _svgBP.setBlendMode(_bgBlend);
-            canvas->saveLayer(nullptr, &_svgBP);
-            dom->render(canvas);
-            canvas->restore();
-          }
-          else
-          {
-            dom->render(canvas);
-          }
+          SkMatrix _svgLocal = SkMatrix::Translate(rect.L + offX, rect.T + offY);
+          _svgLocal.preScale(tileW / svgW, tileH / svgH);
+          // background-blend-mode: drawn in a layer blended when non-normal.
+          SkPaint _svgBP;
+          _svgBP.setBlendMode(_bgBlend);
+          glint_draw_svg(canvas, *dom, cs, SkRect::MakeWH(svgW, svgH), _svgLocal,
+                         _bgBlend != SkBlendMode::kSrcOver ? &_svgBP : nullptr, mBgSvgDraw);
           canvas->restore();
         }
       }

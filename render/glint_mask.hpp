@@ -1360,6 +1360,7 @@ inline size_t glint_img_bytes(const SkImage& img)
  *  seconds stay: one that finished decoding may not have been drawn yet. */
 inline void glint_trim_image_cache()
 {
+  glint_trim_svg_draw_cache();   // SVG pictures / bitmaps no element draws
   using clock = std::chrono::steady_clock;
   struct candidate { std::string path; size_t bytes; clock::time_point used; };
   std::vector<candidate> unused;

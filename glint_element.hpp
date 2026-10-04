@@ -3149,6 +3149,7 @@ protected:
   mutable float       mBgImgCacheRectB    = 0.f;
   mutable sk_sp<SkImage>  mBgImgCacheImg;
   mutable sk_sp<SkImage>  mMaskImgRef;    // the url() mask img last drawn
+  mutable glint_svg_draw_state mBgSvgDraw;   // background SVG: glint_draw_svg() state
   mutable sk_sp<SkShader> mBgImgCacheShader;
 
   // ── Border dash-path-effect cache ────────────────────────────────────────

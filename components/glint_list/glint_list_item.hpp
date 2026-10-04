@@ -49,6 +49,7 @@ public:
 
   // ── Icon (optional leading SVG) ────────────────────────────────────────────
   glint_svg         icon { nullptr };
+  glint_svg_draw_state mIconSvgDraw;   // icon: glint_draw_svg() state
   float        iconSize  = 16.f;
   sk_color     iconColor { glint_color(255, 200, 200, 200) };
 
@@ -130,7 +131,7 @@ protected:
       const float iconTop = content.T + (content.H() - ic) * 0.5f;
       const glint_rect iconRect(content.L, iconTop, content.L + ic, iconTop + ic);
       const glint_color* pFill = &iconColor.value;
-      g.DrawSVG(icon, iconRect, nullptr, nullptr, pFill);
+      g.DrawSVG(icon, iconRect, nullptr, nullptr, pFill, &mIconSvgDraw);
       content.L += ic + 4.f;  // 4 px gap between icon and text
     }
 

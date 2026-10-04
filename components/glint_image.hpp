@@ -97,6 +97,8 @@ private:
   // The decoded level of src last drawn (DrawContentToCanvas); holding it
   // keeps it out of glint_trim_image_cache() while shown.
   sk_sp<SkImage> mSizedImg;
+  // SVG src: glint_draw_svg() state (cached picture / bitmap it draws).
+  glint_svg_draw_state mSvgDraw;
 
 public:
 
@@ -286,7 +288,7 @@ protected:
           break;
       }
       const glint_color* fillPtr = style.fill.isSet ? &style.fill.value : nullptr;
-      g.DrawSVG(_svgImg, dest, nullptr, nullptr, fillPtr);
+      g.DrawSVG(_svgImg, dest, nullptr, nullptr, fillPtr, &mSvgDraw);
       return;
     }
 
@@ -408,7 +410,7 @@ protected:
 
       glint_canvas svgGraphics(canvas, mpG ? mpG->GetWindow() : nullptr);
       const glint_color* fillPtr = style.fill.isSet ? &style.fill.value : nullptr;
-      svgGraphics.DrawSVG(_svgImg, dest, nullptr, nullptr, fillPtr);
+      svgGraphics.DrawSVG(_svgImg, dest, nullptr, nullptr, fillPtr, &mSvgDraw);
 
       canvas->restore();
       return;
