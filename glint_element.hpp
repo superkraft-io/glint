@@ -2027,7 +2027,12 @@ public:
       // Sized to what the element paints (see glint_element_render.hpp).
       SkRect _maskLayerBounds;
       glint_rect _pb;
-      const bool _bounded = sUsePaintBounds && _paintBounds(_pb);
+      bool _bounded = sUsePaintBounds && _paintBounds(_pb);
+      if (!_bounded && computedStyle.maskClip.find("no-clip") == std::string::npos)
+      {
+        _pb = GetRECT();   // mask-clip clears everything outside it anyway
+        _bounded = true;
+      }
       if (_bounded) _maskLayerBounds = SkRect::MakeLTRB(_pb.L - 2.f, _pb.T - 2.f, _pb.R + 2.f, _pb.B + 2.f);
       _rootCanvas->saveLayer(_bounded ? &_maskLayerBounds : nullptr, nullptr);
     }
@@ -2567,14 +2572,16 @@ public:
     return mPaintBoundsValid_;
   }
 
-  bool _computePaintBounds(glint_rect& b) const
+  /** `local`: the element's own transform and (non-expanding) filter apply
+   *  around the result: bounds in its untransformed coordinates. */
+  bool _computePaintBounds(glint_rect& b, bool local = false) const
   {
     const glint_style& cs = computedStyle;
     b = GetRECT();
     if (cs.display == "none") return true;   // paints nothing beyond its (stale) box
     if (!_paintsWithinBounds()) return false;
-    if (!cs.transform.empty() && cs.transform != "none") return false;
-    if (!cs.filter.empty() && cs.filter != "none") return false;
+    if (!local && !cs.transform.empty() && cs.transform != "none") return false;
+    if (!local && !cs.filter.empty() && cs.filter != "none") return false;
     if (!cs.backdropFilter.empty() && cs.backdropFilter != "none") return false;
     if (cs.position == "fixed") return false;
 

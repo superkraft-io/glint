@@ -1223,7 +1223,14 @@ public:
         _compPaint.setBlendMode(_selfBlendMode);
         if (_directFilter)
           _compPaint.setImageFilter(std::move(_directFilter));
-        canvas->saveLayer(nullptr, &_compPaint);
+        // Sized to what the element paints, in its untransformed coordinates
+        // (unbounded, the layer spans the clip: a window-sized layer per
+        // frame for a small rotating box).
+        SkRect _localBounds;
+        glint_rect _lb;
+        const bool _bounded = sUsePaintBounds && _computePaintBounds(_lb, /*local=*/true);
+        if (_bounded) _localBounds = SkRect::MakeLTRB(_lb.L - 2.f, _lb.T - 2.f, _lb.R + 2.f, _lb.B + 2.f);
+        canvas->saveLayer(_bounded ? &_localBounds : nullptr, &_compPaint);
         _drawToCanvasImpl(canvas, false, true, true);
         canvas->restore();
         canvas->restore();
@@ -1447,12 +1454,19 @@ public:
     // previously stable standalone composition order while the mask+filter
     // semantics are investigated further.
     // The layer is sized to what the element paints: unbounded, it spans the
-    // whole clip (the window), and the mask's layer below with it.
+    // whole clip (the window), and the mask's layer below with it. When that
+    // isn't known, the border box: mask-clip (border-box unless no-clip)
+    // clears everything outside it anyway.
     if (_hasMask)
     {
       SkRect _maskLayerBounds;
       glint_rect _pb;
-      const bool _bounded = sUsePaintBounds && _paintBounds(_pb);
+      bool _bounded = sUsePaintBounds && _paintBounds(_pb);
+      if (!_bounded && computedStyle.maskClip.find("no-clip") == std::string::npos)
+      {
+        _pb = GetRECT();
+        _bounded = true;
+      }
       if (_bounded) _maskLayerBounds = SkRect::MakeLTRB(_pb.L - 2.f, _pb.T - 2.f, _pb.R + 2.f, _pb.B + 2.f);
       canvas->saveLayer(_bounded ? &_maskLayerBounds : nullptr, nullptr);
     }
