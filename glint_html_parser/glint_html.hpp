@@ -23,8 +23,8 @@
  * Known gaps: inline elements that contain elements (e.g. <a>x <b>y</b></a>)
  * lay out as one unbreakable box; inline <svg>/<math> is skipped; table row
  * groups (thead/tbody/tfoot) are flattened into the table; <img> has no
- * intrinsic size yet, so give it width and height (attributes or CSS);
- * vertical margins of adjacent blocks add up (glint has no margin collapsing).
+ * intrinsic size yet, so give it width and height (attributes or CSS).
+ * See README.md (next to this file) for the full guide.
  *
  * Usage:
  *   glint_html_set_inner_html(card, "<h2>Title</h2><p>Hello <b>world</b></p>");
@@ -41,7 +41,8 @@ struct glint_html_options
 {
   /** Append the HTML element defaults to the document's UA sheet (once). */
   bool applyHtmlUaSheet = true;
-  /** Prefix <li> content with a "•" / "1." marker run (no CSS list-style yet). */
+  /** Give each <li> of a <ul>/<ol> an outside marker: a drawn disc / circle /
+   *  square by nesting depth, or its number (no CSS list-style yet). */
   bool listMarkers = true;
 };
 
