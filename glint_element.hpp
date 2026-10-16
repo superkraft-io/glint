@@ -1450,7 +1450,11 @@ public:
 
       const float inkSpan = std::max(0.f, inkTopAboveBaseline + inkBottomBelowBaseline);
       const float drawLeadTop = std::max(0.f, lh - inkSpan) * 0.5f;
-      const float drawBaselineY = top + drawLeadTop + inkTopAboveBaseline;
+      // An inline run shares its line's baseline with the runs around it
+      // (centering each run on its own ink lifts a lone "," to mid-height).
+      const float drawBaselineY = computedStyle.display == "inline"
+        ? baselineY
+        : top + drawLeadTop + inkTopAboveBaseline;
       const float inkTop = drawBaselineY - inkTopAboveBaseline;
       const float inkBottom = drawBaselineY + inkBottomBelowBaseline;
 
@@ -3023,6 +3027,12 @@ protected:
   // Returns mRoot->devicePixelRatio (or 1.f when mRoot is null).
   // Defined at the bottom of glint_document.hpp after the full document definition.
   float _getRootDpr() const;
+
+#ifdef _WIN32
+  // Returns mRoot->hwnd: the window whose client area holds this document
+  // (or nullptr). Defined at the bottom of glint_document.hpp.
+  HWND _getRootHwnd() const;
+#endif
 
   // Re-run root hover hit-testing using the last known pointer position.
   // Defined at the bottom of glint_document.hpp after the full document definition.

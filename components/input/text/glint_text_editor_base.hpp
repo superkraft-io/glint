@@ -1023,11 +1023,19 @@ protected:
   // ── Skia text measurement helpers ──────────────────────────────────────────
   // Used by subclasses for cursor placement and click-to-position.
 
-  /** Pixel width of `text` at `fontSize` using the shared skFont. */
+  /** The editor's font at `size`: its CSS font-family, weight and style
+   *  (drawing and caret measurement must agree on it). */
+  SkFont editorFont(float size) const
+  {
+    return skFont(size, computedStyle.fontFamily.c_str(), computedStyle.fontWeight,
+                  computedStyle.fontStyle.c_str());
+  }
+
+  /** Pixel width of `text` at `fontSize` using the editor font. */
   float measureFragment(const std::string& text, float fontSize) const
   {
     if (text.empty()) return 0.f;
-    SkFont f = skFont(fontSize);
+    SkFont f = editorFont(fontSize);
     return f.measureText(text.c_str(), text.size(), SkTextEncoding::kUTF8);
   }
 
@@ -1049,7 +1057,7 @@ protected:
   int charIndexAtX(const std::string& text, float x, float fontSize) const
   {
     if (text.empty() || x <= 0.f) return 0;
-    SkFont f = skFont(fontSize);
+    SkFont f = editorFont(fontSize);
     int   pos   = 0;
     float accum = 0.f;
     while (pos < static_cast<int>(text.size()))

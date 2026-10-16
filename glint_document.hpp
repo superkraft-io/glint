@@ -3747,6 +3747,20 @@ private:
    * Only the first successfully fetched src candidate per @font-face is used
    * (mirrors browser fallback behaviour — the list is left-to-right).
    */
+  // A url() in a stylesheet is relative to the stylesheet (CSS Values §4.5):
+  // "../fonts/a.ttf" in "styles/x.css" is "fonts/a.ttf". Absolute paths,
+  // URLs with a scheme, and sheets without a URL are returned unchanged.
+  static std::string _resolveAgainstSheet(const std::string& url, const std::string& sheetUrl)
+  {
+    if (url.empty() || sheetUrl.empty() || url.front() == '/' || url.front() == '\\') return url;
+    if (url.find(':') != std::string::npos) return url;   // http:, data:, C:...
+    const size_t slash = sheetUrl.find_last_of("/\\");
+    if (slash == std::string::npos) return url;
+    std::string resolved = std::filesystem::path(sheetUrl.substr(0, slash + 1) + url)
+                             .lexically_normal().generic_string();
+    return resolved;
+  }
+
   void _processFontFaces(const GlintCssStylesheet& sheet)
   {
     if (!onRequest) return;
@@ -3876,7 +3890,7 @@ private:
         }
 
         glint_resource_request fontReq;
-        fontReq.url    = fontUrl;
+        fontReq.url    = _resolveAgainstSheet(fontUrl, sheet.sourceUrl);
         fontReq.type   = glint_resource_request::Type::Unknown;
         fontReq.source = nullptr;
         fontReq.parseUrl();
@@ -4479,6 +4493,13 @@ inline float glint_element::_getRootDpr() const
 {
   return mRoot ? mRoot->devicePixelRatio : 1.f;
 }
+
+#ifdef _WIN32
+inline HWND glint_element::_getRootHwnd() const
+{
+  return mRoot ? mRoot->hwnd : nullptr;
+}
+#endif
 
 inline void glint_element::_refreshRootHoverFromPointer()
 {

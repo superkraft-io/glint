@@ -863,7 +863,7 @@ private:
 
     const float textY = content.T + content.H() * 0.5f + fs * 0.35f;
 
-    SkFont font = skFont(fs);
+    SkFont font = editorFont(fs);
 
     // ── Compute text base X according to style.textAlign ────────────────────
     // Shared with OnMouseDown/OnMouseDrag via _textBaseX().
@@ -939,7 +939,7 @@ private:
     const bool isRight    = (active.textAlign == EAlign::Far);
     if (isCentered || isRight)
     {
-      SkFont font = skFont(fs);
+      SkFont font = editorFont(fs);
       const float textW = disp.empty() ? 0.f
         : font.measureText(disp.c_str(), disp.size(), SkTextEncoding::kUTF8);
       const float viewW = content.W();

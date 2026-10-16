@@ -173,6 +173,55 @@ bool isPreTag(const std::string& t)
   return t == "pre" || t == "textarea" || t == "listing" || t == "plaintext";
 }
 
+// The HTML UA sheet with [data-glint-html] appended to every selector, so its
+// rules only reach elements the translator created (the document's UA sheet is
+// shared with native glint pages). Commas inside (...) / [...] don't split.
+std::string scopeUaSelectors(const std::string& css)
+{
+  static const std::string kScope = "[data-glint-html]";
+  static const char* const kWs = " \t\r\n";
+  std::string out;
+  size_t i = 0;
+  const size_t n = css.size();
+  while (i < n)
+  {
+    if (css.compare(i, 2, "/*") == 0)   // comment
+    {
+      const size_t e = css.find("*/", i + 2);
+      i = (e == std::string::npos) ? n : e + 2;
+      continue;
+    }
+    const size_t brace = css.find('{', i);
+    if (brace == std::string::npos) break;
+    const size_t end = css.find('}', brace);
+    if (end == std::string::npos) break;
+    // Selector list -> each selector + scope.
+    const std::string sel = css.substr(i, brace - i);
+    std::string scoped;
+    int depth = 0;
+    size_t start = 0;
+    auto flush = [&](size_t stop) {
+      std::string s = sel.substr(start, stop - start);
+      const size_t a = s.find_first_not_of(kWs);
+      const size_t b = s.find_last_not_of(kWs);
+      if (a == std::string::npos) return;
+      if (!scoped.empty()) scoped += ", ";
+      scoped += s.substr(a, b - a + 1) + kScope;
+    };
+    for (size_t k = 0; k < sel.size(); ++k)
+    {
+      const char c = sel[k];
+      if (c == '(' || c == '[') ++depth;
+      else if (c == ')' || c == ']') --depth;
+      else if (c == ',' && depth == 0) { flush(k); start = k + 1; }
+    }
+    flush(sel.size());
+    out += scoped + " " + css.substr(brace, end - brace + 1) + '\n';
+    i = end + 1;
+  }
+  return out;
+}
+
 // ── Translator ───────────────────────────────────────────────────────────────
 
 struct Translator
@@ -272,11 +321,40 @@ struct Translator
     {
       const int n = ordinal;
       ordinal += step;
-      return std::to_string(n) + ". ";
+      return std::to_string(n) + ".";
     }
-    // "•" at every depth: Chrome's ◦ / ▪ are missing from common UI fonts and
-    // glint has no per-glyph font fallback yet.
-    return "\xE2\x80\xA2 ";
+    // Chrome's list-style-type by nesting: disc, then circle, then square.
+    int depth = 0;
+    for (lxb_dom_node_t* p = lxb_dom_interface_node(li)->parent; p; p = p->parent)
+    {
+      if (p->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
+      const std::string t = localName(lxb_dom_interface_element(p));
+      if (t == "ul" || t == "ol") ++depth;
+    }
+    return depth <= 1 ? "disc" : depth == 2 ? "circle" : "square";
+  }
+
+  // The <li>'s outside marker: a drawn shape (disc/circle/square: no glyphs
+  // needed) or the number, positioned left of the content by the UA sheet.
+  // Colored with the item's text color (glint has no currentColor).
+  glint_element* makeMarker(const std::string& marker, const glint_element* li)
+  {
+    auto* m = new glint_element();
+    m->typeNameOverride = "::marker";
+    m->setAttribute("data-glint-html", "");
+    const glint_color color = li->computedStyle.color.value;
+    if (marker == "disc" || marker == "circle" || marker == "square")
+    {
+      m->className = "glint-marker-" + marker;
+      if (marker == "circle") m->style.borderColor = color;
+      else                    m->style.backgroundColor = color;
+    }
+    else
+    {
+      m->className = "glint-marker-num";
+      m->innerText = marker;
+    }
+    return m;
   }
 
   // Translate src's children into dst. `marker` (for <li>) leads the content.
@@ -295,7 +373,7 @@ struct Translator
     }
 
     if (!marker.empty())
-      dst->addChild(makeTextRun(marker, "::marker"));
+      dst->addChild(makeMarker(marker, dst));
 
     // <ol start reversed>: numbering of the <li> markers.
     const bool ordered  = dstTag == "ol";
@@ -315,7 +393,11 @@ struct Translator
         {
           const bool between = i > 0 && i + 1 < items.size() &&
                                itemIsInline(items[i - 1]) && itemIsInline(items[i + 1]);
-          if (!between) continue;
+          // In a flex/grid container whitespace-only text is not rendered
+          // (each run would be an empty flex item, gap included).
+          const auto& d = dst->computedStyle.display;
+          const bool flexLike = d == "flex" || d == "inline-flex" || d == "grid" || d == "inline-grid";
+          if (!between || flexLike) continue;
           it.text = " ";
         }
         dst->addChild(makeTextRun(std::move(it.text)));
@@ -383,6 +465,7 @@ struct Translator
       std::string type = attrOr(el, "type", "text");
       for (auto& c : type) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
       in->type         = type;
+      node->setAttribute("type", type);   // <input> without type matches [type="text"]
       in->name         = attrOr(el, "name");
       in->placeholder  = attrOr(el, "placeholder");
       in->inputmode    = attrOr(el, "inputmode");
@@ -410,6 +493,7 @@ struct Translator
       if (type == "checkbox" || type == "radio")
       {
         in->checked = boolAttr(el, "checked");
+        in->checkSize = 13.f;   // Chrome's 13px box
         in->value   = hasValue ? value : "on";
         if (type == "radio" && !in->name.empty())
         {
@@ -437,13 +521,13 @@ struct Translator
       ta->required     = boolAttr(el, "required");
       ta->readonly     = boolAttr(el, "readonly");
       ta->disabled     = boolAttr(el, "disabled");
-      // rows → height (UA font 13px, line-height ×1.5, 8px padding, 1px border),
-      // unless the inline style already sizes it.
-      std::string rows;
-      if (getAttr(el, "rows", rows) && node->style.height.raw.empty())
+      ta->lineHeight   = 0.f;   // normal: the font's own line spacing, as in browsers
+      // rows (default 2) -> height as Chrome sizes it: 15px lines of the UA's
+      // 13.33px monospace, 2px padding, 1px border; unless the inline style sizes it.
+      if (node->style.height.raw.empty())
       {
-        const int n = std::max(1, toInt(rows, 2));
-        GlintCssApply::applyOne("height", std::to_string(static_cast<int>(n * 13 * 1.5f + 18.f)) + "px", node->style);
+        const int n = std::max(1, toInt(attrOr(el, "rows", "2"), 2));
+        GlintCssApply::applyOne("height", std::to_string(n * 15 + 6) + "px", node->style);
       }
       return true;   // value: set after attach (buildElement)
     }
@@ -482,6 +566,9 @@ struct Translator
       std::string v;
       p->max   = std::max(0.f, toFloat(attrOr(el, "max"), 1.f));
       p->value = getAttr(el, "value", v) ? std::max(0.f, toFloat(v, 0.f)) : -1.f;
+      // Chrome's native bar (glint_html_root_css): half the box height, outlined.
+      p->trackClassName = "glint-html-progress-track";
+      p->fillClassName  = "glint-html-progress-fill";
       return true;
     }
     if (tag == "meter")
@@ -494,6 +581,14 @@ struct Translator
       m->low     = norm(toFloat(attrOr(el, "low"), lo));
       m->high    = norm(toFloat(attrOr(el, "high"), hi));
       m->optimum = norm(toFloat(attrOr(el, "optimum"), (lo + hi) * 0.5f));
+      // Chrome's native bar, dark scheme: half the box height, outlined.
+      m->barFraction     = 0.5f;
+      m->outlineColor    = "#858585";
+      m->trackColor      = "#3b3b3b";
+      m->radius          = 2.f;
+      m->colorOptimal    = "#74b374";
+      m->colorSuboptimal = "#f2c812";
+      m->colorBad        = "#e98f6d";
       return true;
     }
     return false;
@@ -527,12 +622,14 @@ struct Translator
       auto* br = makeTextRun("\n", "br");
       br->style.whiteSpace = "pre-line";
       applyCommonAttributes(el, br, tag);
+      br->setAttribute("data-glint-html", "");
       parent->addChild(br);
       return;
     }
 
     glint_element* node = createNode(tag);
     applyCommonAttributes(el, node, tag);
+    node->setAttribute("data-glint-html", "");   // UA sheet scope
     const bool ownsContent = setupComponent(el, tag, node);
 
     // Attach before translating children: each node then cascades once, with
@@ -556,7 +653,7 @@ struct Translator
     if (doc && opts.applyHtmlUaSheet && !doc->htmlUserAgentSheetApplied)
     {
       doc->htmlUserAgentSheetApplied = true;
-      doc->appendUserAgentStylesheetText(glint_html_ua_css);
+      doc->appendUserAgentStylesheetText(scopeUaSelectors(glint_html_ua_css) + glint_html_root_css);
     }
   }
 };
@@ -606,7 +703,12 @@ glint_html_result parseFragmentInto(glint_element* parent, std::string_view html
   t.opts = opts;
   t.ensureUaSheet();
   t.preDepth  = isPreTag(ctxTag) ? 1 : 0;
+  const size_t firstNew = parent->mChildren.size();
   t.buildChildren(root, parent, ctxTag);
+  // Mark the new top-level elements: the UA sheet gives HTML content the
+  // browser's initial values glint's own defaults differ from (line-height).
+  for (size_t i = firstNew; i < parent->mChildren.size(); ++i)
+    parent->mChildren[i]->setAttribute("data-glint-html-root", "");
 
   lxb_html_document_destroy(ldoc);
   res.ok = true;
@@ -676,6 +778,7 @@ glint_html_result glint_html_load_string(glint_document& doc, std::string_view h
       GlintCssApply::apply(GlintCssParser::parseInlineStyle(v), target->style);
       target->notifyStyleChanged();
     }
+    target->setAttribute("data-glint-html-root", "");   // see parseFragmentInto
     t.buildChildren(lxb_dom_interface_node(body), target, "body");
   }
 

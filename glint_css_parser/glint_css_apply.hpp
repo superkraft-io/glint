@@ -286,6 +286,7 @@ public:
     if (prop == "justify-content")  { style.justifyContent = val; return; }
     if (prop == "align-items")      { style.alignItems     = val; return; }
     if (prop == "gap")              { style.gap            = val.c_str(); return; }
+    if (prop == "border-spacing")   { style.borderSpacing  = val.c_str(); return; }
     if (prop == "flex-grow")        { style.flexGrow       = std::max(0.f, toFloat(val)); return; }
     if (prop == "flex-shrink")      { style.flexShrink     = std::max(0.f, toFloat(val)); return; }
     if (prop == "flex-basis")       { style.flexBasis      = val; return; }

@@ -114,7 +114,7 @@ public:
   int         maxlength = -1;
   int         minlength = -1;
   bool        required = false;
-  float       lineHeight = 1.5f;   // multiplier applied to fontSize
+  float       lineHeight = 1.5f;   // multiplier applied to fontSize; 0 = normal (the font's own spacing)
 
   // ── Construction ──────────────────────────────────────────────────────────
   glint_textarea()
@@ -236,7 +236,7 @@ public:
     // mScrollHeight must be in the same coordinate space: add padding so the
     // thumb ratio and wheel maxY calculation are both correct.
     const float fs    = _fontSize();
-    const float lh    = fs * lineHeight;
+    const float lh    = _lineHeightPx(fs);
     const int   nLines = static_cast<int>(_splitLines().size());
     const float pT    = static_cast<float>(computedStyle.paddingTop);
     const float pB    = static_cast<float>(computedStyle.paddingBottom);
@@ -406,7 +406,7 @@ public:
     if (!canvas) return;
 
     const float fs = _fontSize();
-    const float lh = fs * lineHeight;
+    const float lh = _lineHeightPx(fs);
     const glint_rect content = getContent();
     // Clip right edge: leave room for scrollbar (and resize handle which sits
     // at the same x as the scrollbar).
@@ -423,7 +423,7 @@ public:
                                        contentR,
                                        content.B + mScrollTop));
 
-    SkFont font = skFont(fs);
+    SkFont font = editorFont(fs);
     SkFontMetrics metrics;
     font.getMetrics(&metrics);
     const float ascent = -metrics.fAscent;   // positive value
@@ -465,7 +465,11 @@ public:
       // Line position in canvas coords (framework translate handles scroll).
       const float lineTop = content.T + li * lh;
       const float lineBot = lineTop + lh;
-      const float textY   = lineTop + ascent + (lh - fs) * 0.5f;
+      // normal: CSS line box (half-leading above the ascent); a multiplier keeps
+      // the em-box centering native pages are laid out with.
+      const float textY   = lineHeight > 0.f
+        ? lineTop + ascent + (lh - fs) * 0.5f
+        : lineTop + (lh - (ascent + metrics.fDescent)) * 0.5f + ascent;
 
       // Cull: compare screen positions against visible screen area.
       const float screenTop = lineTop - mScrollTop;
@@ -547,6 +551,16 @@ private:
   {
     const float fs = computedStyle.fontSize.toFloat();
     return (fs > 0.f) ? fs : 13.f;
+  }
+
+  // Line pitch in px: the multiplier, or for 0 ("normal") the font's own
+  // ascent + descent + line gap, as browsers size textarea lines.
+  float _lineHeightPx(float fs) const
+  {
+    if (lineHeight > 0.f) return fs * lineHeight;
+    SkFontMetrics m;
+    editorFont(fs).getMetrics(&m);
+    return -m.fAscent + m.fDescent + std::max(0.f, m.fLeading);
   }
 
   // Split mText by '\n' into individual lines.
@@ -636,7 +650,7 @@ private:
   int _hitTestPos(float x, float y) const
   {
     const float fs = _fontSize();
-    const float lh = fs * lineHeight;
+    const float lh = _lineHeightPx(fs);
     const glint_rect content = getContent();
     // content.T already includes padding-top, and lines are drawn at
     // content.T + line * lh, so no further padding offset (subtracting it put
@@ -659,7 +673,7 @@ private:
   void _ensureCursorVisible()
   {
     const float fs = _fontSize();
-    const float lh = fs * lineHeight;
+    const float lh = _lineHeightPx(fs);
     const glint_rect pr = GetPaintRECT();
     // Use same viewport as getViewportSize() / wheel handler.
     const float viewH = pr.H();

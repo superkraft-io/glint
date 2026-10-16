@@ -609,7 +609,7 @@
     H.l(st.minWidth); H.l(st.maxWidth); H.l(st.minHeight); H.l(st.maxHeight);
     H.i(st.zIndex);
     H.s(st.display); H.s(st.flexDirection); H.s(st.justifyContent);
-    H.s(st.alignItems); H.l(st.gap); H.f(st.flexGrow); H.f(st.flexShrink); H.l(st.flexBasis);
+    H.s(st.alignItems); H.l(st.gap); H.l(st.borderSpacing); H.f(st.flexGrow); H.f(st.flexShrink); H.l(st.flexBasis);
     H.s(st.pointerEvents); H.s(st.cursor); H.s(st.userSelect); H.s(st.whiteSpace);
     H.s(st.overflowX); H.s(st.overflowY);
     H.f(st.scrollbarWidth);
@@ -779,7 +779,7 @@
     _IW_F(zIndex);
     // Flex / layout
     _IW_S(display);  _IW_S(flexDirection);  _IW_S(justifyContent);
-    _IW_S(alignItems);  _IW_L(gap);  _IW_F(flexGrow);  _IW_F(flexShrink);  _IW_L(flexBasis);
+    _IW_S(alignItems);  _IW_L(gap);  _IW_L(borderSpacing);  _IW_F(flexGrow);  _IW_F(flexShrink);  _IW_L(flexBasis);
     _IW_S(pointerEvents);  _IW_S(cursor);  _IW_S(userSelect);  _IW_S(whiteSpace);
     // Overflow / scrollbar
     _IW_S(overflowX);  _IW_S(overflowY);

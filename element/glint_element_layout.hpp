@@ -485,6 +485,83 @@
   // Shrink-to-fit boxes (table cells, inline-blocks, abspos, row flex items)
   // get an estimate from measureIntrinsicW, which stacks inline children
   // instead of summing them, so wrapping measured against it would be wrong.
+  // ── Margin collapsing (CSS 2.1 §8.3.1) ─────────────────────────────────────
+  // In block flow, adjoining vertical margins collapse: two siblings' margins
+  // become the larger one (both negative: the more negative; mixed: the sum),
+  // and a block without top (bottom) padding/border shares its first (last)
+  // child's top (bottom) margin. Flex, table and inline-level boxes, scroll
+  // containers and boxes holding inline content don't collapse.
+  static float _collapseMargins(float a, float b)
+  {
+    if (a >= 0.f && b >= 0.f) return std::max(a, b);
+    if (a <= 0.f && b <= 0.f) return std::min(a, b);
+    return a + b;
+  }
+
+  static bool _isInFlow(const glint_element& e)
+  {
+    return e.computedStyle.display != "none" && e.computedStyle.position != "absolute"
+        && e.computedStyle.position != "fixed";
+  }
+
+  /** e lays its children out in block flow (layoutBlock, no inline content). */
+  static bool _isBlockFlowContainer(const glint_element& e)
+  {
+    const auto& d = e.computedStyle.display;
+    if (!(d.empty() || d == "block")) return false;
+    for (const auto& c : e.mChildren)
+      if (_isInFlow(*c) && c->computedStyle.display == "inline") return false;
+    return true;
+  }
+
+  static const glint_element* _edgeInFlowChild(const glint_element& e, bool first)
+  {
+    if (first)
+    {
+      for (const auto& c : e.mChildren) if (_isInFlow(*c)) return c.get();
+    }
+    else
+    {
+      for (auto it = e.mChildren.rbegin(); it != e.mChildren.rend(); ++it) if (_isInFlow(**it)) return it->get();
+    }
+    return nullptr;
+  }
+
+  // e passes its first (last) child's top (bottom) margin through: e sits in
+  // block flow itself, is a plain block container and nothing separates them.
+  static bool _marginCollapsesThrough(const glint_element& e, bool top)
+  {
+    const auto& cs = e.computedStyle;
+    if (!e.mParent || !_isBlockFlowContainer(*e.mParent) || !_isBlockFlowContainer(e)) return false;
+    if (cs.overflowX != "visible" || cs.overflowY != "visible") return false;
+    if (cs.position == "absolute" || cs.position == "fixed") return false;
+    if (top ? (static_cast<float>(cs.paddingTop) != 0.f || cs.resolvedBorderWidth(0) != 0.f)
+            : (static_cast<float>(cs.paddingBottom) != 0.f || cs.resolvedBorderWidth(2) != 0.f)) return false;
+    if (!top && !(cs.height.raw.empty() || cs.height.raw == "auto")) return false;
+    const glint_element* edge = _edgeInFlowChild(e, top);
+    if (!edge) return false;
+    const auto& ed = edge->computedStyle.display;
+    return ed.empty() || ed == "block" || ed == "flex" || ed == "table";   // block-level child
+  }
+  static bool _topMarginCollapsesThrough(const glint_element& e)    { return _marginCollapsesThrough(e, true); }
+  static bool _bottomMarginCollapsesThrough(const glint_element& e) { return _marginCollapsesThrough(e, false); }
+
+  /** e's top / bottom margin after collapsing with its first / last child's. */
+  static float _effectiveMarginTop(const glint_element& e, float refW)
+  {
+    float m = e.computedStyle.marginTop.resolve(refW);
+    if (_topMarginCollapsesThrough(e))
+      m = _collapseMargins(m, _effectiveMarginTop(*_edgeInFlowChild(e, true), refW));
+    return m;
+  }
+  static float _effectiveMarginBottom(const glint_element& e, float refW)
+  {
+    float m = e.computedStyle.marginBottom.resolve(refW);
+    if (_bottomMarginCollapsesThrough(e))
+      m = _collapseMargins(m, _effectiveMarginBottom(*_edgeInFlowChild(e, false), refW));
+    return m;
+  }
+
   static bool _inlineFlowWidthIsFinal(const glint_element& c)
   {
     const auto& cs = c.computedStyle;
@@ -536,9 +613,12 @@
     if (_isTableDisplay(c.computedStyle.display))
     {
       const auto rows = _collectTableRows(c);
-      const auto cols = _tableColumnWidths(rows, contentRefW, contentRefH, false);
+      float sH = 0.f, sV = 0.f;
+      _tableSpacing(c, sH, sV);
+      const auto cols = _tableColumnWidths(rows, std::max(0.f, contentRefW - _tableSpacingTotal(_tableColCount(rows), sH)),
+                                           contentRefH, false);
       const auto hs   = _tableRowHeights(rows, cols, contentRefH, false);
-      float totalH = 0.f;
+      float totalH = _tableSpacingTotal(hs.size(), sV);
       for (float h : hs) totalH += h;
       return insetT + totalH + insetB;
     }
@@ -547,7 +627,10 @@
     // (display:inline / inline-block / inline-flex), Chrome sizes the block to
     // the tallest element in the single line box — NOT the sum of all children.
     // Summing would be wrong and diverge from Chrome.
-    if (!isRow) {
+    // Not for a flex container: its children are flex items (blockified),
+    // stacked by the flex algorithm whatever their display value.
+    const bool isFlexContainer = c.computedStyle.display == "flex" || c.computedStyle.display == "inline-flex";
+    if (!isRow && !isFlexContainer) {
       bool allInlineLevel = true;
       int  inFlowCount    = 0;
       for (const auto& child : c.mChildren) {
@@ -607,6 +690,11 @@
 
     float result = 0.f;
     int   n      = 0;
+    // Block containers collapse adjoining margins; flex containers don't.
+    const bool collapse = !isRow && !isFlexContainer && _isBlockFlowContainer(c);
+    const bool absorbFirstTop   = collapse && _topMarginCollapsesThrough(c);
+    const bool absorbLastBottom = collapse && _bottomMarginCollapsesThrough(c);
+    float pendingMB = 0.f;
     for (const auto& child : c.mChildren)
     {
       if (child->computedStyle.display  == "none")     continue;
@@ -627,6 +715,16 @@
         const float mB = child->computedStyle.marginBottom.resolve(refW);
         result = std::max(result, mT + ch + mB);
       }
+      else if (collapse)
+      {
+        // Block flow: adjoining vertical margins collapse (same rule as layoutBlock).
+        const float mT = _effectiveMarginTop(*child, refW);
+        const float mB = _effectiveMarginBottom(*child, refW);
+        if (n == 0) result += absorbFirstTop ? 0.f : mT;
+        else        result += _collapseMargins(pendingMB, mT);
+        result += ch;
+        pendingMB = mB;
+      }
       else
       {
         // For a column / block, each child stacks: gap (after first) + vertical margins + height.
@@ -637,7 +735,39 @@
       }
       ++n;
     }
+    if (collapse && n > 0 && !absorbLastBottom) result += pendingMB;
     return insetT + result + insetB;
+  }
+
+  // border-spacing of a table box: "2px" (both) or "2px 4px" (horizontal, vertical).
+  static void _tableSpacing(const glint_element& t, float& sH, float& sV)
+  {
+    sH = sV = 0.f;
+    if (t.computedStyle.display != "table") return;
+    const std::string& raw = t.computedStyle.borderSpacing.raw;
+    if (raw.empty()) { sH = sV = std::max(0.f, t.computedStyle.borderSpacing.toFloat()); return; }
+    const char* p = raw.c_str();
+    char* e = nullptr;
+    sH = std::strtof(p, &e);
+    if (e == p) { sH = 0.f; return; }
+    while (*e && !(std::isdigit(static_cast<unsigned char>(*e)) || *e == '.')) ++e;   // "px "
+    sV = *e ? std::strtof(e, nullptr) : sH;
+    sH = std::max(0.f, sH);
+    sV = std::max(0.f, sV);
+  }
+
+  /** Spacing around and between n columns (rows): n + 1 gaps, none when empty. */
+  static float _tableSpacingTotal(std::size_t n, float s)
+  {
+    return n ? static_cast<float>(n + 1) * s : 0.f;
+  }
+
+  template <typename T>
+  static std::size_t _tableColCount(const std::vector<_TableRowInfo<T>>& rows)
+  {
+    std::size_t n = 0;
+    for (const auto& row : rows) n = std::max(n, row.cells.size());
+    return n;
   }
 
   template <typename T>
@@ -827,8 +957,11 @@
     if (_isTableDisplay(c.computedStyle.display))
     {
       const auto rows = _collectTableRows(c);
-      const auto cols = _tableColumnWidths(rows, contentRefW, refH, false);
-      float totalW = 0.f;
+      float sH = 0.f, sV = 0.f;
+      _tableSpacing(c, sH, sV);
+      const auto cols = _tableColumnWidths(rows, std::max(0.f, contentRefW - _tableSpacingTotal(_tableColCount(rows), sH)),
+                                           refH, false);
+      float totalW = _tableSpacingTotal(cols.size(), sH);
       for (float w : cols) totalW += w;
       return insetL + totalW + insetR;
     }
@@ -2117,7 +2250,9 @@
             lineW,
             fm.lineHeight,
             fm.textTopAbove,
-            centeredBaselineFromTop(fm.lineHeight, ink, fm.textTopAbove),
+            // Fragments of one line share its baseline (centering each on
+            // its own ink lifts a lone "," to mid-height).
+            fm.textTopAbove,
             fm.lineHeight,
             childSubpixel,
             child->computedStyle.verticalAlign,
@@ -2261,7 +2396,9 @@
           // items (CSS2.1 §10.8.1, inline non-replaced element rule).
           usedH           = fm.lineHeight;
           baselineFromTop = fm.textTopAbove;
-          drawBaselineFromTop = centeredBaselineFromTop(fm.lineHeight, ink, fm.textTopAbove);
+          // Runs of one line share its baseline (centering each run on its own
+          // ink lifts short runs: a lone "," drew as a middle dot).
+          drawBaselineFromTop = baselineFromTop;
           itemInlinePadT  = padT + brdT;
           itemInlinePadB  = padB + brdB;
         }
@@ -2341,7 +2478,11 @@
     // self-invalidates when its inputs (text, font, content rect) change.
 
     const auto rows = _collectTableRows(*this);
-    const auto colWidths = _tableColumnWidths(rows, rW, rH, true);
+    // border-spacing: sH between/around columns, sV between/around rows.
+    float sH = 0.f, sV = 0.f;
+    _tableSpacing(*this, sH, sV);
+    const auto colWidths = _tableColumnWidths(rows, std::max(0.f, rW - _tableSpacingTotal(_tableColCount(rows), sH)),
+                                              rH, true);
     const auto rowHeights = _tableRowHeights(rows, colWidths, rH, true);
 
     auto lower = [](std::string v) {
@@ -2349,7 +2490,7 @@
       return v;
     };
 
-    float y = rect.T;
+    float y = rect.T + (rows.empty() ? 0.f : sV);
     for (std::size_t ri = 0; ri < rows.size(); ++ri)
     {
       float rowH = ri < rowHeights.size() ? rowHeights[ri] : 0.f;
@@ -2358,12 +2499,12 @@
         if (rows[ri].rowBox)
         {
           rows[ri].rowBox->mRect = rows[ri].rowBox->mPaintRECT =
-            _snapRect(rect.L, y, rect.L + rW, y + currentRowH);
+            _snapRect(rect.L + sH, y, rect.L + std::max(sH, rW - sH), y + currentRowH);
           if (rows[ri].rowBox->computedStyle.position == "relative")
             _applyRelativeOffset(rows[ri].rowBox, rW, rH);
         }
 
-        float x = rect.L;
+        float x = rect.L + sH;
         for (std::size_t ci = 0; ci < rows[ri].cells.size(); ++ci)
         {
           glint_element* cell = rows[ri].cells[ci];
@@ -2374,7 +2515,7 @@
             cell->mRect = cell->mPaintRECT = _snapRect(x, y, x + cellW, y + currentRowH);
           if (cell->computedStyle.position == "relative") _applyRelativeOffset(cell, rW, rH);
           _layoutChild(cell, g);
-          x += cellW;
+          x += cellW + sH;
         }
       };
 
@@ -2437,7 +2578,7 @@
         _alignTableCellContent(cell, rowBaselineY, wantsBaseline);
       }
 
-      y += rowH;
+      y += rowH + sV;
     }
 
     for (auto& childPtr : mChildren)
@@ -2483,6 +2624,13 @@
     // Every child's style was refreshed by the loop above (it only exits early
     // into layoutInline).
     float cursorY = 0.f;
+    // Adjoining vertical margins collapse (see _collapseMargins): the gap above
+    // a child is collapse(previous child's bottom margin, its top margin), and
+    // when this box shares its first child's top margin (it was applied to this
+    // box by its own parent) the first child gets none.
+    const bool absorbFirstTop = _topMarginCollapsesThrough(*this);
+    bool  firstInFlow = true;
+    float pendingMB   = 0.f;
     for (auto& child : mChildren)
     {
       if (child->computedStyle.display == "none") continue;
@@ -2491,8 +2639,9 @@
       if (isAbs && (child.get() == mScrollbarV || child.get() == mScrollbarH || child.get() == mScrollCorner)) continue;
       const bool  isRel = (child->computedStyle.position == "relative");
       const float mL    = isAbs ? 0.f : child->computedStyle.marginLeft.resolve(rW);
-      const float mT    = isAbs ? 0.f : child->computedStyle.marginTop.resolve(rW);
-      const float mB    = isAbs ? 0.f : child->computedStyle.marginBottom.resolve(rW);
+      const float mT    = isAbs ? 0.f : _effectiveMarginTop(*child, rW);
+      const float mB    = isAbs ? 0.f : _effectiveMarginBottom(*child, rW);
+      const float gapT  = firstInFlow ? (absorbFirstTop ? 0.f : mT) : _collapseMargins(pendingMB, mT);
 
       if (isAbs)
       {
@@ -2538,6 +2687,9 @@
         {
           const float mR = child->computedStyle.marginRight.resolve(rW);
           w = std::max(0.f, rW - mL - mR);
+          // A table with width:auto is shrink-to-fit (CSS 2.1 §17.5.2): its
+          // columns' content width, at most the space available.
+          if (cDisp == "table") w = std::min(w, std::max(0.f, childPrefW(*child, rW)));
         }
         else
         {
@@ -2568,7 +2720,7 @@
         // here is both Chrome-correct AND required for live reflowing.
         const float flowL = rect.L + (isRel ? 0.f : child->computedStyle.left.resolve(rW)) + mL
                           + autoMarginShift;
-        const float flowT = rect.T + cursorY + mT;
+        const float flowT = rect.T + cursorY + gapT;
         if (_hasSubpixelIntent(*child, rW, rH))
           child->mRect = child->mPaintRECT = glint_rect(flowL, flowT, flowL + w, flowT + h);
         else
@@ -2576,7 +2728,10 @@
         // position:relative: shift box visually by top/left without moving siblings.
         if (isRel) _applyRelativeOffset(child.get(), rW, rH);
         // Cursor advances by FLOW height — ignores any relative visual offset.
-        cursorY = (flowT - rect.T) + h + mB;
+        // The bottom margin stays pending: it collapses with the next sibling's.
+        cursorY = (flowT - rect.T) + h;
+        pendingMB = mB;
+        firstInFlow = false;
       }
       _layoutChild(child.get(), g);
     }

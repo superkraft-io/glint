@@ -147,6 +147,52 @@ public:
     return static_cast<int>(weight + 0.5f);
   }
 
+  /** The names to try for a CSS font-family value, in order: the list split
+   *  on commas, quotes stripped, generic families (monospace, serif...) mapped
+   *  to the platform fonts browsers use for them. */
+  static std::vector<std::string> _cssFontFamilyCandidates(const char* family)
+  {
+    std::vector<std::string> out;
+    const std::string v(family ? family : "");
+    size_t start = 0;
+    while (start <= v.size())
+    {
+      size_t comma = v.find(',', start);
+      if (comma == std::string::npos) comma = v.size();
+      std::string name = v.substr(start, comma - start);
+      const size_t a = name.find_first_not_of(" \t\"'");
+      const size_t b = name.find_last_not_of(" \t\"'");
+      name = (a == std::string::npos) ? std::string() : name.substr(a, b - a + 1);
+      if (!name.empty())
+      {
+        std::string low = name;
+        for (char& ch : low) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+#if defined(_WIN32)
+        if      (low == "monospace")  name = "Consolas";
+        else if (low == "serif")      name = "Times New Roman";
+        else if (low == "sans-serif") name = "Arial";
+        else if (low == "cursive")    name = "Comic Sans MS";
+        else if (low == "fantasy")    name = "Impact";
+        else if (low == "system-ui" || low == "-apple-system") name = "Segoe UI";
+#elif defined(__APPLE__)
+        if      (low == "monospace")  name = "Menlo";
+        else if (low == "serif")      name = "Times";
+        else if (low == "sans-serif") name = "Helvetica";
+        else if (low == "cursive")    name = "Apple Chancery";
+        else if (low == "fantasy")    name = "Papyrus";
+        else if (low == "system-ui" || low == "-apple-system") name = ".AppleSystemUIFont";
+#else
+        if      (low == "monospace")  name = "DejaVu Sans Mono";
+        else if (low == "serif")      name = "DejaVu Serif";
+        else if (low == "sans-serif" || low == "system-ui") name = "DejaVu Sans";
+#endif
+        out.push_back(std::move(name));
+      }
+      start = comma + 1;
+    }
+    return out;
+  }
+
   /**
    * Create a platform-backed SkFont at the given size.
    * Resolves (family, weight, style) against the three-axis font registry,
@@ -210,26 +256,22 @@ public:
       } else {
         bool shouldCache = false;
 
-        tf = glint_font_registry::getTypefaceByAxes(family, weight, style);
-        if (tf)
+        // A CSS font-family list ("Inter", Arial, sans-serif): the first entry
+        // that resolves wins; generic families map to the platform's defaults.
+        for (const std::string& name : _cssFontFamilyCandidates(family))
         {
-          shouldCache = true;
-        }
-        else
-        {
-          tf = glint_font_registry::getTypefaceWeighted(family, weight);
-          if (tf)
-            shouldCache = true;
-        }
+          tf = glint_font_registry::getTypefaceByAxes(name.c_str(), weight, style);
+          if (!tf) tf = glint_font_registry::getTypefaceWeighted(name.c_str(), weight);
+          if (tf) { shouldCache = true; break; }
 
-        if (!tf)
-        {
-          tf = glint_font_registry::getSystemTypefaceByAxes(family, weight, style);
+          tf = glint_font_registry::getSystemTypefaceByAxes(name.c_str(), weight, style);
           if (tf)
           {
             SkString matchedFamily;
             tf->getFamilyName(&matchedFamily);
-            shouldCache = matchedFamily.equals(family);
+            if (matchedFamily.equals(name.c_str())) { shouldCache = true; break; }
+            // The system substituted another family: try the next candidate,
+            // keeping this substitute (uncached) if none matches.
           }
         }
 

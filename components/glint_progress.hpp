@@ -182,6 +182,13 @@ public:
   float radius  = 999.f;
 
   const char* trackColor    = "#2d2d2d";
+  const char* colorOptimal    = "#3a7a3a";
+  const char* colorSuboptimal = "#b5a400";
+  const char* colorBad        = "#8b3a3a";
+  // Native-bar look (Chrome draws <meter> as a bar half the box height,
+  // vertically centered, outlined): bar height / box height, and the outline.
+  float       barFraction  = 1.f;
+  const char* outlineColor = nullptr;
 
   glint_meter()
   {
@@ -231,24 +238,31 @@ private:
     const bool optimumIsHigh = (optimum >= high);
     if (optimumIsHigh)
     {
-      if (value >= high)  return "#3a7a3a";   // optimal (green)
-      if (value >= low)   return "#b5a400";   // suboptimal (yellow)
-      return "#8b3a3a";                       // bad (red)
+      if (value >= high)  return colorOptimal;      // green
+      if (value >= low)   return colorSuboptimal;   // yellow
+      return colorBad;                              // red
     }
     else
     {
-      if (value <= low)   return "#3a7a3a";   // optimal
-      if (value <= high)  return "#b5a400";   // suboptimal
-      return "#8b3a3a";                       // bad
+      if (value <= low)   return colorOptimal;
+      if (value <= high)  return colorSuboptimal;
+      return colorBad;
     }
   }
 
   void _sync()
   {
+    const float f = std::max(0.f, std::min(1.f, barFraction));
+    char top[32], height[32];
+    std::snprintf(top, sizeof(top), "%.4g%%", (1.f - f) * 50.f);
+    std::snprintf(height, sizeof(height), "%.4g%%", f * 100.f);
     if (mTrack)
     {
+      mTrack->style.top             = top;
+      mTrack->style.height          = height;
       mTrack->style.borderRadius    = radius;
       mTrack->style.backgroundColor = trackColor;
+      if (outlineColor) { mTrack->style.borderWidth = 1.f; mTrack->style.borderColor = outlineColor; }
     }
     if (mFill)
     {
@@ -256,8 +270,17 @@ private:
       char buf[32];
       std::snprintf(buf, sizeof(buf), "%.4g%%", pct * 100.f);
       mFill->style.width           = buf;
+      mFill->style.top             = top;
+      mFill->style.height          = height;
       mFill->style.borderRadius    = radius;
       mFill->style.backgroundColor = _fillColor();
+      if (outlineColor)
+      {
+        // Same outline as the track, open where the fill ends.
+        mFill->style.borderWidth      = 1.f;
+        mFill->style.borderRightWidth = 0.f;
+        mFill->style.borderColor      = outlineColor;
+      }
     }
   }
 };

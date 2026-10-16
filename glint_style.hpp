@@ -2784,7 +2784,7 @@ struct glint_style
     , minWidth(o.minWidth), maxWidth(o.maxWidth), minHeight(o.minHeight), maxHeight(o.maxHeight)
     , zIndex(o.zIndex)
     , display(o.display), pointerEvents(o.pointerEvents), cursor(o.cursor), userSelect(o.userSelect), whiteSpace(o.whiteSpace), flexDirection(o.flexDirection)
-    , justifyContent(o.justifyContent), alignItems(o.alignItems), gap(o.gap), flexGrow(o.flexGrow), flexShrink(o.flexShrink), flexBasis(o.flexBasis)
+    , justifyContent(o.justifyContent), alignItems(o.alignItems), gap(o.gap), borderSpacing(o.borderSpacing), flexGrow(o.flexGrow), flexShrink(o.flexShrink), flexBasis(o.flexBasis)
     , overflowX(o.overflowX), overflowY(o.overflowY)
     , overflow(&overflowX, &overflowY)                   // rebind to THIS
     , scrollbarWidth(o.scrollbarWidth)
@@ -2910,6 +2910,7 @@ struct glint_style
     justifyContent  = o.justifyContent;
     alignItems      = o.alignItems;
     gap             = o.gap;
+    borderSpacing   = o.borderSpacing;
     flexGrow        = o.flexGrow;
     flexShrink      = o.flexShrink;
     flexBasis       = o.flexBasis;
@@ -2995,7 +2996,9 @@ struct glint_style
       if (!std::isspace(static_cast<unsigned char>(c)))
         v += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (v.empty()) return false;
-    if (v == "normal") { lineHeight = 1.2f; lineHeightPx = 0.f; return true; }
+    // normal: the font's own line spacing (ascent + descent + line gap), as
+    // browsers do; 0 makes usedLineHeight() defer to the font metrics.
+    if (v == "normal") { lineHeight = 0.f; lineHeightPx = 0.f; return true; }
 
     char* end = nullptr;
     const float n = std::strtof(v.c_str(), &end);
@@ -3083,6 +3086,7 @@ struct glint_style
   std::string justifyContent  = "flex-start";  // main-axis alignment
   std::string alignItems      = "flex-start";  // cross-axis alignment
   glint_length gap           = 0.f;           // gap between items (px or "8px" string)
+  glint_length borderSpacing = 0.f;           // table: space between/around cells ("2px" or "2px 4px": h v)
   float       flexGrow        = 0.f;           // CSS flex-grow: expand to fill remaining space
   // CSS flex-shrink.  -1 (unset) keeps glint's original rule, which existing
   // layouts rely on: on overflow only flex-grow items shrink, by their grow
@@ -3450,7 +3454,7 @@ inline void glint_style_resolve_relative_units(glint_style& s, float parentFontP
 
   glint_length* lengths[] = {
     &s.width, &s.height, &s.minWidth, &s.maxWidth, &s.minHeight, &s.maxHeight,
-    &s.left, &s.top, &s.right, &s.bottom, &s.gap,
+    &s.left, &s.top, &s.right, &s.bottom, &s.gap, &s.borderSpacing,
     &s.borderRadius, &s.borderTopLeftRadius, &s.borderTopRightRadius,
     &s.borderBottomRightRadius, &s.borderBottomLeftRadius,
     &s.borderTopWidth, &s.borderRightWidth, &s.borderBottomWidth, &s.borderLeftWidth,

@@ -42,9 +42,12 @@
 #include "../glint_element.hpp"
 #include "../glint_animator.hpp"
 #include "../platform/glint_platform.hpp"
+#include "glint_select_popup_window.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -147,9 +150,15 @@ public:
     setDirty(false);
   }
 
-  void OnMouseDown(float, float, const glint_mouse_mod&) override
+  void OnMouseDown(float, float, const glint_mouse_mod& mod) override
   {
     if (disabled) return;
+    if (mod.R || mod.Mid) return;   // like a native <select>: left button only
+    // A press while the list is open (or just closed by this very press,
+    // which deactivated the popup) closes it instead of reopening it.
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    mPressClosesList = mListState->open.load() ||
+                       now - mListState->closedAt.load() < kReopenGuardTicks;
     mIsPressed = true;
     _startStateTransition();
     setDirty(false);
@@ -162,8 +171,9 @@ public:
     mIsPressed = false;
     _startStateTransition();
     setDirty(false);
-    if (wasPressed && mRect.Contains(x, y))
-      _openMenu();
+    if (!wasPressed || !mRect.Contains(x, y)) return;
+    if (mPressClosesList) { _closeList(); return; }
+    _openMenu();
   }
 
   // ── Popup menu result ──────────────────────────────────────────────────────
@@ -327,11 +337,78 @@ protected:
     g.FillConvexPolygon(col, xs, ys, 3);
   }
 
-  // ── Open the native popup menu anchored at the bottom-left of the element ──
+  // ── Option list ───────────────────────────────────────────────────────────
+  // Win32: a glint-drawn list in a popup window (glint_select_popup_window),
+  // like Chrome's. Other platforms: the native menu, at the cursor.
+
+  // Shared with the popup's callbacks, which may outlive this select.
+  struct ListState
+  {
+    std::atomic<bool>    open{ false };
+    std::atomic<int64_t> closedAt{ 0 };   // steady_clock ticks
+  };
+  std::shared_ptr<ListState> mListState = std::make_shared<ListState>();
+  bool mPressClosesList = false;
+  static constexpr int64_t kReopenGuardTicks =
+    std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::milliseconds(300)).count();
+
+  void _closeList()
+  {
+#if defined(_WIN32) || defined(OS_WIN)
+    if (mListState->open.load()) glint_select_popup_window::shared()->hide();
+#endif
+  }
+
+#if defined(_WIN32) || defined(OS_WIN)
+  // The select's border box on screen, in device pixels.
+  bool _anchorOnScreen(RECT& r) const
+  {
+    HWND hwnd = _getRootHwnd();
+    if (!hwnd) return false;
+    float x = mRect.L, y = mRect.T;
+    for (const glint_element* p = mParent; p; p = p->mParent) { x -= p->mScrollLeft; y -= p->mScrollTop; }
+    const float dpr = _getRootDpr();
+    POINT tl = { static_cast<LONG>(std::lround(x * dpr)), static_cast<LONG>(std::lround(y * dpr)) };
+    POINT br = { static_cast<LONG>(std::lround((x + mRect.W()) * dpr)),
+                 static_cast<LONG>(std::lround((y + mRect.H()) * dpr)) };
+    ::ClientToScreen(hwnd, &tl);
+    ::ClientToScreen(hwnd, &br);
+    r = { tl.x, tl.y, br.x, br.y };
+    return true;
+  }
+
+  bool _openList()
+  {
+    glint_select_popup_window::request req;
+    if (!_anchorOnScreen(req.anchor)) return false;
+    req.options       = options;
+    req.selectedIndex = selectedIndex;
+    req.fontFamily    = computedStyle.fontFamily;
+    req.fontSize      = computedStyle.fontSize.toFloat() > 0.f ? computedStyle.fontSize.toFloat() : 13.f;
+
+    // Callbacks run on the popup's thread: hop back to ours (skipped if this
+    // select was destroyed in the meantime).
+    auto post = ownerThreadPoster();
+    req.onPicked = [this, post](int i) { post([this, i] { setValue(i); }); };
+    req.onClosed = [st = mListState] {
+      st->closedAt = std::chrono::steady_clock::now().time_since_epoch().count();
+      st->open = false;
+    };
+
+    glint_element* canvas = this;
+    while (canvas->mParent) canvas = canvas->mParent;
+    mListState->open = true;
+    glint_select_popup_window::shared()->show(std::move(req), canvas);
+    return true;
+  }
+#endif
 
   void _openMenu()
   {
     if (options.empty()) return;
+#if defined(_WIN32) || defined(OS_WIN)
+    if (_openList()) return;
+#endif
 
     using P = std::pair<int, std::string>;
     std::vector<P> items;
@@ -375,7 +452,8 @@ protected:
     }
 
     const float fSize = active.fontSize.toFloat() > 0.f ? active.fontSize.toFloat() : 12.f;
-    SkFont       font  = skFont(fSize);
+    SkFont       font  = skFont(fSize, computedStyle.fontFamily.c_str(), computedStyle.fontWeight,
+                                computedStyle.fontStyle.c_str());
     SkPaint      tp;
     tp.setColor(skColor(active.color.value));
     tp.setAntiAlias(true);

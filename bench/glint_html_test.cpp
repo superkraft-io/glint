@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <functional>
 #include <string>
 
 namespace {
@@ -101,8 +103,11 @@ void treeChecks()
     expectTree("implied </li>", "<ul><li>a<li>b</ul>", "ul(li{\"a\"} li{\"b\"})", o);
   }
   expectTree("list markers", "<ol start=3><li>a<li>b</ol><ul><li>c</ul>",
-             "ol(li(::marker{\"3. \"} #text{\"a\"}) li(::marker{\"4. \"} #text{\"b\"})) "
-             "ul(li(::marker{\"\xE2\x80\xA2 \"} #text{\"c\"}))");
+             "ol(li(::marker.glint-marker-num{\"3.\"} #text{\"a\"}) li(::marker.glint-marker-num{\"4.\"} #text{\"b\"})) "
+             "ul(li(::marker.glint-marker-disc #text{\"c\"}))");
+  expectTree("nested list markers", "<ul><li>a<ul><li>b<ul><li>c</ul></ul></ul>",
+             "ul(li(::marker.glint-marker-disc #text{\"a\"} ul(li(::marker.glint-marker-circle #text{\"b\"} "
+             "ul(li(::marker.glint-marker-square #text{\"c\"}))))))");
   expectTree("unknown + custom tags", "<section><my-widget>w</my-widget></section>",
              "section(my-widget{\"w\"})");
   expectTree("inline svg skipped", "<div>a<svg><rect/></svg></div>",
@@ -297,6 +302,32 @@ void layoutChecks()
     check(ul->mRect.B - li->mRect.B < 1.f, "nested list: ul ends with its last item", buf);
   }
 
+  // <select> gets a clickable box from the HTML defaults (glint_select has none).
+  {
+    Doc d;
+    glint_html_set_inner_html(&d.doc.mCanvas,
+      "<form style='display:flex;flex-direction:column;align-items:flex-start'>"
+      "<select><option>Apple</option><option selected>Banana</option></select></form>");
+    d.doc.updateStyleAndLayout();
+    auto* sel = d.doc.mCanvas.mChildren[0]->mChildren[0].get();
+    const float x = (sel->mRect.L + sel->mRect.R) * 0.5f, y = (sel->mRect.T + sel->mRect.B) * 0.5f;
+    char buf[96]; std::snprintf(buf, sizeof(buf), "  select %.1fx%.1f", sel->mRect.W(), sel->mRect.H());
+    check(sel->mRect.H() >= 18.f && d.doc.mCanvas.HitTest(x, y) == sel, "select: has a box and receives the click", buf);
+  }
+
+  // A table with width:auto shrinks to its columns (Chrome); width:100% fills.
+  {
+    Doc d;
+    glint_html_set_inner_html(&d.doc.mCanvas,
+      "<div style='width:800px'><table><tr><td>a</td><td>b</td></tr></table>"
+      "<table style='width:100%'><tr><td>a</td></tr></table></div>");
+    d.doc.updateStyleAndLayout();
+    const auto* box = d.doc.mCanvas.mChildren[0].get();
+    const float autoW = box->mChildren[0]->mRect.W(), fullW = box->mChildren[1]->mRect.W();
+    char buf[96]; std::snprintf(buf, sizeof(buf), "  auto table w=%.1f, 100%% table w=%.1f", autoW, fullW);
+    check(autoW > 0.f && autoW < 200.f && std::fabs(fullW - 800.f) < 1.f, "table: auto width shrinks to fit", buf);
+  }
+
   // Shrink-to-fit cell with one line of inline runs stays one line tall (its
   // intrinsic-width estimate is narrower than the line; Text demo page).
   {
@@ -317,8 +348,53 @@ void layoutChecks()
 
 } // namespace
 
-int main()
+// --dump <url> <webroot> <viewportW>: lay out a page file the way a browser
+// window would (body margin 8px) and print every element's border box, one
+// per line, indented by depth: "tag x= y= w= h=". Compare with a browser's
+// getBoundingClientRect() of the same file.
+int dumpPage(const std::string& url, const std::string& webRoot, float viewportW)
 {
+  glint_document doc{ glint_rect(0, 0, viewportW, 4000.f), nullptr, [] {} };
+  doc.onRequest = [webRoot](glint_resource_request& req) {
+    std::string p = req.pathname.empty() ? req.url : req.pathname;
+    while (!p.empty() && (p.front() == '/' || p.front() == '\\')) p.erase(p.begin());
+    req.fromFile(webRoot + "/" + p);
+  };
+  auto* page = new glint_element();
+  page->style.margin = "8px";   // the browser's body margin
+  doc.mCanvas.addChild(page);
+  const auto res = glint_html_load(doc, url, page);
+  if (!res.ok) { std::printf("load failed: %s\n", res.error.c_str()); return 1; }
+  for (int i = 0; i < 3; ++i) doc.updateStyleAndLayout();
+
+  std::function<void(const glint_element&, int)> walk = [&](const glint_element& e, int depth) {
+    const std::string tag = e.tagName() ? e.tagName() : "?";
+    if (tag == "::marker") return;
+    const glint_rect& r = e.mRect;
+    std::printf("%*s%s%s%s x=%.1f y=%.1f w=%.1f h=%.1f\n", depth * 2, "", tag.c_str(),
+                e.className.empty() ? "" : ".", std::string(e.className).c_str(), r.L, r.T, r.W(), r.H());
+    static const char* kComponents[] = { "input", "select", "textarea", "button", "progress", "meter", "img" };
+    for (const char* comp : kComponents) if (tag == comp) return;
+    for (const auto& c : e.mChildren) walk(*c, depth + 1);
+  };
+  walk(*page, 0);
+  if (std::getenv("GLINT_DUMP_SNAPSHOT")) std::printf("%s\n", glint_snapshot::dump(doc).c_str());
+  if (std::getenv("GLINT_DUMP_FONT"))
+  {
+    SkFont f = glint_element::skFont(14.f, "Kanit", 400.f, "normal");
+    SkFontMetrics m; f.getMetrics(&m);
+    SkString fam; f.getTypeface()->getFamilyName(&fam);
+    std::printf("Kanit 14: family=%s ascent=%.2f descent=%.2f leading=%.2f -> %.2f\n",
+                fam.c_str(), -m.fAscent, m.fDescent, m.fLeading, -m.fAscent + m.fDescent + m.fLeading);
+  }
+  return 0;
+}
+
+int main(int argc, char** argv)
+{
+  if (argc >= 5 && std::string(argv[1]) == "--dump")
+    return dumpPage(argv[2], argv[3], static_cast<float>(std::atof(argv[4])));
+
   treeChecks();
   layoutChecks();
   std::printf("%d/%d checks passed\n", gChecks - gFailures, gChecks);
