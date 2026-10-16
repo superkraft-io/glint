@@ -697,6 +697,13 @@ public:
    * the parent's current scroll offset is accounted for. If this element has no
    * parent, nullptr falls back to the root client-space position.
    */
+  /** The first descendant (document order) matching a CSS selector list, or
+   *  nullptr; querySelectorAll returns every match. Same selector engine as
+   *  stylesheets (".card > button", "[data-action]", "#save", "li:hover"...);
+   *  an invalid selector matches nothing. Defined in glint_document.hpp. */
+  glint_element* querySelector(const std::string& selectors);
+  std::vector<glint_element*> querySelectorAll(const std::string& selectors);
+
   glint_point getPosition(const glint_element* relativeTo = nullptr) const
   {
     const glint_point self = _positionInClientSpace();

@@ -328,6 +328,47 @@ void layoutChecks()
     check(autoW > 0.f && autoW < 200.f && std::fabs(fullW - 800.f) < 1.f, "table: auto width shrinks to fit", buf);
   }
 
+  // querySelector / querySelectorAll: stylesheet selectors, descendants only,
+  // document order.
+  {
+    Doc d;
+    glint_element* root = &d.doc.mCanvas;
+    glint_html_set_inner_html(root,
+      "<div class=box><p id=first>1</p><span class=b data-k=v>2</span>"
+      "<section><p class=b>3</p></section></div>");
+    d.doc.updateStyleAndLayout();
+    auto* box = root->querySelector(".box");
+    auto* first = root->querySelector("#first");
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "  box=%p first=%s", (void*)box, first ? first->innerText.c_str() : "null");
+    check(box && first && first->innerText == "1", "querySelector: class and id", buf);
+    check(root->querySelectorAll("p").size() == 2, "querySelectorAll: type, document order");
+    check(root->querySelectorAll(".b").size() == 2 && root->querySelectorAll(".box > .b").size() == 1,
+          "querySelectorAll: class and child combinator");
+    auto* attr = root->querySelector("[data-k=\"v\"]");
+    check(attr && attr->innerText == "2", "querySelector: attribute selector");
+    check(box && box->querySelector(".box") == nullptr, "querySelector: descendants only");
+    check(root->querySelector("p, span")->innerText == "1", "querySelector: list, first in document order");
+    check(root->querySelector("%%") == nullptr && root->querySelectorAll("%%").empty(), "querySelector: invalid matches nothing");
+    check(d.doc.querySelector("section p") != nullptr, "document querySelector");
+  }
+
+  // DOMContentLoaded fires once on the load target, with the tree in place.
+  {
+    Doc d;
+    auto* page = new glint_element();
+    d.doc.mCanvas.addChild(page);
+    int fired = 0;
+    bool sawButton = false;
+    page->addEventListener("DOMContentLoaded", [&](glint_event& e) {
+      ++fired;
+      sawButton = e.currentTarget->querySelector("button#go") != nullptr;
+    });
+    const auto res = glint_html_load_string(d.doc, "<!doctype html><title>T</title><p>x<button id=go>Go</button></p>", page);
+    char buf[64]; std::snprintf(buf, sizeof(buf), "  fired=%d sawButton=%d", fired, sawButton ? 1 : 0);
+    check(res.ok && fired == 1 && sawButton, "DOMContentLoaded: fired once, tree queryable", buf);
+  }
+
   // Shrink-to-fit cell with one line of inline runs stays one line tall (its
   // intrinsic-width estimate is narrower than the line; Text demo page).
   {

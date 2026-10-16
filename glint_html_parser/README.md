@@ -47,6 +47,41 @@ Every call returns a `glint_html_result` with `ok`, `error` and the document's `
 - **Resources:** stylesheets, images and fonts are fetched through `doc.onRequest`. Relative URLs resolve against the page URL; `url()` inside a stylesheet resolves against that stylesheet's URL, as in CSS.
 - **Dropped:** `<script>`, `<template>` and comments. There is no scripting.
 
+## Making it interactive
+
+There is no scripting: `onclick="..."` attributes are kept as plain attributes and do nothing. Behavior is attached in C++ to the elements the markup became, the same way as for a page built in C++.
+
+1. **`DOMContentLoaded`:** `glint_html_load` / `glint_html_load_string` fire it on `target` once the tree is built and styled. Add the listener before loading; it runs again on every (re)load of the page.
+2. **Find elements** with `querySelector` / `querySelectorAll`, on any element or the document. They take the same selectors as stylesheets, search descendants only, and return results in document order.
+3. **Attach behavior:** use the component callbacks (`glint_button::onClick`, `glint_input::onChange`, `glint_select::onChange`, `glint_form::onSubmit`...) or `addEventListener` on any element. Events bubble, so a single listener on a container can handle many children.
+
+```cpp
+page->addEventListener("DOMContentLoaded", [this](glint_event& e) {
+  glint_element* root = e.currentTarget;
+
+  if (auto* save = dynamic_cast<glint_button*>(root->querySelector("#save")))
+    save->onClick = [this] { saveSettings(); };
+
+  // <button data-action="like">, <button data-action="reset">...
+  for (glint_element* btn : root->querySelectorAll("[data-action]"))
+  {
+    bool found = false;
+    const std::string action = btn->getAttribute("data-action", found);
+    btn->addEventListener("click", [this, action](glint_event&) { runAction(action); });
+  }
+
+  if (auto* form = dynamic_cast<glint_form*>(root->querySelector("form#signup")))
+    form->onSubmit = [](const std::vector<glint_form_value>& values, glint_element*) {
+      return true;   // values: name/value pairs, like a browser submit
+    };
+});
+glint_html_load(*doc, "html/settings.html", page);
+```
+
+To change content later, set an element's fields and mark it dirty, e.g. `el->innerText = "2 likes"; el->setDirty(false);`. You can also replace a subtree with `glint_html_set_inner_html`.
+
+There is no page `load` event yet. Images load lazily, when first painted, and have no per-image `load`/`error` events.
+
 ## What the markup becomes
 
 | Markup | Glint |

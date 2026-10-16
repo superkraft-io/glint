@@ -1340,6 +1340,10 @@ public:
     return findByStringId(mCanvas, strId);
   }
 
+  /** CSS selector lookup over the whole document (see glint_element::querySelector). */
+  glint_element* querySelector(const std::string& selectors) { return mCanvas.querySelector(selectors); }
+  std::vector<glint_element*> querySelectorAll(const std::string& selectors) { return mCanvas.querySelectorAll(selectors); }
+
   /** Called by glint_element::notifyDestroyed() (via destructor).
    *  Nulls every tracking pointer that equals `node` OR has `node` anywhere in
    *  its ancestor (mParent) chain.  Without the ancestor check, destroying a
@@ -4492,6 +4496,41 @@ inline void glint_element::_markRootLayoutDirty()
 inline float glint_element::_getRootDpr() const
 {
   return mRoot ? mRoot->devicePixelRatio : 1.f;
+}
+
+// ── glint_element::querySelector / querySelectorAll ──────────────────────────
+// Descendants only (not the element itself), in document order, like the DOM.
+inline std::vector<glint_element*> glint_element::querySelectorAll(const std::string& selectors)
+{
+  std::vector<glint_element*> out;
+  const GlintSelectorList list = GlintCssParser::parseSelector(selectors);
+  if (list.selectors.empty()) return out;
+  std::function<void(glint_element*)> walk = [&](glint_element* e) {
+    for (const auto& c : e->mChildren)
+    {
+      GlintCssDomAdapter dom(c.get());
+      if (list.matches(dom)) out.push_back(c.get());
+      walk(c.get());
+    }
+  };
+  walk(this);
+  return out;
+}
+
+inline glint_element* glint_element::querySelector(const std::string& selectors)
+{
+  const GlintSelectorList list = GlintCssParser::parseSelector(selectors);
+  if (list.selectors.empty()) return nullptr;
+  std::function<glint_element*(glint_element*)> walk = [&](glint_element* e) -> glint_element* {
+    for (const auto& c : e->mChildren)
+    {
+      GlintCssDomAdapter dom(c.get());
+      if (list.matches(dom)) return c.get();
+      if (auto* hit = walk(c.get())) return hit;
+    }
+    return nullptr;
+  };
+  return walk(this);
 }
 
 #ifdef _WIN32
