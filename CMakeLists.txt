@@ -542,6 +542,41 @@ else()
   endfunction()
 endif()
 
+# HTML parsing (glint_html_parser/): lexbor builds the spec DOM, glint_html.cpp
+# translates it into glint_elements. Opt-in per app: link glint::html.
+option(GLINT_WITH_HTML
+  "Build glint::html (HTML parser backed by the vendored lexbor library)"
+  ON)
+
+if(GLINT_WITH_HTML)
+  set(_GLINT_LEXBOR_DIR "${CMAKE_CURRENT_LIST_DIR}/third_party/lexbor")
+  if(NOT EXISTS "${_GLINT_LEXBOR_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+      "GLINT_WITH_HTML is ON but lexbor is missing. Run: "
+      "git submodule update --init --recursive (or pass -DGLINT_WITH_HTML=OFF).")
+  endif()
+
+  set(LEXBOR_BUILD_SHARED   OFF)
+  set(LEXBOR_BUILD_STATIC   ON)
+  set(LEXBOR_BUILD_EXAMPLES OFF)
+  set(LEXBOR_BUILD_TESTS    OFF)
+  set(LEXBOR_BUILD_UTILS    OFF)
+  set(LEXBOR_INSTALL_HEADERS OFF)
+  add_subdirectory("${_GLINT_LEXBOR_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/lexbor" EXCLUDE_FROM_ALL)
+  # The host app sets its runtime after add_subdirectory(glint); match Skia's
+  # static runtime here so lexbor links into /MT(d) apps.
+  set_property(TARGET lexbor_static PROPERTY
+    MSVC_RUNTIME_LIBRARY "${GLINT_MSVC_RUNTIME_LIBRARY_EXPR}")
+
+  add_library(glint_html STATIC
+    "${CMAKE_CURRENT_LIST_DIR}/glint_html_parser/glint_html.cpp")
+  add_library(glint::html ALIAS glint_html)
+  set_target_properties(glint_html PROPERTIES EXPORT_NAME html)
+  set_property(TARGET glint_html PROPERTY
+    MSVC_RUNTIME_LIBRARY "${GLINT_MSVC_RUNTIME_LIBRARY_EXPR}")
+  target_link_libraries(glint_html PUBLIC glint::core PRIVATE lexbor_static)
+endif()
+
 if(NOT GLINT_ENABLE_INSPECTOR)
   target_compile_definitions(glint_host_win32 INTERFACE GLINT_INSPECTOR_DISABLED)
   target_compile_definitions(glint_host_win32_support PRIVATE GLINT_INSPECTOR_DISABLED)
@@ -563,6 +598,9 @@ install(TARGETS glint_core glint_host glint_host_win32
   EXPORT glintTargets)
 if(WIN32)
   install(TARGETS glint_host_win32_support EXPORT glintTargets)
+endif()
+if(GLINT_WITH_HTML)
+  install(TARGETS glint_html lexbor_static EXPORT glintTargets)
 endif()
 
 install(DIRECTORY "${CMAKE_CURRENT_LIST_DIR}"

@@ -50,3 +50,18 @@ elseif(APPLE)
 else()
   target_link_libraries(glint_bench PRIVATE glint::host_linux)
 endif()
+
+# glint_html_test — tree/layout checks for glint::html (exit 1 on failure).
+if(TARGET glint::html)
+  add_executable(glint_html_test glint_html_test.cpp glint_snapshot.hpp)
+  set_property(TARGET glint_html_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  target_include_directories(glint_html_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
+  if(WIN32)
+    target_link_libraries(glint_html_test PRIVATE glint::html glint::host_win32)
+  elseif(APPLE)
+    target_link_libraries(glint_html_test PRIVATE glint::html glint::host_mac)
+  else()
+    target_link_libraries(glint_html_test PRIVATE glint::html glint::host_linux)
+  endif()
+endif()

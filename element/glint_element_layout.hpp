@@ -310,7 +310,202 @@
   // flex-column / block: sum child heights + gaps + vertical padding.
   // flex-row:           max child height  +         vertical padding.
 
-  static float measureIntrinsicH(const glint_element& c, float refW, float refH)
+  // Height of c's inline formatting context when its runs wrap at availW:
+  // the same greedy packing as layoutInline (collapsible spaces between runs
+  // included), with each line as tall as its tallest item. `lines` returns the
+  // line-box count so callers can keep single-line sizing unchanged.
+  // Font a text run draws with: each property from the nearest ancestor that
+  // sets it (the inheritance layoutInline resolves), 16px by default.
+  static SkFont _inheritedInlineFont(const glint_element* e, float* sizeOut = nullptr)
+  {
+    float sz = 0.f, weight = 0.f;
+    std::string family, fstyle;
+    for (; e; e = e->mParent)
+    {
+      const auto& s = e->computedStyle;
+      if (sz <= 0.f && s.fontSize.toFloat() > 0.f) sz = s.fontSize.toFloat();
+      if (family.empty()) family = s.fontFamily;
+      if (weight <= 0.f) weight = s.fontWeight;
+      if (fstyle.empty()) fstyle = s.fontStyle;
+    }
+    if (sz <= 0.f) sz = 16.f;
+    if (sizeOut) *sizeOut = sz;
+    return skFont(sz, family.c_str(), weight, fstyle.c_str());
+  }
+
+  static bool _isInlineLevelDisplay(const std::string& d)
+  {
+    return d == "inline" || d == "inline-block" || d == "inline-flex";
+  }
+
+  // Max-content width of a block whose children flow inline: inline-level
+  // runs laid end to end (with the collapsible spaces between them), blocks
+  // on lines of their own — the widest line wins.
+  static float _measureInlineMaxContentW(const glint_element& c, float contentRefW, bool refWDefinite)
+  {
+    float best = 0.f, line = 0.f;
+    bool pendingSpace = false;
+    float pendingSpaceAdv = 0.f;
+    for (const auto& childPtr : c.mChildren)
+    {
+      const glint_element& child = *childPtr;
+      const auto& cs = child.computedStyle;
+      if (cs.display == "none" || cs.position == "absolute") continue;
+      const float cw = childPrefW(child, contentRefW, refWDefinite);
+      const float mL = cs.marginLeft.resolve(contentRefW);
+      const float mR = cs.marginRight.resolve(contentRefW);
+      if (!_isInlineLevelDisplay(cs.display))
+      {
+        best = std::max({best, line, mL + cw + mR});
+        line = 0.f;
+        pendingSpace = false;
+        continue;
+      }
+      float spaceAdv = 0.f;
+      bool leadingWS = false, trailingWS = false, allWS = false;
+      if (cs.display == "inline" && !child.innerText.empty())
+      {
+        const SkFont font = _inheritedInlineFont(&child);
+        spaceAdv   = font.measureText(" ", 1, SkTextEncoding::kUTF8);
+        leadingWS  = glint_element::_isWhiteSpaceChar(child.innerText.front());
+        trailingWS = glint_element::_isWhiteSpaceChar(child.innerText.back());
+        allWS      = std::all_of(child.innerText.begin(), child.innerText.end(),
+                                 [](char ch) { return glint_element::_isWhiteSpaceChar(ch); });
+      }
+      if (allWS)
+      {
+        if (!pendingSpace) pendingSpaceAdv = spaceAdv;
+        pendingSpace = true;
+        continue;
+      }
+      if (line > 0.f && (pendingSpace || leadingWS))
+        line += pendingSpace ? pendingSpaceAdv : spaceAdv;
+      line += mL + cw + mR;
+      pendingSpace = trailingWS;
+      pendingSpaceAdv = spaceAdv;
+    }
+    return std::max(best, line);
+  }
+
+  static float _measureInlineFlowH(const glint_element& c, float availW, float contentRefH, int& lines)
+  {
+    lines = 0;
+    float total = 0.f, cursorX = 0.f, lineH = 0.f;
+    bool pendingSpace = false;
+    float pendingSpaceAdv = 0.f;
+    auto flush = [&] {
+      if (cursorX > 0.f || lineH > 0.f) { total += lineH; ++lines; }
+      cursorX = 0.f; lineH = 0.f; pendingSpace = false;
+    };
+
+    for (const auto& childPtr : c.mChildren)
+    {
+      const glint_element& child = *childPtr;
+      const auto& cs = child.computedStyle;
+      if (cs.display == "none" || cs.position == "absolute") continue;
+      const bool isBlockLevel = (cs.display == "block" || cs.display == "flex") ||
+                                (!_isInlineLevelDisplay(cs.display) && child.innerText.empty() && !child.mChildren.empty());
+      if (isBlockLevel)
+      {
+        flush();
+        total += childPrefH(child, contentRefH, availW, false);
+        continue;
+      }
+
+      const auto ws = child._whiteSpaceMode();
+      const bool collapseWS = (ws == glint_element::_WhiteSpaceMode::Normal ||
+                               ws == glint_element::_WhiteSpaceMode::PreLine);
+      const bool chrome = static_cast<float>(cs.paddingLeft) > 0.f || static_cast<float>(cs.paddingRight) > 0.f ||
+                          static_cast<float>(cs.paddingTop) > 0.f || static_cast<float>(cs.paddingBottom) > 0.f ||
+                          cs.resolvedBorderWidth(0) > 0.f || cs.resolvedBorderWidth(1) > 0.f ||
+                          cs.resolvedBorderWidth(2) > 0.f || cs.resolvedBorderWidth(3) > 0.f ||
+                          cs.backgroundColor.value.A > 0 || !cs.width.raw.empty() || !cs.height.raw.empty();
+      if (!child.innerText.empty() && collapseWS && !chrome && cs.display != "inline-block")
+      {
+        float sz = 16.f;
+        const SkFont font = _inheritedInlineFont(&child, &sz);
+        SkFontMetrics m; font.getMetrics(&m);
+        float lh = cs.usedLineHeight(sz);
+        if (lh <= 0.f) lh = c.computedStyle.usedLineHeight(sz);
+        if (lh <= 0.f) lh = -m.fAscent + m.fDescent + std::max(0.f, m.fLeading);
+        auto adv = [&](const std::string& s) {
+          GLINT_PERF_TEXT(s.size());
+          return font.measureText(s.c_str(), s.size(), SkTextEncoding::kUTF8);
+        };
+        const float spaceAdv = adv(" ");
+        const std::string& t = child.innerText;
+        const bool leadingWS  = glint_element::_isWhiteSpaceChar(t.front());
+        const bool trailingWS = glint_element::_isWhiteSpaceChar(t.back());
+        bool needGap = pendingSpace || leadingWS;
+        const float gapAdv = pendingSpace ? pendingSpaceAdv : spaceAdv;
+        bool inRun = false, hasWord = false;
+        size_t i = 0;
+        while (i < t.size())
+        {
+          if (glint_element::_isWhiteSpaceChar(t[i]))
+          {
+            if (t[i] == '\n' && ws == glint_element::_WhiteSpaceMode::PreLine) { flush(); inRun = false; needGap = false; }
+            ++i;
+            continue;
+          }
+          size_t j = i;
+          while (j < t.size() && !glint_element::_isWhiteSpaceChar(t[j])) ++j;
+          const float w = adv(t.substr(i, j - i));
+          float gap = 0.f;
+          if (inRun) gap = spaceAdv;
+          else if (needGap && cursorX > 0.f) gap = gapAdv;
+          needGap = false;
+          if (cursorX > 0.f && cursorX + gap + w > availW) { flush(); gap = 0.f; }
+          cursorX += gap + w;
+          lineH = std::max(lineH, lh);
+          inRun = hasWord = true;
+          i = j;
+        }
+        const bool pend = hasWord ? trailingWS : (pendingSpace || leadingWS);
+        if (pend && (hasWord || !pendingSpace)) pendingSpaceAdv = spaceAdv;
+        pendingSpace = pend;
+        continue;
+      }
+
+      const float cw = std::max(0.f, childPrefW(child, availW));
+      const float ch = std::max(0.f, childPrefH(child, contentRefH, availW, false));
+      const float gap = (pendingSpace && cursorX > 0.f) ? pendingSpaceAdv : 0.f;
+      pendingSpace = false;
+      if (cursorX > 0.f && cursorX + gap + cw > availW) flush();
+      else cursorX += gap;
+      cursorX += cw;
+      lineH = std::max(lineH, ch);
+    }
+    flush();
+    return total;
+  }
+
+  // True when the width measureIntrinsicH receives for c is the width c will
+  // be laid out at: an explicit length, or a block that fills its container.
+  // Shrink-to-fit boxes (table cells, inline-blocks, abspos, row flex items)
+  // get an estimate from measureIntrinsicW, which stacks inline children
+  // instead of summing them, so wrapping measured against it would be wrong.
+  static bool _inlineFlowWidthIsFinal(const glint_element& c)
+  {
+    const auto& cs = c.computedStyle;
+    const auto& w  = cs.width.raw;
+    if (!w.empty() && w != "auto" && w != "fit-content" && w != "min-content" && w != "max-content")
+      return true;
+    if (cs.position == "absolute" || cs.position == "fixed") return false;
+    if (cs.display != "" && cs.display != "block" && cs.display != "flex") return false;
+    const glint_element* p = c.mParent;
+    if (!p) return true;
+    const auto& pd = p->computedStyle.display;
+    if (pd == "flex")
+      return p->computedStyle.flexDirection == "column" || p->computedStyle.flexDirection == "column-reverse";
+    return pd == "" || pd == "block";
+  }
+
+  // flowW: the border-box width c will be laid out at, when the caller knows
+  // it (a block filling its container, or an explicit width); 0 = unknown.
+  // Only the inline-flow wrap measurement uses it: refW is often an intrinsic
+  // estimate (max child width), not the width c's lines really wrap at.
+  static float measureIntrinsicH(const glint_element& c, float refW, float refH, float flowW = 0.f)
   {
     GLINT_PERF_INC(measureIntrinsicH);
     // Use computedStyle for padding+border — same source getContent() reads.
@@ -366,6 +561,21 @@
         }
       }
       if (allInlineLevel && inFlowCount > 0) {
+        // Runs that wrap: sum the line boxes (layoutInline packs them the same way).
+        // Cheap gate first: one-line widths (memoized) that fit can't wrap.
+        float oneLineW = 0.f;
+        const float flowContentW = std::max(0.f, flowW - insetL - insetR);
+        if (flowContentW > 0.f)
+          for (const auto& child : c.mChildren) {
+            if (child->computedStyle.display  == "none")     continue;
+            if (child->computedStyle.position == "absolute") continue;
+            oneLineW += childPrefW(*child, flowContentW);
+          }
+        if (flowContentW > 0.f && oneLineW > flowContentW) {
+          int lines = 0;
+          const float flowH = _measureInlineFlowH(c, flowContentW, contentRefH, lines);
+          if (lines > 1) return insetT + flowH + insetB;
+        }
         float lineH = 0.f;
         for (const auto& child : c.mChildren) {
           if (child->computedStyle.display  == "none")     continue;
@@ -377,6 +587,24 @@
       }
     }
 
+    // Block with inline AND block children: layoutBlock hands it to
+    // layoutInline, which packs the inline runs into shared lines between the
+    // blocks. Measure it the same way (summing every child would give each
+    // run a line of its own).
+    if (!isRow && flowW > 0.f && (c.computedStyle.display == "" || c.computedStyle.display == "block"))
+    {
+      bool hasInline = false;
+      for (const auto& child : c.mChildren)
+        if (child->computedStyle.display == "inline" && child->computedStyle.position != "absolute")
+        { hasInline = true; break; }
+      if (hasInline)
+      {
+        int lines = 0;
+        const float flowContentW = std::max(0.f, flowW - insetL - insetR);
+        return insetT + _measureInlineFlowH(c, flowContentW, contentRefH, lines) + insetB;
+      }
+    }
+
     float result = 0.f;
     int   n      = 0;
     for (const auto& child : c.mChildren)
@@ -384,8 +612,11 @@
       if (child->computedStyle.display  == "none")     continue;
       if (child->computedStyle.position == "absolute") continue;
       // Row-flex: child's available width = its own preferred width.
-      // Column-flex / block: child stretches to the full container content width.
-      const float childW = isRow ? childPrefW(*child, refW) : contentRefW;
+      // Column-flex / block: child stretches to the full container content width
+      // (the real one when the caller knows it: refW may be an estimate).
+      const float flowContentW = std::max(0.f, flowW - insetL - insetR);
+      const float childW = isRow ? childPrefW(*child, refW)
+                                 : (flowContentW > 0.f ? flowContentW : contentRefW);
       // parentHDefinite=false: the container's height is auto/intrinsic, so per
       // CSS spec §10.5 any percentage height on the child resolves to auto.
       const float ch = childPrefH(*child, contentRefH, childW, false);
@@ -600,6 +831,20 @@
       float totalW = 0.f;
       for (float w : cols) totalW += w;
       return insetL + totalW + insetR;
+    }
+
+    // Inline formatting context (layoutBlock → layoutInline): runs share lines.
+    // Also for inline / inline-block boxes with children: they lay out their
+    // content with layoutBlock too.
+    const auto& cd = c.computedStyle.display;
+    if (!isRow && (cd == "" || cd == "block" || cd == "inline" || cd == "inline-block"))
+    {
+      bool hasInline = false;
+      for (const auto& child : c.mChildren)
+        if (child->computedStyle.display == "inline" && child->computedStyle.position != "absolute")
+        { hasInline = true; break; }
+      if (hasInline)
+        return insetL + _measureInlineMaxContentW(c, contentRefW, refWDefinite) + insetR;
     }
 
     float result = 0.f;
@@ -846,7 +1091,17 @@
         // returns the intrinsic content width, which is the best pre-flex estimate.
         const float grandW = parentW > 0.f ? parentW : c.mParentW;
         const float selfW  = grandW > 0.f  ? childPrefW(c, grandW) : grandW;
-        h = measureIntrinsicH(c, selfW > 0.f ? selfW : grandW, parentH);
+        // The width c's inline lines wrap at: explicit, or the container's
+        // content width minus c's margins for a block that fills it.
+        float flowW = 0.f;
+        if (grandW > 0.f && _inlineFlowWidthIsFinal(c))
+        {
+          const auto& wr = c.computedStyle.width.raw;
+          if (!wr.empty() && wr != "auto") flowW = selfW;
+          else flowW = grandW - c.computedStyle.marginLeft.resolve(grandW)
+                              - c.computedStyle.marginRight.resolve(grandW);
+        }
+        h = measureIntrinsicH(c, selfW > 0.f ? selfW : grandW, parentH, flowW);
       }
       else
       {
@@ -1303,6 +1558,11 @@
     float cursorX  = 0.f;
     float cursorY  = 0.f;
     float lineMaxH = 0.f;
+    // Collapsible white space between sibling runs (CSS Text §4.1.1): a run's
+    // trailing space, or a whitespace-only run, becomes one space before the
+    // next inline content on the same line. Dropped at line starts and breaks.
+    bool  pendingSpace    = false;
+    float pendingSpaceAdv = 0.f;
 
     struct _InlineLineItem
     {
@@ -1675,6 +1935,7 @@
       cursorX = 0.f;
       lineMaxH = 0.f;
       lineItems.clear();
+      pendingSpace = false;
     };
 
     for (auto& childPtr : mChildren)
@@ -1688,7 +1949,7 @@
 
       const bool isBlockLevel =
         (disp == "block" || disp == "flex") ||
-        (disp != "inline" && child->innerText.empty() && !child->mChildren.empty());
+        (!_isInlineLevelDisplay(disp) && child->innerText.empty() && !child->mChildren.empty());
 
       if (isBlockLevel)
       {
@@ -1840,6 +2101,11 @@
         bool lineStarted = false;
         const bool childSubpixel = _hasSubpixelIntent(*child, rW, rH);
         const float spaceAdv = collapseWS ? skTextW(childFont, " ") : 0.f;
+        const bool leadingWS  = collapseWS && child->_isWhiteSpaceChar(child->innerText.front());
+        const bool trailingWS = collapseWS && child->_isWhiteSpaceChar(child->innerText.back());
+        bool needLeadGap = collapseWS && (pendingSpace || leadingWS);
+        const float leadGapAdv = pendingSpace ? pendingSpaceAdv : spaceAdv;
+        bool hasWord = false;
 
         auto emitFragment = [&]() {
           if (!lineStarted) return;
@@ -1876,9 +2142,11 @@
           {
             emitFragment();
             flushLine();
+            needLeadGap = false;
             lineByteStart = lineByteEnd = tok.byteEnd;
             continue;
           }
+          if (tok.isWord) hasWord = true;
 
           // probe = line + (space) + token. Its advance comes from the running
           // line advance: glyph advances add up, so this avoids re-measuring
@@ -1896,6 +2164,16 @@
                                       : lineAdv + (appendsSpace ? spaceAdv : 0.f) + tokAdv;
           if (!line.empty() && std::fabs(cursorX + probeW - rW) < 0.05f)
             probeW = skTextW(childFont, buildProbe());
+
+          if (needLeadGap && line.empty() && tok.isWord)
+          {
+            needLeadGap = false;
+            if (cursorX > 0.f)
+            {
+              if (cursorX + leadGapAdv + probeW <= rW) cursorX += leadGapAdv;
+              else flushLine();
+            }
+          }
 
           if (line.empty() && cursorX > 0.f && probeW > (rW - cursorX))
             flushLine();
@@ -1928,13 +2206,26 @@
         }
 
         emitFragment();
+        if (collapseWS)
+        {
+          // Whitespace-only run: carries (or starts) the pending space.
+          const bool pend = hasWord ? trailingWS : (pendingSpace || leadingWS);
+          if (pend && (hasWord || !pendingSpace)) pendingSpaceAdv = spaceAdv;
+          pendingSpace = pend;
+        }
+        else
+          pendingSpace = false;
         continue;
       }
 
       const float cw = std::max(0.f, childPrefW(*child, rW));
       float usedH = std::max(0.f, childPrefH(*child, rH, rW));
-      if (!childNowrap && cursorX + cw > rW && cursorX > 0.f)
+      const float leadGap = (pendingSpace && cursorX > 0.f) ? pendingSpaceAdv : 0.f;
+      pendingSpace = false;
+      if (!childNowrap && cursorX + leadGap + cw > rW && cursorX > 0.f)
         flushLine();
+      else
+        cursorX += leadGap;
 
       float baselineFromTop = usedH;
       float drawBaselineFromTop = baselineFromTop;

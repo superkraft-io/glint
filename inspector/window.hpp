@@ -3669,7 +3669,8 @@ function exportAbsoluteJSON() {
           case glint_resource_request::Type::Image:      cell->innerText = "img";  break;
           case glint_resource_request::Type::SVG:        cell->innerText = "svg";  break;
           case glint_resource_request::Type::Stylesheet: cell->innerText = "css";  break;
-          default:                                       cell->innerText = "?";    break;
+          case glint_resource_request::Type::Document:   cell->innerText = "html"; break;
+          default:                                      cell->innerText = "?";    break;
         }
         row->addChild(cell);
       }

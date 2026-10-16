@@ -46,7 +46,7 @@ class glint_element;
 
 struct glint_resource_request
 {
-  enum class Type { Image, SVG, Stylesheet, Unknown };
+  enum class Type { Image, SVG, Stylesheet, Unknown, Document };
 
   // ── Raw URL ──────────────────────────────────────────────────────────────
   std::string         url;           // full path / URL that was requested

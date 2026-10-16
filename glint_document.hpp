@@ -239,6 +239,36 @@ public:
    *   doc.loadStylesheet("res://app/main.css");  // triggers onRequest
    *   doc.loadStylesheet("styles/theme.css");    // falls back to disk
    */
+  /** Add an author stylesheet from CSS text (e.g. an HTML <style> block),
+   *  after the sheets already loaded.  `sourceUrl` labels it in the inspector. */
+  void addStylesheetText(const std::string& cssText, const std::string& sourceUrl = {})
+  {
+    auto sheet = GlintCssParser::parseStylesheet(cssText);
+    sheet.sourceUrl = sourceUrl;
+    mStylesheets.push_back(std::move(sheet));
+    _processFontFaces(mStylesheets.back());
+    _rebuildKeyframeRegistry();
+    _rebuildQualifiedRuleCache();
+    _invalidateMatchedCssRuleCache(/*bumpStylesheetRevision=*/true);
+    _applyCssToTree(&mCanvas);
+    mLastCSSError.clear();
+  }
+
+  /** Set once glint::html has appended its element defaults to the UA sheet. */
+  bool htmlUserAgentSheetApplied = false;
+
+  /** Append rules to the user-agent sheet: they lose to every author rule.
+   *  Used for opt-in defaults such as the HTML element styles. */
+  void appendUserAgentStylesheetText(const std::string& cssText)
+  {
+    auto sheet = GlintCssParser::parseStylesheet(cssText);
+    for (auto& r : sheet.rules) mUaSheet.rules.push_back(std::move(r));
+    _rebuildKeyframeRegistry();
+    _rebuildQualifiedRuleCache();
+    _invalidateMatchedCssRuleCache(/*bumpStylesheetRevision=*/true);
+    _applyCssToTree(&mCanvas);
+  }
+
   bool loadStylesheet(const std::string& path)
   {
     glint_resource_request req;
@@ -281,17 +311,9 @@ public:
       return false;
     }
 
-    auto sheet = GlintCssParser::parseStylesheet(cssText);
     // Use the original request pathname as the source URL (strips query/hash
     // and is more readable than the full URL in the inspector).
-    sheet.sourceUrl = req.pathname.empty() ? path : req.pathname;
-    mStylesheets.push_back(std::move(sheet));
-    _processFontFaces(mStylesheets.back());
-    _rebuildKeyframeRegistry();
-    _rebuildQualifiedRuleCache();
-    _invalidateMatchedCssRuleCache(/*bumpStylesheetRevision=*/true);
-    _applyCssToTree(&mCanvas);
-    mLastCSSError.clear();
+    addStylesheetText(cssText, req.pathname.empty() ? path : req.pathname);
 
     // Log to the network tab — after successful parse so byteSize is meaningful.
     if (fromDisk)

@@ -990,12 +990,54 @@ public:
   /** DOM getAttribute — returns a named attribute value.  Override in
    *  components that expose typed properties as HTML-style attributes
    *  (e.g. glint_input exposes `type`).  Returns "" and sets found=false
-   *  when the attribute is not present. */
-  virtual std::string getAttribute(const std::string& /*name*/, bool& found) const
+   *  when the attribute is not present.  The base reads the generic store
+   *  filled by setAttribute (e.g. by the HTML parser). */
+  virtual std::string getAttribute(const std::string& name, bool& found) const
   {
+    for (const auto& a : mAttributes)
+      if (a.first == name) { found = true; return a.second; }
     found = false;
     return "";
   }
+
+  /** DOM setAttribute for attributes without a typed property (data-*,
+   *  aria-*, title, href...).  Matched by [attr] selectors.  Re-cascades this
+   *  element only; selectors where the attribute sits on an ancestor or
+   *  sibling are re-evaluated on the next full restyle. */
+  void setAttribute(const std::string& name, std::string value)
+  {
+    for (auto& a : mAttributes)
+      if (a.first == name)
+      {
+        if (a.second == value) return;
+        a.second = std::move(value);
+        _onAttributeChanged();
+        return;
+      }
+    mAttributes.emplace_back(name, std::move(value));
+    _onAttributeChanged();
+  }
+
+  void removeAttribute(const std::string& name)
+  {
+    for (auto it = mAttributes.begin(); it != mAttributes.end(); ++it)
+      if (it->first == name)
+      {
+        mAttributes.erase(it);
+        _onAttributeChanged();
+        return;
+      }
+  }
+
+  bool hasAttribute(const std::string& name) const
+  {
+    bool found = false;
+    getAttribute(name, found);
+    return found;
+  }
+
+  /** Generic attributes in insertion order (typed properties not included). */
+  const std::vector<std::pair<std::string, std::string>>& attributes() const { return mAttributes; }
 
   // Controls override these hooks when they participate in a parent <form>.
   virtual bool isFormAssociatedControl() const { return false; }
@@ -2990,6 +3032,13 @@ protected:
   // whose selectors depend on its classes (".open > .item"), then invalidate.
   // Defined at the bottom of glint_document.hpp.
   void _onClassListChanged();
+  // A generic attribute changed: re-cascade this element ([attr] selectors).
+  void _onAttributeChanged()
+  {
+    if (mApplyCss) mApplyCss(this);
+    setDirty(false);
+  }
+  std::vector<std::pair<std::string, std::string>> mAttributes;
   // Children were inserted, removed or reordered: queue the restyle of the
   // elements whose position-dependent selectors (:nth-child, `+`, :empty...)
   // may now match differently. Defined at the bottom of glint_document.hpp.

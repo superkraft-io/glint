@@ -150,7 +150,7 @@ These tables are intentionally conservative.
 - `Partial` means the syntax or concept exists, but the runtime behavior is narrower than a browser or limited to specific components.
 - Features not listed here should be treated as unsupported until they are verified in code.
 
-Glint does not currently ship a generic HTML parser. The HTML rows below refer to the DOM-like C++ surface and the built-in components that intentionally mirror common HTML controls.
+HTML markup is parsed by `glint::html` (`glint_html_parser/`, opt-in: link `glint::html`). lexbor builds the spec DOM (implied tags, misnesting repair, entities, raw text) and the translator turns it into `glint_element`s and the built-in components: `glint_html_set_inner_html` / `glint_html_append` for fragments, `glint_html_load` / `glint_html_load_string` for documents (`<style>`, `<link rel=stylesheet>`, `<title>`, `<base>`). Known gaps: inline elements that contain elements lay out as one unbreakable box, inline `<svg>` is skipped, and table row groups are flattened into the table.
 
 #### HTML / DOM support matrix
 
@@ -162,8 +162,8 @@ Glint does not currently ship a generic HTML parser. The HTML rows below refer t
 | EventTarget-style listeners (`addEventListener`, `removeEventListener`, `once`) | Yes |  | Bubble-phase DOM-style dispatch is implemented. |
 | Capture-phase listeners |  | Yes | The `capture` option exists, but public capture-phase dispatch is not implemented yet. |
 | Scroll DOM properties (`scrollTop`, `scrollLeft`, `scrollWidth`, `scrollHeight`) | Yes |  | Wired into scrollable elements via the element-side scroll bindings. |
-| Selector-visible attributes |  | Yes | Live CSS attribute matching currently exposes `id` and `class` only. |
-| HTML-style built-ins (`button`, `input`, `select`, `img`, `ul`, `li`) |  | Yes | These are implemented as C++ components with HTML-style tag names, not via markup parsing. |
+| Selector-visible attributes | Yes |  | `id`, `class`, component attributes and any attribute set with `setAttribute` (all parsed HTML attributes). |
+| HTML-style built-ins (`button`, `input`, `select`, `img`, `ul`, `li`) |  | Yes | C++ components with HTML-style tag names; `glint::html` maps the matching tags (plus `textarea`, `form`, `progress`, `meter`) onto them. |
 | `input`-style attributes (`value`, `type`, `placeholder`, `min`, `max`, `readonly`, `disabled`) |  | Yes | Implemented on `glint_input`, not as generic DOM attributes across all elements. |
 | `select`-style attributes (`options`, `selectedIndex`, `placeholder`) |  | Yes | Implemented on `glint_select` with native popup-menu backing. |
 | `img`-style `src` loading |  | Yes | Implemented by `glint_image`, including file and request-handler loading paths. |

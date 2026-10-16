@@ -117,6 +117,15 @@ public:
   const char* typeName() const override { return "list"; }
   const char* tagName()  const override { return "ul"; }
 
+  // ARIA role of the widget; also keeps HTML list defaults (glint::html's
+  // `ul:not([role="listbox"])` margins/indent) off it.
+  std::string getAttribute(const std::string& name, bool& found) const override
+  {
+    std::string v = glint_element::getAttribute(name, found);
+    if (!found && name == "role") { found = true; return "listbox"; }
+    return v;
+  }
+
   // ── items accessor — mirrors the reference JS API ──────────────────────────
   struct ItemsAccessor
   {
