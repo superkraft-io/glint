@@ -31,6 +31,8 @@
  *   mem LABEL         private bytes, working set, GPU cache, decoded imgs
  *   move X Y          mouse moves to X Y
  *   click X Y         left click at X Y
+ *   key VK [TEXT]     press and release a key: VK = Windows virtual-key code
+ *                     (27 or 0x1B), TEXT = the character it types (optional)
  *   scroll X Y DY     mouse wheel at X Y, DY px (positive = down)
  *   frames N          redraw everything N times (default 60): average CPU
  *                     draw time and whole frame time, in the report
@@ -375,6 +377,15 @@ private:
         doc->OnMouseDown(x, y, left);
         doc->OnMouseUp(x, y, left);
       }
+      return true;
+    }
+    if (cmd == "key" && a.size() >= 2)
+    {
+      glint_key_press kp;
+      kp.vk = static_cast<int>(std::strtol(a[1].c_str(), nullptr, 0));
+      if (a.size() >= 3) std::snprintf(kp.utf8, sizeof(kp.utf8), "%s", a[2].c_str());
+      doc->OnKeyDown(kp);
+      doc->OnKeyUp(kp);
       return true;
     }
     if (cmd == "scroll" && a.size() >= 4)
