@@ -78,6 +78,17 @@ page->addEventListener("DOMContentLoaded", [this](glint_event& e) {
 glint_html_load(*doc, "html/settings.html", page);
 ```
 
+**Keyboard.** `keydown` / `keyup` go to the focused element and bubble up, like in Chrome. When nothing has focus they go to the page's body (the `glint_html_load` target, see `glint_document::setBodyElement`), or to the document's root if there's no body. So one listener on the page catches shortcuts whether or not a field is focused:
+
+```cpp
+page->addEventListener("keydown", [](glint_event& e) {
+  auto& ke = static_cast<glint_keyboard_event&>(e);
+  if (ke.key.vk == 0x1B /* Escape */) { closeDialog(); e.preventDefault(); }
+});
+```
+
+The key is described by a Windows virtual-key code (`ke.key.vk`), the typed text (`ke.key.utf8`), Shift/Ctrl/Alt and `ke.repeat`. `preventDefault()` stops the focused control's own handling (typing, for instance).
+
 To change content later, set an element's fields and mark it dirty, e.g. `el->innerText = "2 likes"; el->setDirty(false);`. You can also replace a subtree with `glint_html_set_inner_html`.
 
 There is no page `load` event yet. Images load lazily, when first painted, and have no per-image `load`/`error` events.

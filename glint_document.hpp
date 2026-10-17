@@ -1155,12 +1155,18 @@ public:
       _focusTraversal(key.shift);
       return true;
     }
-    if (!mFocusedNode) return false;
+    // Nothing focused: like Chrome, the key goes to the body (the document's
+    // root when there is none) and bubbles from there.
     glint_keyboard_event e;
     e.type      = "keydown";
     e.bubbles   = true;
     e.cancelable = true;
     e.key       = key;
+    if (!mFocusedNode)
+    {
+      _keyTargetWithoutFocus()->dispatchDOMEvent(e);
+      return e.defaultPrevented;
+    }
     mFocusedNode->dispatchDOMEvent(e);
     if (e.defaultPrevented) return true;
     // A listener that destroyed the focused node (nulled by
@@ -1172,12 +1178,16 @@ public:
   bool OnKeyUp(const glint_key_press& key)
   {
     if (onGlobalKeyUp && onGlobalKeyUp(key)) return true;
-    if (!mFocusedNode) return false;
     glint_keyboard_event e;
     e.type      = "keyup";
     e.bubbles   = true;
     e.cancelable = true;
     e.key       = key;
+    if (!mFocusedNode)
+    {
+      _keyTargetWithoutFocus()->dispatchDOMEvent(e);
+      return e.defaultPrevented;
+    }
     mFocusedNode->dispatchDOMEvent(e);
     if (e.defaultPrevented) return true;
     if (!mFocusedNode) return true;
@@ -1300,6 +1310,7 @@ public:
     if (mLastClickNode     && hasAncestor(mLastClickNode,     node)) mLastClickNode     = nullptr;
     if (mActiveGestureNode && hasAncestor(mActiveGestureNode, node)) mActiveGestureNode = nullptr;
     if (mFocusedNode   && hasAncestor(mFocusedNode,   node)) SetFocus(nullptr);
+    if (mBodyNode      && hasAncestor(mBodyNode,      node)) mBodyNode = nullptr;
     if (mGlobalAnchor.comp && hasAncestor(mGlobalAnchor.comp, node)) { mGlobalAnchor = {}; mGlobalSelActive = false; }
     if (mGlobalFocus.comp  && hasAncestor(mGlobalFocus.comp,  node)) { mGlobalFocus  = {}; mGlobalSelActive = false; }
 
@@ -1339,6 +1350,12 @@ public:
     if (strId.empty()) return nullptr;
     return findByStringId(mCanvas, strId);
   }
+
+  /** The element playing <body> (glint_html_load sets its target): keys
+   *  pressed while nothing has focus are dispatched to it and bubble up, as in
+   *  a browser. nullptr = the document's root. Cleared if it is destroyed. */
+  void setBodyElement(glint_element* body) { mBodyNode = body; }
+  glint_element* bodyElement() const { return mBodyNode; }
 
   /** CSS selector lookup over the whole document (see glint_element::querySelector). */
   glint_element* querySelector(const std::string& selectors) { return mCanvas.querySelector(selectors); }
@@ -1383,6 +1400,7 @@ public:
     // Focused node removed: clear :focus-within on its surviving ancestors now
     // and re-cascade them next frame (not from inside this destructor: the
     // parent's child list is mid-update, and CSS matching walks it).
+    if (mBodyNode && hasAncestor(mBodyNode, node)) mBodyNode = nullptr;
     if (mFocusedNode       && hasAncestor(mFocusedNode,       node))
     {
       mFocusedNode = nullptr;
@@ -3993,6 +4011,14 @@ private:
   // button was held: its chain still carries :active until release.
   glint_element* mActiveChainRoot  = nullptr;
   glint_element* mFocusedNode      = nullptr;  // currently focused (keyboard) node
+  glint_element* mBodyNode         = nullptr;  // <body> of the loaded HTML page, if any
+
+  // Where a key goes when nothing has focus: the body, as in Chrome
+  // (document.activeElement), else the document's root.
+  glint_element* _keyTargetWithoutFocus()
+  {
+    return mBodyNode ? mBodyNode : &mCanvas;
+  }
   glint_element* mActiveGestureNode = nullptr;
   bool             mFocusViaKeyboard = false;  // true only for Tab/Shift+Tab focus (:focus-visible)
   bool             mPointerInWindow = false;

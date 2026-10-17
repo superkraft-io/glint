@@ -369,6 +369,29 @@ void layoutChecks()
     check(res.ok && fired == 1 && sawButton, "DOMContentLoaded: fired once, tree queryable", buf);
   }
 
+  // Keys with nothing focused go to the page's body and bubble (Chrome); with
+  // an input focused they start there and bubble through the body too.
+  {
+    Doc d;
+    auto* page = new glint_element();
+    d.doc.mCanvas.addChild(page);
+    glint_html_load_string(d.doc, "<p>text</p><input id=name>", page);
+    d.doc.updateStyleAndLayout();
+    std::vector<std::string> seen;
+    page->addEventListener("keydown", [&](glint_event& e) {
+      seen.push_back(std::string("body<-") + (e.target ? e.target->tagName() : "?"));
+    });
+    d.doc.mCanvas.addEventListener("keydown", [&](glint_event&) { seen.push_back("root"); });
+    glint_key_press esc; esc.vk = 0x1B;
+    d.doc.OnKeyDown(esc);                                  // nothing focused
+    d.doc.SetFocus(d.doc.getElementByStringId("name"));
+    glint_key_press a; a.vk = 'A'; a.utf8[0] = 'a';
+    d.doc.OnKeyDown(a);                                    // input focused (its editor part)
+    std::string got;
+    for (const auto& s : seen) got += s + " ";
+    check(got == "body<-div root body<-text-input root ", "keydown: unfocused to body, focused bubbles", "  " + got);
+  }
+
   // Shrink-to-fit cell with one line of inline runs stays one line tall (its
   // intrinsic-width estimate is narrower than the line; Text demo page).
   {

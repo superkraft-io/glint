@@ -786,6 +786,9 @@ glint_html_result glint_html_load_string(glint_document& doc, std::string_view h
   res.ok = true;
   res.title = std::move(t.title);
 
+  // `target` is the page's <body>: keys pressed with nothing focused go to it.
+  doc.setBodyElement(target == &doc.mCanvas ? nullptr : target);
+
   // The tree is built and styled: listeners on `target` set up the page
   // (querySelector + addEventListener), here and on every reload.
   glint_event loaded;
