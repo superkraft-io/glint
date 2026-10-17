@@ -34,6 +34,13 @@
  *   key VK [TEXT]     press and release a key: VK = Windows virtual-key code
  *                     (27 or 0x1B), TEXT = the character it types (optional)
  *   scroll X Y DY     mouse wheel at X Y, DY px (positive = down)
+ *   expect text ID TEXT...
+ *                     the element with id ID has the text TEXT (a failed
+ *                     expectation is an error: the script's result is failed)
+ *   expect pixel X Y RRGGBB [TOL]
+ *                     render a frame; the color at X Y is RRGGBB (hex, no
+ *                     '#': it starts a comment), each channel within TOL
+ *                     (default 8)
  *   frames N          redraw everything N times (default 60): average CPU
  *                     draw time and whole frame time, in the report
  *   trim              what a window does when it goes idle: frees unused
@@ -378,6 +385,34 @@ private:
         doc->OnMouseUp(x, y, left);
       }
       return true;
+    }
+    if (cmd == "expect" && a.size() >= 3 && a[1] == "text")
+    {
+      std::string want;
+      for (size_t i = 3; i < a.size(); ++i) want += (i > 3 ? " " : "") + a[i];
+      glint_element* el = doc->getElementByStringId(a[2]);
+      if (!el) { result = "no element with id \"" + a[2] + "\""; return false; }
+      result = "\"" + el->innerText + "\"";
+      return el->innerText == want;
+    }
+    if (cmd == "expect" && a.size() >= 5 && a[1] == "pixel")
+    {
+      SkBitmap pixels;
+      if (!frame(&pixels)) { result = "render failed"; return false; }
+      int w = 0, h = 0; float dpr = 1.f;
+      mHost.headlessSize(w, h, dpr);
+      const int px = static_cast<int>(std::lround(num(2, 0.f) * dpr));
+      const int py = static_cast<int>(std::lround(num(3, 0.f) * dpr));
+      if (px < 0 || py < 0 || px >= pixels.width() || py >= pixels.height()) { result = "outside the frame"; return false; }
+      const unsigned long want = std::strtoul(a[4].c_str(), nullptr, 16);
+      const int tol = static_cast<int>(num(5, 8.f));
+      const SkColor c = pixels.getColor(px, py);
+      char got[16];
+      std::snprintf(got, sizeof(got), "%02X%02X%02X", SkColorGetR(c), SkColorGetG(c), SkColorGetB(c));
+      result = got;
+      return std::abs(int(SkColorGetR(c)) - int((want >> 16) & 0xFF)) <= tol &&
+             std::abs(int(SkColorGetG(c)) - int((want >> 8) & 0xFF)) <= tol &&
+             std::abs(int(SkColorGetB(c)) - int(want & 0xFF)) <= tol;
     }
     if (cmd == "key" && a.size() >= 2)
     {

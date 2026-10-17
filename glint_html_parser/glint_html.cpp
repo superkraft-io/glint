@@ -439,7 +439,9 @@ struct Translator
       if (getAttr(el, "height", h) && !h.empty()) GlintCssApply::applyOne("height", dim(h), node->style);
     }
     if (hasInlineStyle)
-      GlintCssApply::apply(GlintCssParser::parseInlineStyle(inlineStyle), node->style);
+      // url()s in a style attribute are relative to the page.
+      GlintCssApply::apply(GlintCssParser::parseInlineStyle(glint_document::resolveCssUrls(inlineStyle, baseUrl)),
+                           node->style);
   }
 
   bool boolAttr(lxb_dom_element_t* el, const char* name)
@@ -775,7 +777,7 @@ glint_html_result glint_html_load_string(glint_document& doc, std::string_view h
       target->className = target->className.empty() ? v : std::string(target->className) + " " + v;
     if (getAttr(bodyEl, "style", v))
     {
-      GlintCssApply::apply(GlintCssParser::parseInlineStyle(v), target->style);
+      GlintCssApply::apply(GlintCssParser::parseInlineStyle(glint_document::resolveCssUrls(v, baseUrl)), target->style);
       target->notifyStyleChanged();
     }
     target->setAttribute("data-glint-html-root", "");   // see parseFragmentInto

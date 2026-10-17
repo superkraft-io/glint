@@ -82,7 +82,7 @@ inline bool glint_css_prop_is_paint_only(const std::string& prop)
   static const std::unordered_set<std::string> kPaintOnly = {
     "color",
     "opacity",
-    "background", "background-color", "background-img", "background-position",
+    "background", "background-color", "background-image", "background-img", "background-position",
     "background-repeat", "background-size", "background-blend-mode",
     "border-color", "border-top-color", "border-right-color",
     "border-bottom-color", "border-left-color",

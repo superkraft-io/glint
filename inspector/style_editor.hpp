@@ -385,7 +385,8 @@ static inline void glint_style_set_by_name(glint_style& s,
   {
     try { s.backgroundGradientRadius = std::stof(val); } catch (...) {}
   }
-  else if (key == "background-img")    s.backgroundImageProp = val.c_str();
+  else if (key == "background-image" ||
+           key == "background-img")    s.backgroundImageProp = val.c_str();
   else if (key == "background-size")     s.backgroundSize     = val;
   else if (key == "background-position") s.backgroundPosition = val;
   else if (key == "background-repeat")   s.backgroundRepeat   = val;

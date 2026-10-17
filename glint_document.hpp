@@ -245,6 +245,7 @@ public:
   {
     auto sheet = GlintCssParser::parseStylesheet(cssText);
     sheet.sourceUrl = sourceUrl;
+    _resolveSheetUrls(sheet);
     mStylesheets.push_back(std::move(sheet));
     _processFontFaces(mStylesheets.back());
     _rebuildKeyframeRegistry();
@@ -1220,6 +1221,8 @@ public:
    *  hooks on glint_element. Cleared after a layout pass completes. Starts
    *  true so the very first frame always lays out. */
   bool mLayoutDirty = true;
+  bool mInTickAndLayout       = false;   // _tickAndLayout running (no nested pass)
+  bool mNoLayoutBeforeHitTest = false;   // internal hover refresh: use current boxes
 
   // Frame phase stats (see lastFrameStats()).
   glint_frame_stats   mLastFrameStats;
@@ -1566,6 +1569,10 @@ public:
   // since the previous Layout(); paint-only redraws bypass it.
   void _tickAndLayout(glint_canvas* g)
   {
+    // Re-entry guard: input handlers lay out first (_layoutBeforeHitTest),
+    // and events can be dispatched from inside a layout pass.
+    struct _Running { bool& f; explicit _Running(bool& r) : f(r) { f = true; } ~_Running() { f = false; } }
+      running(mInTickAndLayout);
     auto& perf = glint_perf();
     if (++glint_element::sStyleFrame == 0) glint_element::sStyleFrame = 1;
     // Font set changes alter every text measurement: no subtree may skip.
@@ -1911,11 +1918,31 @@ public:
   void RefreshHoverFromCurrentPointer()
   {
     if (!mPointerInWindow) return;
+    // Internal refresh (scroll offsets changed, possibly mid-layout or mid-
+    // paint): re-hover with the current boxes, without forcing a layout.
+    const bool prev = mNoLayoutBeforeHitTest;
+    mNoLayoutBeforeHitTest = true;
     OnMouseOver(mPointerX, mPointerY, mPointerMod, 0.f, 0.f);
+    mNoLayoutBeforeHitTest = prev;
+  }
+
+  // Hit-testing reads the boxes of the last layout. A change made since then
+  // (a classList toggle to display:none, a child inserted...) is not laid out
+  // until the next frame, so an input event arriving first would be routed by
+  // the old boxes, to the wrong element. Like a browser, bring style and
+  // layout up to date before hit-testing; nothing to do when nothing changed.
+  void _layoutBeforeHitTest()
+  {
+    if (mInTickAndLayout || mNoLayoutBeforeHitTest) return;
+    if (!mLayoutDirty && mPendingChildListRestyles.empty() && mPendingHasChecks.empty()
+        && mPendingLocalLayouts.empty())
+      return;
+    _tickAndLayout(nullptr);
   }
 
   void OnMouseDown(float x, float y, const glint_mouse_mod& mod)
   {
+    _layoutBeforeHitTest();
     mPointerInWindow = true;
     mPointerX = x;
     mPointerY = y;
@@ -1993,6 +2020,7 @@ public:
 
   void OnMouseUp(float x, float y, const glint_mouse_mod& mod)
   {
+    _layoutBeforeHitTest();
     mPointerInWindow = true;
     mPointerX = x;
     mPointerY = y;
@@ -2088,6 +2116,7 @@ public:
 
   void OnMouseDrag(float x, float y, float dX, float dY, const glint_mouse_mod& mod)
   {
+    _layoutBeforeHitTest();
     mPointerInWindow = true;
     mPointerX = x;
     mPointerY = y;
@@ -2160,6 +2189,7 @@ public:
 
   void OnMouseOver(float x, float y, const glint_mouse_mod& mod, float dX = 0.f, float dY = 0.f)
   {
+    _layoutBeforeHitTest();
     mPointerInWindow = true;
     mPointerX = x;
     mPointerY = y;
@@ -2391,6 +2421,7 @@ public:
                     glint_input_phase phase = glint_input_phase::none,
                     glint_input_phase momentumPhase = glint_input_phase::none)
   {
+    _layoutBeforeHitTest();
     mPointerInWindow = true;
     mPointerX = x;
     mPointerY = y;
@@ -2494,6 +2525,7 @@ public:
                  float magnification = 0.f, float rotation = 0.f,
                  bool isInertial = false, bool hasPreciseDeltas = false)
   {
+    _layoutBeforeHitTest();
     mPointerInWindow = true;
     mPointerX = x;
     mPointerY = y;
@@ -3781,6 +3813,53 @@ private:
     std::string resolved = std::filesystem::path(sheetUrl.substr(0, slash + 1) + url)
                              .lexically_normal().generic_string();
     return resolved;
+  }
+
+public:
+  /** Rewrite the relative url()s in a CSS value against `baseUrl` (the URL of
+   *  the stylesheet, or of the page for a style attribute), as CSS resolves
+   *  them: "url(../img/a.png)" in "styles/x.css" becomes url("img/a.png").
+   *  Absolute paths and URLs with a scheme are left alone. */
+  static std::string resolveCssUrls(const std::string& value, const std::string& baseUrl)
+  {
+    if (baseUrl.empty() || value.find("url(") == std::string::npos) return value;
+    std::string out;
+    size_t i = 0;
+    for (;;)
+    {
+      const size_t u = value.find("url(", i);
+      const size_t close = (u == std::string::npos) ? u : value.find(')', u + 4);
+      if (close == std::string::npos) { out.append(value, i, std::string::npos); break; }
+      std::string inner = value.substr(u + 4, close - u - 4);
+      const size_t a = inner.find_first_not_of(" \t\"'");
+      const size_t b = inner.find_last_not_of(" \t\"'");
+      inner = (a == std::string::npos) ? std::string() : inner.substr(a, b - a + 1);
+      out.append(value, i, u - i);
+      out += "url(\"" + _resolveAgainstSheet(inner, baseUrl) + "\")";
+      i = close + 1;
+    }
+    return out;
+  }
+
+private:
+  // Resolve url()s in the sheet's style rules (top level and inside @media,
+  // @supports...). @font-face resolves its src itself (_processFontFaces).
+  static void _resolveSheetUrls(GlintCssStylesheet& sheet)
+  {
+    if (sheet.sourceUrl.empty()) return;
+    auto fix = [&](GlintCssQualifiedRule* q) {
+      if (!q) return;
+      for (auto& d : q->declarations)
+        if (d.value.find("url(") != std::string::npos)
+          d.value = resolveCssUrls(d.value, sheet.sourceUrl);
+    };
+    for (auto& r : sheet.rules)
+    {
+      if (r.kind == GlintCssStylesheet::Rule::Kind::QUALIFIED) fix(r.qualified.get());
+      else if (r.atRule && r.atRule->name != "font-face")
+        for (auto& c : r.atRule->children)
+          if (c.kind == GlintCssAtRule::ChildRule::Kind::QUALIFIED) fix(c.qualified.get());
+    }
   }
 
   void _processFontFaces(const GlintCssStylesheet& sheet)

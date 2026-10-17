@@ -16,7 +16,7 @@
  *     background-color            ↔ backgroundColor
  *     opacity                     ↔ opacity
  *     background                  ↔ background  (shorthand proxy)
- *     background-img            ↔ backgroundImageProp
+ *     background-image          ↔ backgroundImageProp  (background-img: legacy alias)
  *     background-size             ↔ backgroundSize
  *     background-position         ↔ backgroundPosition
  *     background-repeat           ↔ backgroundRepeat
@@ -113,10 +113,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // ── GlintCssApply ──────────────────────────────────────────────────────────────
@@ -141,7 +144,8 @@ public:
     if (prop == "background-color")    { style.backgroundColor = val.c_str(); return; }
     if (prop == "opacity")             { style.opacity = toFloat(val); return; }
     if (prop == "background")          { style.background = val.c_str(); return; }
-    if (prop == "background-img")    { style.backgroundImageProp = val.c_str(); return; }
+    if (prop == "background-image" ||
+        prop == "background-img")    { style.backgroundImageProp = val.c_str(); return; }   // -img: legacy alias
     if (prop == "background-size")     { style.backgroundSize     = val; return; }
     if (prop == "background-position") { style.backgroundPosition = val; return; }
     if (prop == "background-repeat")   { style.backgroundRepeat   = val; return; }
@@ -379,11 +383,27 @@ public:
     if (prop == "transition")       { style.transition = val; return; }
     if (prop == "animation")        { style.animation  = val; return; }
 
+    // Not a property glint knows: dropped, as a browser drops it. Debug builds
+    // say so once per name (a typo or an unsupported property otherwise
+    // fails silently); custom properties (--x) are expected and not reported.
+#ifndef NDEBUG
+    if (prop.rfind("--", 0) != 0) _reportUnknownProperty(prop);
+#endif
+
     // ── CSS CUSTOM PROPERTIES (variables) — ignored silently ─────────────────
     // (--foo: bar)  Cascade users can handle these before calling apply().
   }
 
 private:
+  static void _reportUnknownProperty(const std::string& prop)
+  {
+    static std::mutex                      sMutex;   // one style pass per window thread
+    static std::unordered_set<std::string> sReported;
+    std::lock_guard<std::mutex> lk(sMutex);
+    if (sReported.insert(prop).second)
+      std::fprintf(stderr, "glint css: unknown property \"%s\" ignored%c", prop.c_str(), '\n');
+  }
+
   // ── box-shadow parser ────────────────────────────────────────────────────
   // CSS: "none" | <length> <length> [<length>] [<color>]
   // We map the first shadow only (multiple shadows not supported by glint_style).

@@ -141,3 +141,4 @@ The demo's **HTML** page loads `glint_user_code/web/html/demo.html` and lays it 
 - **`bench/glint_html_test.cpp`** checks tree shape and layout. Running `glint_html_test.exe` exits 1 on any failure.
 - **`glint_html_test.exe --dump <url> <webroot> <width>`** lays a page file out like a browser window and prints each element's box (`tag x= y= w= h=`), ready to diff against a browser dump of the same file.
 - **`demo/tests/headless/29_html.txt`** screenshots the demo page headless; it's part of `demo/scripts/ab_test.ps1`.
+- **`demo/tests/headless/30_html_regressions.txt`** checks results with the headless `expect` command (`expect text ID TEXT`, `expect pixel X Y RRGGBB`), so `report.txt` ends in `result ok` or `result failed` with no reference images. It covers `background-image` from a style attribute and from a stylesheet, and a click that arrives right after a show/hide, before the next frame.

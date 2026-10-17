@@ -193,7 +193,7 @@ HTML markup is parsed by `glint::html` (`glint_html_parser/`, opt-in: link `glin
 | `color` | Yes |  | Mapped directly into `glint_style`. |
 | `opacity` | Yes |  | Used by the renderer and animator. |
 | `background-color` | Yes |  | Direct style mapping. |
-| `background-image`, `background-size`, `background-position`, `background-repeat` | Yes |  | Backed by the style mapper and renderer. |
+| `background-image`, `background-size`, `background-position`, `background-repeat` | Yes |  | Backed by the style mapper and renderer. `background-img` (glint's former name) is still accepted. Relative `url()`s resolve against the stylesheet (or, in an HTML `style` attribute, the page). |
 | `background` shorthand |  | Yes | Stored as a shorthand proxy rather than expanded into the full browser background model. |
 | `border-color`, `border-width`, `border-style` | Yes |  | Includes per-edge variants. |
 | `border-radius` | Yes |  | Includes per-corner radius fields. |
